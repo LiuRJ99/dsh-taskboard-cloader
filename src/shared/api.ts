@@ -1,5 +1,5 @@
 /**
- * Wire contract for the /agent-taskboard host routes: the JSON envelope,
+ * Wire contract for the /taskboard host routes: the JSON envelope,
  * request/response shapes, and SSE event payloads shared by the host routes
  * and the browser client.
  *
@@ -10,10 +10,10 @@ import type { TaskLedger, TaskRecord, TaskSummary } from './protocol.ts'
 export type { TaskRecord }
 
 /** Route prefix on the shared DSH webserver (same origin as the GUI). */
-export const ROUTE_PREFIX = '/agent-taskboard'
+export const ROUTE_PREFIX = '/taskboard'
 
 /** SSE stream path (exact route; longest-prefix wins keep it disjoint). */
-export const SSE_PATH = '/agent-taskboard/events'
+export const SSE_PATH = '/taskboard/events'
 
 /** Stable error codes (mirror the tool-level codes plus HTTP mapping). */
 export type ApiErrorCode =

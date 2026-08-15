@@ -1,5 +1,5 @@
 /**
- * Browser client for the /agent-taskboard host routes: typed fetch wrappers
+ * Browser client for the /taskboard host routes: typed fetch wrappers
  * (same origin as the GUI) and the SSE subscription with revision-gap
  * reconciliation (a gap or a reconnect triggers one full state refetch).
  *
@@ -22,8 +22,8 @@ import type { CommentRecord, TaskSummary } from '../shared/protocol.ts'
 async function unwrap<T>(pending: Response | Promise<Response>): Promise<T> {
   const res = await pending
   const body = (await res.json().catch(() => null)) as ApiResult<T> | null
-  if (body === null) throw new Error(`agent-taskboard: HTTP ${res.status}`)
-  if (!body.ok) throw new Error(`agent-taskboard: ${body.error.code}: ${body.error.message}`)
+  if (body === null) throw new Error(`taskboard: HTTP ${res.status}`)
+  if (!body.ok) throw new Error(`taskboard: ${body.error.code}: ${body.error.message}`)
   return body.value
 }
 
@@ -55,17 +55,17 @@ export interface TaskboardClient {
 /** Build the client over fetch + EventSource. */
 export function createClient(): TaskboardClient {
   return {
-    state: () => unwrap<StateResponse>(fetch('/agent-taskboard/state')),
-    workspaces: () => unwrap<WorkspaceView[]>(fetch('/agent-taskboard/workspaces')),
-    create: body => post('/agent-taskboard/tasks', body),
-    get: id => unwrap<TaskRecord>(fetch(`/agent-taskboard/tasks/${encodeURIComponent(id)}`)),
-    update: (id, body) => post(`/agent-taskboard/tasks/${encodeURIComponent(id)}/update`, body),
-    move: (id, body) => post(`/agent-taskboard/tasks/${encodeURIComponent(id)}/move`, body),
-    comment: (id, bodyText) => post(`/agent-taskboard/tasks/${encodeURIComponent(id)}/comment`, { body: bodyText }),
-    remove: (id, body) => post(`/agent-taskboard/tasks/${encodeURIComponent(id)}/delete`, body),
-    run: id => post(`/agent-taskboard/tasks/${encodeURIComponent(id)}/run`, {}),
+    state: () => unwrap<StateResponse>(fetch('/taskboard/state')),
+    workspaces: () => unwrap<WorkspaceView[]>(fetch('/taskboard/workspaces')),
+    create: body => post('/taskboard/tasks', body),
+    get: id => unwrap<TaskRecord>(fetch(`/taskboard/tasks/${encodeURIComponent(id)}`)),
+    update: (id, body) => post(`/taskboard/tasks/${encodeURIComponent(id)}/update`, body),
+    move: (id, body) => post(`/taskboard/tasks/${encodeURIComponent(id)}/move`, body),
+    comment: (id, bodyText) => post(`/taskboard/tasks/${encodeURIComponent(id)}/comment`, { body: bodyText }),
+    remove: (id, body) => post(`/taskboard/tasks/${encodeURIComponent(id)}/delete`, body),
+    run: id => post(`/taskboard/tasks/${encodeURIComponent(id)}/run`, {}),
     stream(onChange, onGap) {
-      const es = new EventSource('/agent-taskboard/events')
+      const es = new EventSource('/taskboard/events')
       let revision: number | undefined
       const hello = (event: MessageEvent): void => {
         const payload = JSON.parse(event.data) as { revision: number }

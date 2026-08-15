@@ -20,7 +20,8 @@ const ACTIVE_ATTR = 'data-dsh-atb-active'
 const OTHER_ACTIVE_ATTRS = ['data-dsh-taskboard-active', 'data-dsh-ssh-active']
 /** Cross-plugin activation event; detail is the activating panel name. */
 const ACTIVATE_EVENT = 'dsh-panel-activate'
-const PANEL_NAME = 'agent-taskboard'
+// 'taskboard' is the family ui-task-board panel's event name; stay distinct to keep eviction working.
+const PANEL_NAME = 'dsh-taskboard'
 
 /** Find the center column. */
 function conversationColumn(): HTMLElement | undefined {

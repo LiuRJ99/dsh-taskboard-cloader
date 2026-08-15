@@ -191,7 +191,7 @@ export class ExecutionService {
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
       role: 'user' as const,
       content: [{ type: 'text' as const, text: this.executionPrompt(task) }],
-      source: { kind: 'plugin' as const, plugin: 'agent-taskboard' },
+      source: { kind: 'plugin' as const, plugin: 'taskboard' },
     }
     handle.agent.followup(message)
 

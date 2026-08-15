@@ -8,5 +8,5 @@
 # and the `dsh.client` declaration in package.json makes the browser half
 # (exports "./client", served at /plugins/<id>/client.js) load in the web GUI.
 - insert:
-    - id: agent-taskboard
+    - id: taskboard
       name: dsh-taskboard

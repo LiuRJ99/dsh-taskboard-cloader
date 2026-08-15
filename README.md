@@ -30,7 +30,7 @@ DeepSeek Harness（DSH）的 **Agent 任务看板插件**：人把工作拆成�
 - **一键真实执行**：手动「执行」在任务项目内新建全新会话（干净上下文）提交任务 prompt，回合结算记入执行记录
 - **乐观并发**：所有写操作带 `ifVersion`，冲突返回 `version_conflict`
 - **完整归因**：每次变更记录 actor（user / agent+sessionId），评论区分作者
-- **host 权威台账**：`~/.dsh/agent-taskboard.json` 原子持久化，全局 revision 单调递增，SSE 推送 + 断线全量对账
+- **host 权威台账**：`~/.dsh/taskboard.json` 原子持久化，全局 revision 单调递增，SSE 推送 + 断线全量对账
 
 **协议硬闸（代码级强制，不靠 prompt 自觉）**
 
@@ -98,17 +98,15 @@ Agent 工作流协议（随插件注入 system prompt）：开工先查板 → �
 从 GitHub 安装（推荐）：
 
 ```bash
-dsh plugin --profile <name> add github:cloader/dsh-agent-taskboard
+dsh plugin --profile <name> add github:cloader/dsh-taskboard
 ```
 
-> 包名（package name）为 `dsh-taskboard`；GitHub 仓库名仍为 `cloader/dsh-agent-taskboard`（克隆目录名与其一致）。
-
-本地 link 开发：profile 的 `package.json`：
+本地 link 开发（包名与仓库名均为 `dsh-taskboard`）：profile 的 `package.json`：
 
 ```json
 {
   "dependencies": {
-    "dsh-taskboard": "link:D:/path/to/dsh-agent-taskboard"
+    "dsh-taskboard": "link:D:/path/to/dsh-taskboard"
   },
   "dsh": {
     "profile": {
@@ -122,7 +120,7 @@ dsh plugin --profile <name> add github:cloader/dsh-agent-taskboard
 }
 ```
 
-然后 `dsh plugin --profile <name> add link:D:/path/to/dsh-agent-taskboard`。
+然后 `dsh plugin --profile <name> add link:D:/path/to/dsh-taskboard`。
 
 > ⚠️ 官方 `@deepseek-ai/dsh-*` 包只写进 `bundles` 列表，**不要** `plugin add` 进 profile dependencies（会引发 SDK 双实例遮蔽，详见项目根 README 的踩坑记录）。
 

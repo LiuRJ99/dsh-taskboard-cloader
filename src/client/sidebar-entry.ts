@@ -79,7 +79,7 @@ function placeEntry(root: HTMLElement, entry: HTMLButtonElement): boolean {
     const family = Array.from(root.children).filter(
       (el): el is HTMLElement => el instanceof HTMLElement && el.matches('[data-dsh-atb-entry], [data-dsh-taskboard-entry], [data-dsh-ssh-entry]'),
     )
-    // agent-taskboard sits before the whole family block.
+    // taskboard sits before the whole family block.
     const anchor = family.length > 0 ? (family[0] ?? null) : (base.nextElementSibling ?? null)
     root.insertBefore(entry, anchor)
   }

@@ -3,7 +3,7 @@
  *
  * Wiring: the ledger store (one JSON file under the DSH home), the eight
  * `taskboard_*` agent tools, the agent workflow-protocol system-prompt
- * section, the /agent-taskboard JSON+SSE routes (when a webServer is served),
+ * section, the /taskboard JSON+SSE routes (when a webServer is served),
  * the host execution service (fresh in-project sessions, pinned models), and
  * the host-side cron scheduler for scheduled tasks.
  *
@@ -28,7 +28,7 @@ import { TaskStore } from './host/store.ts'
 import { registerTaskboardTools, workspaceFace } from './host/tools.ts'
 
 /** Ledger file name under the DSH home. */
-export const LEDGER_FILE = 'agent-taskboard.json'
+export const LEDGER_FILE = 'taskboard.json'
 
 /** Cordis plugin name. */
 export const name = 'dsh-taskboard'
@@ -50,7 +50,7 @@ export function apply(ctx: Context): void {
     order: PROTOCOL_SECTION_ORDER,
     text: TASKBOARD_PROTOCOL,
   })
-  ctx.effect(() => disposeSection, 'agent-taskboard: protocol section')
+  ctx.effect(() => disposeSection, 'taskboard: protocol section')
 
   // Tools, routes, execution, and the scheduler all come up with the
   // workspace registry (claim boundary + project execution need it).
@@ -93,7 +93,7 @@ export function apply(ctx: Context): void {
         },
       })
 
-      // /agent-taskboard routes (the run action reaches the execution service).
+      // /taskboard routes (the run action reaches the execution service).
       let disposeRoutes: (() => void) | undefined
       agentCtx.inject(['webServer'], (webCtx: Context) => {
         disposeRoutes = registerTaskboardRoutes(webCtx, {

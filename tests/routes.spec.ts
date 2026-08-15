@@ -1,5 +1,5 @@
 /**
- * HTTP-level tests for the /agent-taskboard routes: a real node:http server
+ * HTTP-level tests for the /taskboard routes: a real node:http server
  * wired to the real handler, driven with fetch — envelope shape, optimistic
  * versions, the user-only done move, purge semantics, and the SSE change
  * stream.
@@ -67,7 +67,7 @@ async function post(path: string, body: unknown): Promise<{ status: number; json
 
 describe('taskboard routes', () => {
   it('serves an empty state baseline', async () => {
-    const res = await fetch(`${base}/agent-taskboard/state`)
+    const res = await fetch(`${base}/taskboard/state`)
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.ok).toBe(true)
@@ -75,80 +75,80 @@ describe('taskboard routes', () => {
   })
 
   it('lists workspaces for the picker', async () => {
-    const res = await fetch(`${base}/agent-taskboard/workspaces`)
+    const res = await fetch(`${base}/taskboard/workspaces`)
     const body = await res.json()
     expect(body.value).toEqual([{ id: 'ws-a', path: '/proj/a', title: 'A' }, { id: 'ws-b', path: '/proj/b', title: 'B' }])
   })
 
   it('creates a task and rejects bad payloads', async () => {
-    const ok = await post('/agent-taskboard/tasks', { title: 'Route task', workspaceId: 'ws-a', urgency: 'urgent' })
+    const ok = await post('/taskboard/tasks', { title: 'Route task', workspaceId: 'ws-a', urgency: 'urgent' })
     expect(ok.status).toBe(201)
     expect(ok.json.value.status).toBe('todo')
     expect(ok.json.value.urgency).toBe('urgent')
-    const bad = await post('/agent-taskboard/tasks', { title: '', workspaceId: 'ws-a', urgency: 'urgent' })
+    const bad = await post('/taskboard/tasks', { title: '', workspaceId: 'ws-a', urgency: 'urgent' })
     expect(bad.status).toBe(400)
     expect(bad.json.error.code).toBe('invalid_input')
-    const unknownWs = await post('/agent-taskboard/tasks', { title: 'x', workspaceId: 'nope', urgency: 'normal' })
+    const unknownWs = await post('/taskboard/tasks', { title: 'x', workspaceId: 'nope', urgency: 'normal' })
     expect(unknownWs.status).toBe(404)
   })
 
   it('moves through the lifecycle; the USER may complete (done)', async () => {
-    const created = await post('/agent-taskboard/tasks', { title: 'Lifecycle', workspaceId: 'ws-a', urgency: 'normal' })
+    const created = await post('/taskboard/tasks', { title: 'Lifecycle', workspaceId: 'ws-a', urgency: 'normal' })
     const id = created.json.value.id as string
-    const claim = await post(`/agent-taskboard/tasks/${id}/move`, { ifVersion: 1, status: 'in_progress' })
+    const claim = await post(`/taskboard/tasks/${id}/move`, { ifVersion: 1, status: 'in_progress' })
     expect(claim.json.value.status).toBe('in_progress')
-    const review = await post(`/agent-taskboard/tasks/${id}/move`, { ifVersion: 2, status: 'in_review' })
+    const review = await post(`/taskboard/tasks/${id}/move`, { ifVersion: 2, status: 'in_review' })
     expect(review.json.value.status).toBe('in_review')
-    const done = await post(`/agent-taskboard/tasks/${id}/move`, { ifVersion: 3, status: 'done' })
+    const done = await post(`/taskboard/tasks/${id}/move`, { ifVersion: 3, status: 'done' })
     expect(done.json.value.status).toBe('done')
   })
 
   it('rejects stale versions with 409', async () => {
-    const created = await post('/agent-taskboard/tasks', { title: 'Stale', workspaceId: 'ws-a', urgency: 'relaxed' })
+    const created = await post('/taskboard/tasks', { title: 'Stale', workspaceId: 'ws-a', urgency: 'relaxed' })
     const id = created.json.value.id as string
-    const stale = await post(`/agent-taskboard/tasks/${id}/move`, { ifVersion: 99, status: 'in_progress' })
+    const stale = await post(`/taskboard/tasks/${id}/move`, { ifVersion: 99, status: 'in_progress' })
     expect(stale.status).toBe(409)
     expect(stale.json.error.code).toBe('version_conflict')
   })
 
   it('comments then soft-deletes then purges', async () => {
-    const created = await post('/agent-taskboard/tasks', { title: 'CDP', workspaceId: 'ws-a', urgency: 'normal' })
+    const created = await post('/taskboard/tasks', { title: 'CDP', workspaceId: 'ws-a', urgency: 'normal' })
     const id = created.json.value.id as string
-    const comment = await post(`/agent-taskboard/tasks/${id}/comment`, { body: 'user note' })
+    const comment = await post(`/taskboard/tasks/${id}/comment`, { body: 'user note' })
     expect(comment.status).toBe(201)
-    const soft = await post(`/agent-taskboard/tasks/${id}/delete`, { ifVersion: 2 })
+    const soft = await post(`/taskboard/tasks/${id}/delete`, { ifVersion: 2 })
     expect(soft.json.value.trashed).toBe(true)
-    const state = await (await fetch(`${base}/agent-taskboard/state`)).json()
+    const state = await (await fetch(`${base}/taskboard/state`)).json()
     const trashed = state.value.tasks.find((t: { id: string }) => t.id === id)
     expect(trashed.trashedAt).toBeGreaterThan(0)
-    const purge = await post(`/agent-taskboard/tasks/${id}/delete`, { purge: true })
+    const purge = await post(`/taskboard/tasks/${id}/delete`, { purge: true })
     expect(purge.json.value.purged).toBe(true)
-    const after = await (await fetch(`${base}/agent-taskboard/state`)).json()
+    const after = await (await fetch(`${base}/taskboard/state`)).json()
     expect(after.value.tasks.find((t: { id: string }) => t.id === id)).toBeUndefined()
   })
 
   it('updates fields including project rebind; unknown workspace 404', async () => {
-    const created = await post('/agent-taskboard/tasks', { title: 'Editable', workspaceId: 'ws-a', urgency: 'normal' })
+    const created = await post('/taskboard/tasks', { title: 'Editable', workspaceId: 'ws-a', urgency: 'normal' })
     const id = created.json.value.id as string
-    const upd = await post(`/agent-taskboard/tasks/${id}/update`, { ifVersion: 1, title: 'Edited', urgency: 'urgent', workspaceId: 'ws-b' })
+    const upd = await post(`/taskboard/tasks/${id}/update`, { ifVersion: 1, title: 'Edited', urgency: 'urgent', workspaceId: 'ws-b' })
     expect(upd.status).toBe(200)
     expect(upd.json.value.version).toBe(2)
-    const full = await (await fetch(`${base}/agent-taskboard/tasks/${id}`)).json()
+    const full = await (await fetch(`${base}/taskboard/tasks/${id}`)).json()
     expect(full.value.title).toBe('Edited')
     expect(full.value.urgency).toBe('urgent')
     expect(full.value.workspaceId).toBe('ws-b')
-    const bad = await post(`/agent-taskboard/tasks/${id}/update`, { ifVersion: 2, workspaceId: 'nope' })
+    const bad = await post(`/taskboard/tasks/${id}/update`, { ifVersion: 2, workspaceId: 'nope' })
     expect(bad.status).toBe(404)
   })
 
   it('streams SSE change events', async () => {
     const controller = new AbortController()
-    const res = await fetch(`${base}/agent-taskboard/events`, { signal: controller.signal })
+    const res = await fetch(`${base}/taskboard/events`, { signal: controller.signal })
     expect(res.status).toBe(200)
     const reader = res.body!.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    const createP = post('/agent-taskboard/tasks', { title: 'SSE task', workspaceId: 'ws-a', urgency: 'urgent' })
+    const createP = post('/taskboard/tasks', { title: 'SSE task', workspaceId: 'ws-a', urgency: 'urgent' })
     // read frames until a change event arrives
     let sawChange = false
     while (!sawChange) {
