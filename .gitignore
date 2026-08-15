@@ -1,5 +1,9 @@
-# build output
-lib/
+# NOTE: lib/ build output IS committed (prebuilt) so github: installs work
+# with no build step and no build-script approval — ecosystem convention.
+# Only the intermediate lib/client.cjs (already wrapped into client.js) stays local.
+lib/client.cjs
+
+# build scratch
 .tsc-check/
 
 # dependencies

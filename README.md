@@ -95,13 +95,21 @@ Agent 工作流协议（随插件注入 system prompt）：开工先查板 → �
 
 ## 安装
 
-从 GitHub 安装（推荐）：
+**GitHub 源安装**（收录 [awesome-dsh-plugin 精选列表](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)后，dshmarket 市场里的一键安装走的也是这条路）：
 
 ```bash
 dsh plugin --profile <name> add github:cloader/dsh-taskboard
 ```
 
-本地 link 开发（包名与仓库名均为 `dsh-taskboard`）：profile 的 `package.json`：
+> 构建产物 `lib/` 已随仓库提交：安装即用，无本地构建、无构建脚本授权（`allowBuilds`）。
+
+**npm 裸名安装**（需先将包发布到 npm；同样是预构建，免构建授权）：
+
+```bash
+dsh plugin --profile <name> add dsh-taskboard
+```
+
+本地 link 开发：profile 的 `package.json`：
 
 ```json
 {
