@@ -5,7 +5,7 @@
  * executions with outcome pills, grouped actions (run / transitions /
  * danger zone), and the user comment composer.
  *
- * @module dsh-agent-taskboard/client/board/TaskDetail
+ * @module dsh-taskboard/client/board/TaskDetail
  */
 import { useState, type ReactNode } from 'react'
 import type { BoardController } from '../controller.ts'

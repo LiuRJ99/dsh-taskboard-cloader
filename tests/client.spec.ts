@@ -55,7 +55,7 @@ describe('client half', () => {
     expect(() => apply(ctx as never)).not.toThrow()
 
     // Styles injected exactly once.
-    expect(document.getElementById('dsh-agent-taskboard-styles')).not.toBeNull()
+    expect(document.getElementById('dsh-taskboard-styles')).not.toBeNull()
 
     // No panes exist: mounts wait via observers without throwing. Give the
     // controller's initial refresh a tick.

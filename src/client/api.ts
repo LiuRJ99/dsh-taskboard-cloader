@@ -3,7 +3,7 @@
  * (same origin as the GUI) and the SSE subscription with revision-gap
  * reconciliation (a gap or a reconnect triggers one full state refetch).
  *
- * @module dsh-agent-taskboard/client/api
+ * @module dsh-taskboard/client/api
  */
 import type {
   ApiResult,

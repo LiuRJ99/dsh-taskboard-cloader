@@ -6,7 +6,7 @@
  * closed — irrelevant here, this is the host process) simply advance: a
  * nextRunAt more than one window in the past is skipped, not caught up.
  *
- * @module dsh-agent-taskboard/host/scheduler
+ * @module dsh-taskboard/host/scheduler
  */
 import { nextCronTime, parseCron, type TaskLedger } from '../shared/protocol.ts'
 import type { ExecutionService } from './execution.ts'
@@ -76,7 +76,7 @@ export class SchedulerService {
       const lastTriggeredAt = task.execution.nextRunAt
       await this.markTriggered(task.id, lastTriggeredAt)
       await this.deps.execution.run(task.id, 'scheduled').catch(error => {
-        console.error('[dsh-agent-taskboard] scheduled run failed:', error)
+        console.error('[dsh-taskboard] scheduled run failed:', error)
       })
     }
   }

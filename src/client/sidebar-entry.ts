@@ -12,7 +12,7 @@
  * reconciliation; the board view it toggles is a separate React root mounted
  * in the center column (see board-mount.tsx).
  *
- * @module dsh-agent-taskboard/client/sidebar-entry
+ * @module dsh-taskboard/client/sidebar-entry
  */
 import type { BoardController } from './controller.ts'
 

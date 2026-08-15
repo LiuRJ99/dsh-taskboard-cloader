@@ -7,7 +7,7 @@
  * All domain validation goes through the shared protocol pure functions; the
  * route layer only maps transport to envelope.
  *
- * @module dsh-agent-taskboard/host/routes
+ * @module dsh-taskboard/host/routes
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'

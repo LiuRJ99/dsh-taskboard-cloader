@@ -6,7 +6,7 @@
  * footer bar carrying the validation hint and the actions. Esc closes;
  * the title input is focused on open.
  *
- * @module dsh-agent-taskboard/client/board/TaskFormModal
+ * @module dsh-taskboard/client/board/TaskFormModal
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { BoardController } from '../controller.ts'

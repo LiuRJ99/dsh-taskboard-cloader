@@ -17,7 +17,7 @@
  *   additionalProperties/scalars; the `json` node compiles to an
  *   annotation-only schema) and pre-validates model arguments the same way.
  *
- * @module dsh-agent-taskboard/host/sdk
+ * @module dsh-taskboard/host/sdk
  */
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'

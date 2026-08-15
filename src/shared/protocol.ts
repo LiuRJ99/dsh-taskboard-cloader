@@ -6,7 +6,7 @@
  * Everything here is a pure function over plain data: no imports beyond the
  * standard library, no I/O, no globals. Tests drive it directly.
  *
- * @module dsh-agent-taskboard/shared/protocol
+ * @module dsh-taskboard/shared/protocol
  */
 
 // ---------------------------------------------------------------------------

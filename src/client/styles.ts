@@ -4,7 +4,7 @@
  * the board follows the active theme/skin; urgency accents are the fixed
  * red/purple/blue of the protocol.
  *
- * @module dsh-agent-taskboard/client/styles
+ * @module dsh-taskboard/client/styles
  */
 
 /** The stylesheet text. */
@@ -384,7 +384,7 @@ let injected = false
 export function injectStyles(): void {
   if (injected || typeof document === 'undefined') return
   const style = document.createElement('style')
-  style.id = 'dsh-agent-taskboard-styles'
+  style.id = 'dsh-taskboard-styles'
   style.textContent = STYLES
   document.head.append(style)
   injected = true

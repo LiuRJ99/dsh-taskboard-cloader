@@ -1,5 +1,5 @@
 /**
- * Invariant companion for dsh-agent-taskboard.
+ * Invariant companion for dsh-taskboard.
  *
  * DSH convention (see dsh-base / dsh-workspace): packages may ship an
  * `./invariant` export — a minimal companion plugin that reserves package
@@ -8,7 +8,7 @@
  */
 
 /** Cordis plugin name. */
-export const name = 'dsh-agent-taskboard-invariant'
+export const name = 'dsh-taskboard-invariant'
 
 /** No services required. */
 export const inject: string[] = []

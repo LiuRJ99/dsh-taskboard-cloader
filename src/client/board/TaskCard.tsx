@@ -4,7 +4,7 @@
  * Click opens the detail pane; cards in the backlog/todo columns are
  * draggable between those two columns (HTML5 drag & drop).
  *
- * @module dsh-agent-taskboard/client/board/TaskCard
+ * @module dsh-taskboard/client/board/TaskCard
  */
 import type { BoardController } from '../controller.ts'
 import type { TaskRecord } from '../../shared/protocol.ts'

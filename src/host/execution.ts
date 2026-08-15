@@ -8,7 +8,7 @@
  *
  * Every execution is a NEW session: clean context, no reuse of previous runs.
  *
- * @module dsh-agent-taskboard/host/execution
+ * @module dsh-taskboard/host/execution
  */
 import { effectivePrompt, newExecutionId, type ExecutionRecord, type TaskRecord } from '../shared/protocol.ts'
 import { MessageId } from './sdk.ts'
@@ -71,7 +71,7 @@ function isErrorTurnEnd(data: unknown): { message: string } | undefined {
   const error = (reason as { error?: { message?: unknown } }).error
   const detail = JSON.stringify(error) ?? ''
   const message = typeof error?.message === 'string' ? error.message : 'turn failed'
-  console.error('[dsh-agent-taskboard] turn error detail:', detail.slice(0, 2000))
+  console.error('[dsh-taskboard] turn error detail:', detail.slice(0, 2000))
   void detail
   return { message }
 }

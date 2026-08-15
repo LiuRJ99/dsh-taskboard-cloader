@@ -4,7 +4,7 @@
  * monotonic revision. Change subscribers (P2: SSE route) observe every
  * committed mutation.
  *
- * @module dsh-agent-taskboard/host/store
+ * @module dsh-taskboard/host/store
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'

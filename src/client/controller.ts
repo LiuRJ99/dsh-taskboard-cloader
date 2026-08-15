@@ -5,7 +5,7 @@
  * full refetch. Every mutation goes through the route client and lands in the
  * snapshot through the SSE change stream or the explicit refetch.
  *
- * @module dsh-agent-taskboard/client/controller
+ * @module dsh-taskboard/client/controller
  */
 import type { ChangeEvent, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
 import type { TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'

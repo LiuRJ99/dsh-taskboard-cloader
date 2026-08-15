@@ -1,5 +1,5 @@
 /**
- * Browser half entry for dsh-agent-taskboard: wires the route client and the
+ * Browser half entry for dsh-taskboard: wires the route client and the
  * board controller, exposes the model catalog (via the runtime's llm.models
  * RPC when the connection service is present), mounts the sidebar entry and
  * the board view.
@@ -9,7 +9,7 @@
  *
  * Export shape: `name` / `inject` / `apply`, no default.
  *
- * @module dsh-agent-taskboard/client
+ * @module dsh-taskboard/client
  */
 import { createClient } from './api.ts'
 import { BoardController } from './controller.ts'
@@ -18,7 +18,7 @@ import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
 
 /** Client plugin name. */
-export const name = 'dsh-agent-taskboard/client'
+export const name = 'dsh-taskboard/client'
 
 /** Required client services (fiber inject waiting). */
 export const inject = ['connection']
@@ -72,7 +72,7 @@ export function apply(ctx: ClientContextFace): void {
       disposers.push(mountBoard(controller))
     } catch (error) {
       // DOM failures degrade the board, never the GUI.
-      console.error('[dsh-agent-taskboard] mount failed:', error)
+      console.error('[dsh-taskboard] mount failed:', error)
     }
     // cordis effect semantics: the callback runs immediately and its RETURN
     // VALUE is the disposer (family-plugin precedent: () => () => {...}).
@@ -82,6 +82,6 @@ export function apply(ctx: ClientContextFace): void {
       controller.dispose()
     }, 'agent-taskboard: client mount')
   } catch (error) {
-    console.error('[dsh-agent-taskboard] client half failed to start:', error)
+    console.error('[dsh-taskboard] client half failed to start:', error)
   }
 }

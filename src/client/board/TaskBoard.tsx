@@ -2,7 +2,7 @@
  * The main board view: toolbar (project filter, urgency chips, secondary tab,
  * composer), five status columns, the detail pane, and the new-task modal.
  *
- * @module dsh-agent-taskboard/client/board/TaskBoard
+ * @module dsh-taskboard/client/board/TaskBoard
  */
 import { useSyncExternalStore } from 'react'
 import type { BoardController, ControllerState } from '../controller.ts'

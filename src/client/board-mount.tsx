@@ -5,7 +5,7 @@
  * Toggling rides a data attribute on <html> — no React involvement in the
  * shell.
  *
- * @module dsh-agent-taskboard/client/board-mount
+ * @module dsh-taskboard/client/board-mount
  */
 import { createRoot, type Root } from 'react-dom/client'
 import type { BoardController } from './controller.ts'

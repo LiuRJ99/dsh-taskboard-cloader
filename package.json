@@ -1,5 +1,5 @@
 {
-  "name": "dsh-agent-taskboard",
+  "name": "dsh-taskboard",
   "description": "Agent-first task board for the DSH web GUI: host-authoritative task ledger with taskboard_* agent tools, project (= workspace) claim boundaries, per-task model execution in fresh sessions, host-side cron scheduling, and a live SSE kanban view. Mounts via the official dsh plugin system — no DSH source changes.",
   "version": "0.1.0",
   "type": "module",

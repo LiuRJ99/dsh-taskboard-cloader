@@ -16,7 +16,7 @@
  * carry the complete facts an agent needs to act (ids, versions, statuses);
  * a "terse UI summary" here starves the agent.
  *
- * @module dsh-agent-taskboard/host/tools
+ * @module dsh-taskboard/host/tools
  */
 import type { WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import { defineTool } from './sdk.ts'

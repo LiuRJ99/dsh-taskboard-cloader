@@ -4,7 +4,7 @@ const base = 'http://127.0.0.1:3177'
 for (let i = 0; i < 30; i++) {
   try { const r = await fetch(`${base}/`); if (r.ok) break } catch { await new Promise(r => setTimeout(r, 1000)) }
 }
-const client = await fetch(`${base}/plugins/dsh-agent-taskboard/client.js`)
+const client = await fetch(`${base}/plugins/dsh-taskboard/client.js`)
 const clientText = client.ok ? await client.text() : ''
 console.log('client.js:', client.status, `${clientText.length} bytes`, clientText.includes('__ModuleLoader__') ? '✓ wrapper' : '✗')
 console.log('  board view code:', clientText.includes('dsh-atb-board') ? '✓' : '✗')

@@ -7,12 +7,12 @@
  * The regression test (tests/protocol.spec.ts) locks the discipline
  * sentences, so editing the text without revisiting the test fails loud.
  *
- * @module dsh-agent-taskboard/host/protocol-text
+ * @module dsh-taskboard/host/protocol-text
  */
 
 /** The protocol section served to every agent (Chinese UI deployment). */
 export const TASKBOARD_PROTOCOL = [
-  '本机已安装 dsh-agent-taskboard 插件（DSH 任务看板）：任务挂在项目（DSH workspace）上，',
+  '本机已安装 dsh-taskboard 插件（DSH 任务看板）：任务挂在项目（DSH workspace）上，',
   '用 taskboard_* 工具读写；人在 Web GUI 看板上实时看到同样数据。能力：查板(list/get)、',
   '建卡(create)、改卡(update)、移卡(move)、评论(comment_add/comments)、删除(delete=仅标记)。',
   '任务带紧急度(urgent红/normal紫/relaxed蓝)、执行方式(claim认领/scheduled定时)与可选指定模型。',

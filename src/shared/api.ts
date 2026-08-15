@@ -3,7 +3,7 @@
  * request/response shapes, and SSE event payloads shared by the host routes
  * and the browser client.
  *
- * @module dsh-agent-taskboard/shared/api
+ * @module dsh-taskboard/shared/api
  */
 import type { TaskLedger, TaskRecord, TaskSummary } from './protocol.ts'
 

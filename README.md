@@ -1,4 +1,4 @@
-# dsh-agent-taskboard
+# dsh-taskboard
 
 DeepSeek Harness（DSH）的 **Agent 任务看板插件**：人把工作拆成卡片挂上看板，agent 会话通过 `taskboard_*` 工具认领、推进、评论、移交，人最终验收。双向协作，不是单向 todo 列表。
 
@@ -95,19 +95,27 @@ Agent 工作流协议（随插件注入 system prompt）：开工先查板 → �
 
 ## 安装
 
-profile 的 `package.json`：
+从 GitHub 安装（推荐）：
+
+```bash
+dsh plugin --profile <name> add github:cloader/dsh-agent-taskboard
+```
+
+> 包名（package name）为 `dsh-taskboard`；GitHub 仓库名仍为 `cloader/dsh-agent-taskboard`（克隆目录名与其一致）。
+
+本地 link 开发：profile 的 `package.json`：
 
 ```json
 {
   "dependencies": {
-    "dsh-agent-taskboard": "link:D:/path/to/dsh-agent-taskboard"
+    "dsh-taskboard": "link:D:/path/to/dsh-agent-taskboard"
   },
   "dsh": {
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
-        "dsh-agent-taskboard"
+        "dsh-taskboard"
       ]
     }
   }

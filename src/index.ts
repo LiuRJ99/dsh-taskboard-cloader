@@ -1,5 +1,5 @@
 /**
- * Host loader entry for dsh-agent-taskboard.
+ * Host loader entry for dsh-taskboard.
  *
  * Wiring: the ledger store (one JSON file under the DSH home), the eight
  * `taskboard_*` agent tools, the agent workflow-protocol system-prompt
@@ -10,7 +10,7 @@
  * Export shape follows the dsh-tool-todo lesson: a function/namespace plugin —
  * `name` / `inject` / `apply`, NO default export.
  *
- * @module dsh-agent-taskboard
+ * @module dsh-taskboard
  */
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only module imports: they load the cordis Context augmentations
@@ -31,7 +31,7 @@ import { registerTaskboardTools, workspaceFace } from './host/tools.ts'
 export const LEDGER_FILE = 'agent-taskboard.json'
 
 /** Cordis plugin name. */
-export const name = 'dsh-agent-taskboard'
+export const name = 'dsh-taskboard'
 
 /** Required host services (tool registry + prompt assembly). */
 export const inject = ['tools', 'systemPrompt']
