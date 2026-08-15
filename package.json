@@ -23,9 +23,27 @@
     "lib/**/*.js",
     "lib/**/*.js.map",
     "src",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "LICENSE"
   ],
   "license": "Apache-2.0",
+  "author": "cloader",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloader/dsh-taskboard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cloader/dsh-taskboard/issues"
+  },
+  "homepage": "https://github.com/cloader/dsh-taskboard#readme",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "taskboard",
+    "kanban",
+    "agent"
+  ],
   "scripts": {
     "build": "npm run build:host && npm run build:client",
     "build:host": "tsdown -c tsdown.host.config.ts",
