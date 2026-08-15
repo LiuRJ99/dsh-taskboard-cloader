@@ -84,6 +84,16 @@ export function TaskDetail({ task, controller }: { task: TaskRecord; controller:
         </div>
         <div className="dsh-atb-detail-topbtns">
           <button type="button" className="dsh-atb-detail-edit" onClick={() => controller.openEditor(task.id)}>✎ 编辑</button>
+          {canRun && (
+            <button
+              type="button"
+              className="dsh-atb-detail-run"
+              title={task.model !== undefined ? `新会话执行（${task.model.model}）` : '新会话执行（默认模型）'}
+              onClick={() => void controller.run(task.id)}
+            >
+              ▶ 立即执行
+            </button>
+          )}
           <button type="button" className="dsh-atb-detail-close" aria-label="关闭" onClick={() => controller.select(undefined)}>✕</button>
         </div>
       </div>
@@ -103,11 +113,6 @@ export function TaskDetail({ task, controller }: { task: TaskRecord; controller:
       )}
 
       <div className="dsh-atb-detail-actions">
-        {canRun && (
-          <button type="button" className="dsh-atb-runbtn" onClick={() => void controller.run(task.id)}>
-            ▶ 执行 · 新会话{task.model !== undefined ? `（${task.model.model}）` : '（默认模型）'}
-          </button>
-        )}
         <div className="dsh-atb-movebtns">
           {moveTargets(task).map(to => to === 'done'
             ? (confirmDone
@@ -118,10 +123,10 @@ export function TaskDetail({ task, controller }: { task: TaskRecord; controller:
                       <button type="button" className="dsh-atb-btn" onClick={() => setConfirmDone(false)}>取消</button>
                     </span>
                   )
-                : <button key={to} type="button" className="dsh-atb-movebtn" data-to={to} onClick={() => setConfirmDone(true)}>✓ {MOVE_LABEL[to]}</button>)
+                : <button key={to} type="button" className="dsh-atb-movebtn" data-to={to} onClick={() => setConfirmDone(true)}>移至→{MOVE_LABEL[to]}</button>)
             : (
                 <button key={to} type="button" className="dsh-atb-movebtn" data-to={to} onClick={() => void controller.move(task.id, task.version, to)}>
-                  {MOVE_LABEL[to]}
+                  移至→{MOVE_LABEL[to]}
                 </button>
               ))}
           <button type="button" className="dsh-atb-movebtn" data-to="blocked" onClick={() => void controller.toggleBlocked(task)}>

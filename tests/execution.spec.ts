@@ -129,10 +129,10 @@ describe('ExecutionService', () => {
     const message = agents.followups[0] as { content: Array<{ type: string; text: string }>; source: { kind: string } }
     expect(message.content[0]!.type).toBe('text')
     expect(message.content[0]!.text).toContain('DO THE THING')
-    expect(message.content[0]!.text).toContain('任务看板执行')
+    expect(message.content[0]!.text).toContain('【任务】Run me')
     expect(message.content[0]!.text).toContain('任务 ID: t-run')
     expect(message.content[0]!.text).toContain('taskboard_move')
-    expect(message.source.kind).toBe('plugin')
+    expect(message.source.kind).toBe('user')
 
     // Quiescence settles the execution as succeeded.
     agents.idle()

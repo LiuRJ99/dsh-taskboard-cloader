@@ -54,6 +54,8 @@ export interface ExecutionDeps {
   mintSessionId?: () => string
   /** Mint message ids (injectable for tests). */
   mintMessageId?: () => string
+  /** Best-effort session rename (pins the session list title to the task title). */
+  renameSession?: (sessionId: string, title: string) => void
 }
 
 /** Outcome of a run request (immediate; the run settles asynchronously). */
@@ -182,16 +184,25 @@ export class ExecutionService {
     // 3. Attach the session to the workspace (GUI project session list).
     await this.deps.workspaces.attach(task.workspaceId, sessionId).catch(() => { /* cosmetic */ })
 
+    // 3b. Best-effort rename: pin the session title to the task title so the
+    //     session list shows the task name (a user-sourced title also stops
+    //     automatic first-prompt retitling).
+    try {
+      this.deps.renameSession?.(sessionId, task.title)
+    } catch { /* cosmetic */ }
+
     // 4. Record the session id (execution is really started now).
     await this.patchExecution(executionId, { sessionId })
 
     // 5. Submit the effective prompt as an ordinary user message and settle
     //    on quiescence (turn/end errors were already folded by the listener).
+    //    Source `user` (not `plugin`) so the opening message renders as a
+    //    normal user bubble in the conversation, exactly like a typed prompt.
     const message = {
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
       role: 'user' as const,
       content: [{ type: 'text' as const, text: this.executionPrompt(task) }],
-      source: { kind: 'plugin' as const, plugin: 'dsh-taskboard' },
+      source: { kind: 'user' as const },
     }
     handle.agent.followup(message)
 
@@ -221,12 +232,11 @@ export class ExecutionService {
 
   /** The prompt text one execution submits (task context + instructions). */
   private executionPrompt(task: TaskRecord): string {
-    const head = `【任务看板执行】${task.title}（任务 ID: ${task.id}）`
     const state = '本任务由执行服务启动本会话并已置为 in_progress（你无需再认领，也无需移到 done）。'
     const tail = `完成后请：1) 用 taskboard_get 读取任务 ${task.id} 拿最新 version；`
       + `2) 用 taskboard_comment_add 留评论（做了什么改动、如何验证、剩余风险）；`
       + `3) 用 taskboard_move 把任务 ${task.id} 移到 in_review（带 ifVersion）。`
-    return `${head}\n\n${state}\n\n${effectivePrompt(task)}\n\n${tail}`
+    return `【任务】${task.title}（任务 ID: ${task.id}）\n\n${state}\n\n${effectivePrompt(task)}\n\n${tail}`
   }
 
   /** Move a task back out of in_progress after a failed start. */

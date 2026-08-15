@@ -94,6 +94,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const cronBad = mode === 'scheduled' && (cronMatch === null || nextRun === null)
   const valid = title.trim().length > 0 && workspaceId !== '' && !cronBad
 
+  // A task already in progress cannot be run again (host rejects it).
+  const runBlocked = editing && task.status === 'in_progress'
+
   const submit = (): void => {
     if (!valid) return
     const picked = model !== '' ? (JSON.parse(model) as { provider: string; model: string }) : undefined
@@ -118,6 +121,39 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         model: picked,
       })
+    }
+  }
+
+  /** Save the form, then immediately trigger a manual run of the task. */
+  const submitAndRun = (): void => {
+    if (!valid || runBlocked) return
+    const picked = model !== '' ? (JSON.parse(model) as { provider: string; model: string }) : undefined
+    if (editing) {
+      void (async () => {
+        const saved = await controller.update(task.id, task.version, {
+          title,
+          description,
+          prompt,
+          urgency,
+          workspaceId,
+          execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
+          model: picked ?? null,
+        })
+        if (saved) await controller.run(task.id)
+      })()
+    } else {
+      void (async () => {
+        const id = await controller.create({
+          title,
+          workspaceId,
+          urgency,
+          description: description.length > 0 ? description : undefined,
+          prompt: prompt.length > 0 ? prompt : undefined,
+          execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
+          model: picked,
+        })
+        if (id !== undefined) await controller.run(id)
+      })()
     }
   }
 
@@ -233,6 +269,15 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           <span className="dsh-atb-modal-hint" data-tone={valid ? undefined : 'bad'}>{hint}</span>
           <span className="dsh-atb-modal-footbtns">
             <button type="button" className="dsh-atb-btn" onClick={() => controller.closeForm()}>取消</button>
+            <button
+              type="button"
+              className="dsh-atb-btn"
+              disabled={!valid || runBlocked}
+              title={runBlocked ? '任务正在执行中，不能重复发起' : '保存后立即发起执行（新会话）'}
+              onClick={submitAndRun}
+            >
+              ⚡ 立即执行
+            </button>
             <button type="button" className="dsh-atb-btn" data-primary="true" disabled={!valid} onClick={submit}>
               {editing ? '保存修改' : '创建任务'}
             </button>
@@ -247,6 +292,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
 interface TaskRecordLike {
   id: string
   version: number
+  status?: string
   title: string
   description: string
   prompt: string

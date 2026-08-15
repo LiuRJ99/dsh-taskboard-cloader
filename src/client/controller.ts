@@ -166,25 +166,29 @@ export class BoardController {
   toggleSecondary(): void { this.setState({ secondaryOpen: !this.state.secondaryOpen }) }
 
   // ---------------------------------------------------------------- writes
-  /** Create a task (composer submit). */
-  async create(body: Parameters<TaskboardClient['create']>[0]): Promise<void> {
+  /** Create a task (composer submit); returns the new task id, undefined on failure. */
+  async create(body: Parameters<TaskboardClient['create']>[0]): Promise<string | undefined> {
     try {
-      await this.client.create(body)
+      const summary = await this.client.create(body)
       this.setState({ composerOpen: false, error: undefined })
       await this.refresh()
+      return summary.id
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) })
+      return undefined
     }
   }
 
   /** Edit task fields (form modal submit; the GUI is the owner surface). */
-  async update(id: string, ifVersion: number, body: Omit<UpdateTaskBody, 'ifVersion'>): Promise<void> {
+  async update(id: string, ifVersion: number, body: Omit<UpdateTaskBody, 'ifVersion'>): Promise<boolean> {
     try {
       await this.client.update(id, { ifVersion, ...body })
       this.setState({ composerOpen: false, editingId: undefined, error: undefined })
       await this.refresh()
+      return true
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) })
+      return false
     }
   }
 

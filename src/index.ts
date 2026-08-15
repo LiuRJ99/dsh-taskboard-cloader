@@ -84,6 +84,16 @@ export function apply(ctx: Context): void {
         },
         events,
         now,
+        renameSession: (sessionId, title) => {
+          // Best-effort: pin the execution session's title to the task title
+          // through the log-backed session-title service (user-sourced rename).
+          try {
+            const sessions = agentCtx.get('sessions') as { get(id: string): unknown } | undefined
+            const sessionTitle = agentCtx.get('sessionTitle') as { rename(session: unknown, title: string): unknown } | undefined
+            const session = sessions?.get(sessionId)
+            if (session !== undefined && sessionTitle !== undefined) sessionTitle.rename(session, title)
+          } catch { /* cosmetic */ }
+        },
         defaultModel: () => {
           try {
             const selection = agentCtx.get('agentDefaultModel') as { currentSelection?: () => { provider: string; model: string } | undefined } | undefined

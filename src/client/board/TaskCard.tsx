@@ -20,9 +20,10 @@ export const DRAG_TYPE = 'application/x-dsh-atb-task'
  * The card view.
  * @param task - the task record.
  * @param controller - the controller.
- * @param draggable - enable dragging (backlog/todo columns only).
+ * @param draggable - enable dragging.
+ * @param onAlert - show an alert message (replaces native alert).
  */
-export function TaskCard({ task, controller, draggable = false }: { task: TaskRecord; controller: BoardController; draggable?: boolean }) {
+export function TaskCard({ task, controller, draggable = false, onAlert }: { task: TaskRecord; controller: BoardController; draggable?: boolean; onAlert?: (msg: string) => void }) {
   const last = task.executions.length > 0 ? task.executions[task.executions.length - 1] : undefined
   return (
     <button
@@ -31,6 +32,15 @@ export function TaskCard({ task, controller, draggable = false }: { task: TaskRe
       data-urgency={task.urgency}
       draggable={draggable}
       onDragStart={(e) => {
+        // Block drag if a session is still executing this task
+        const running = task.executions.find(ex => ex.outcome === 'running')
+        if (running !== undefined) {
+          e.preventDefault()
+          const msg = `该任务正在由【${task.title}】会话执行，不能拖动`
+          if (onAlert !== undefined) onAlert(msg)
+          else alert(msg)
+          return
+        }
         e.dataTransfer.setData(DRAG_TYPE, task.id)
         e.dataTransfer.effectAllowed = 'move'
         e.currentTarget.dataset.dragging = 'true'

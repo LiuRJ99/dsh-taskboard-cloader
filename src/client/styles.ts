@@ -172,12 +172,12 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-desc { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.55; }
 
 .dsh-atb-detail-actions { display: flex; flex-direction: column; gap: 8px; }
-.dsh-atb-runbtn {
-  font: inherit; font-size: 13px; font-weight: 600; padding: 8px 14px; border-radius: 9px; cursor: pointer;
-  border: 1px solid transparent; background: var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary, #1f2328)); color: var(--dsw-alias-label-primary-foreground, #fff); text-align: center;
+.dsh-atb-detail-run {
+  font: inherit; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 7px; cursor: pointer;
+  border: 1px solid transparent; background: var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary, #1f2328)); color: var(--dsw-alias-label-primary-foreground, #fff);
   transition: filter .12s ease;
 }
-.dsh-atb-runbtn:hover { filter: brightness(1.1); }
+.dsh-atb-detail-run:hover { filter: brightness(1.1); }
 .dsh-atb-movebtns { display: flex; gap: 6px; flex-wrap: wrap; }
 .dsh-atb-movebtn {
   font: inherit; font-size: 12px; padding: 4px 11px; border-radius: 999px; cursor: pointer;
@@ -376,6 +376,29 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-secondary { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .dsh-atb-link { color: var(--dsw-alias-state-business-primary, #3e63dd); cursor: pointer; text-decoration: none; }
 .dsh-atb-link:hover { text-decoration: underline; }
+
+/* ---------- alert modal ---------- */
+.dsh-atb-alert-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  background: var(--dsw-alias-bg-mask-drop, rgba(28,30,36,.4)); backdrop-filter: var(--dsw-mask-blur, blur(2px));
+  display: flex; align-items: center; justify-content: center;
+  animation: dsh-atb-fade .12s ease;
+}
+.dsh-atb-alert {
+  min-width: 280px; max-width: 380px; padding: 20px 24px; border-radius: 14px;
+  background: var(--dsw-alias-bg-overlay, #fff); color: var(--dsw-alias-label-primary, inherit);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25));
+  box-shadow: var(--dsw-shadow-lv3, 0 12px 32px rgba(0,0,0,.18));
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  animation: dsh-atb-pop .14s ease;
+}
+.dsh-atb-alert-icon { font-size: 28px; line-height: 1; }
+.dsh-atb-alert-msg {
+  font-size: 13.5px; line-height: 1.55; text-align: center;
+  word-break: break-word; white-space: pre-wrap;
+  color: var(--dsw-alias-label-primary, inherit);
+}
+.dsh-atb-alert .dsh-atb-btn { padding: 6px 28px; font-size: 13px; }
 `
 
 let injected = false

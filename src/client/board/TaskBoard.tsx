@@ -7,10 +7,11 @@
 import { useSyncExternalStore } from 'react'
 import type { BoardController, ControllerState } from '../controller.ts'
 import type { TaskRecord, TaskStatus, Urgency } from '../../shared/protocol.ts'
-import { MAIN_STATUSES } from '../../shared/protocol.ts'
+import { MAIN_STATUSES, canTransition } from '../../shared/protocol.ts'
 import { DRAG_TYPE, TaskCard } from './TaskCard.tsx'
 import { TaskDetail } from './TaskDetail.tsx'
 import { TaskFormModal } from './TaskFormModal.tsx'
+import { useAlert } from './AlertModal.tsx'
 
 /** Column labels. */
 const COLUMN_LABELS: Readonly<Record<TaskStatus, string>> = {
@@ -23,8 +24,6 @@ const COLUMN_LABELS: Readonly<Record<TaskStatus, string>> = {
   archived: '已归档',
 }
 
-/** The two columns between which cards may be dragged both ways. */
-const DRAGGABLE_STATUSES: ReadonlySet<TaskStatus> = new Set(['backlog', 'todo'])
 
 /** Urgency chip labels. */
 const URGENCY_LABELS: Readonly<Record<Urgency, string>> = {
@@ -59,12 +58,16 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
   )
   const live = filterTasks(state, state.ledger.tasks.filter(t => t.trashedAt === undefined))
   const selected = state.selectedId === undefined ? undefined : state.ledger.tasks.find(t => t.id === state.selectedId)
+  const { alert: showAlert, el: alertEl } = useAlert()
 
   return (
     <div className="dsh-atb-board">
       <div className="dsh-atb-toolbar">
         <h2 className="dsh-atb-title">Agent 任务看板</h2>
         <span className="dsh-atb-count">{live.length} 任务 · rev {state.ledger.revision}</span>
+        <button type="button" className="dsh-atb-btn" data-primary="true" onClick={() => controller.setComposer(true)}>
+          + 新建任务
+        </button>
         <div className="dsh-atb-spacer" />
         <select
           className="dsh-atb-select"
@@ -90,9 +93,6 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
         <button type="button" className="dsh-atb-btn" onClick={() => controller.toggleSecondary()}>
           {state.secondaryOpen ? '返回看板' : '其它任务'}
         </button>
-        <button type="button" className="dsh-atb-btn" data-primary="true" onClick={() => controller.setComposer(true)}>
-          + 新建任务
-        </button>
       </div>
 
       {state.error !== undefined && <div className="dsh-atb-error">{state.error}</div>}
@@ -103,34 +103,31 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
           <div className="dsh-atb-columns">
             {MAIN_STATUSES.map(status => {
               const columnTasks = live.filter(t => t.status === status)
-              const dropTarget = DRAGGABLE_STATUSES.has(status)
               return (
                 <div
                   className="dsh-atb-column"
                   key={status}
-                  onDragOver={dropTarget
-                    ? (e) => {
-                        if (e.dataTransfer.types.includes(DRAG_TYPE)) {
-                          e.preventDefault()
-                          e.dataTransfer.dropEffect = 'move'
-                          e.currentTarget.dataset.dragover = 'true'
-                        }
-                      }
-                    : undefined}
-                  onDragLeave={dropTarget
-                    ? (e) => { delete e.currentTarget.dataset.dragover }
-                    : undefined}
-                  onDrop={dropTarget
-                    ? (e) => {
-                        e.preventDefault()
-                        delete e.currentTarget.dataset.dragover
-                        const id = e.dataTransfer.getData(DRAG_TYPE)
-                        if (id.length === 0) return
-                        const task = state.ledger.tasks.find(t => t.id === id)
-                        if (task === undefined || task.status === status) return
-                        void controller.move(id, task.version, status)
-                      }
-                    : undefined}
+                  onDragOver={(e) => {
+                    if (e.dataTransfer.types.includes(DRAG_TYPE)) {
+                      e.preventDefault()
+                      e.dataTransfer.dropEffect = 'move'
+                      e.currentTarget.dataset.dragover = 'true'
+                    }
+                  }}
+                  onDragLeave={(e) => { delete e.currentTarget.dataset.dragover }}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    delete e.currentTarget.dataset.dragover
+                    const id = e.dataTransfer.getData(DRAG_TYPE)
+                    if (id.length === 0) return
+                    const task = state.ledger.tasks.find(t => t.id === id)
+                    if (task === undefined || task.status === status) return
+                    if (!canTransition(task.status, status)) {
+                      showAlert(`无法从「${COLUMN_LABELS[task.status]}」拖至「${COLUMN_LABELS[status]}」`)
+                      return
+                    }
+                    void controller.move(id, task.version, status)
+                  }}
                 >
                   <div className="dsh-atb-colhead">
                     {COLUMN_LABELS[status]}
@@ -142,7 +139,8 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
                         key={task.id}
                         task={task}
                         controller={controller}
-                        draggable={dropTarget}
+                        draggable
+                        onAlert={showAlert}
                       />
                     ))}
                     {columnTasks.length === 0 && <div className="dsh-atb-empty">无任务</div>}
@@ -165,6 +163,8 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
           task={state.editingId === undefined ? undefined : state.ledger.tasks.find(t => t.id === state.editingId)}
         />
       )}
+
+      {alertEl}
     </div>
   )
 }
