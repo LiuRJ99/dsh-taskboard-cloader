@@ -1,0 +1,11 @@
+# build output
+lib/
+.tsc-check/
+
+# dependencies
+node_modules/
+
+# logs & misc
+*.log
+*.tmp
+.vitest-out*

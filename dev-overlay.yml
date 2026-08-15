@@ -1,0 +1,5 @@
+# Dev overlay: applied AFTER the home (~/.dsh) patch layer, so this disable
+# lands on the ui-skin-trading entry the home layer inserts (the package is
+# not installed in this dev profile).
+- id: ui-skin-trading
+  disabled: true
