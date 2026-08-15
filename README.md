@@ -98,13 +98,12 @@ Agent 工作流协议（随插件注入 system prompt）：开工先查板 → �
 
 ## 安装
 
-**npm 安装（推荐）** — 已发布 [npmjs: dsh-taskboard](https://www.npmjs.com/package/dsh-taskboard)，预构建、免构建脚本授权：
-
+**npm 安装（推荐）** — 已发布 [npmjs: dsh-taskboard](https://www.npmjs.com/package/dsh-taskboard)
 ```bash
 dsh plugin --profile <name> add dsh-taskboard
 ```
 
-**GitHub 源安装**（收录 [awesome-dsh-plugin 精选列表](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)后，dshmarket 市场一键安装走的也是这条路）：
+**GitHub 源安装**：
 
 ```bash
 dsh plugin --profile <name> add github:cloader/dsh-taskboard
@@ -133,7 +132,6 @@ dsh plugin --profile <name> add github:cloader/dsh-taskboard
 
 然后 `dsh plugin --profile <name> add link:D:/path/to/dsh-taskboard`。
 
-> ⚠️ 官方 `@deepseek-ai/dsh-*` 包只写进 `bundles` 列表，**不要** `plugin add` 进 profile dependencies（会引发 SDK 双实例遮蔽，详见项目根 README 的踩坑记录）。
 
 host 侧改动需重启 `dsh web`；client 侧改动 rebuild 后刷新页面。
 
