@@ -59,7 +59,7 @@ function createEntry(controller: BoardController): HTMLButtonElement {
   entry.dataset.dshAtbEntry = ''
   entry.className = 'dsh-atb-entry'
   entry.setAttribute('aria-label', 'Agent 任务看板')
-  entry.innerHTML = `<span class="dsh-atb-entry-icon">${ICON}</span><span class="dsh-atb-entry-label">Agent 看板</span>`
+  entry.innerHTML = `<span class="dsh-atb-entry-icon">${ICON}</span><span class="dsh-atb-entry-label">任务看板</span>`
   entry.addEventListener('click', () => { controller.toggleBoard() })
   return entry
 }
