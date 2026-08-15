@@ -10,10 +10,10 @@ import type { TaskLedger, TaskRecord, TaskSummary } from './protocol.ts'
 export type { TaskRecord }
 
 /** Route prefix on the shared DSH webserver (same origin as the GUI). */
-export const ROUTE_PREFIX = '/dsh-taskbord'
+export const ROUTE_PREFIX = '/dsh-taskboard'
 
 /** SSE stream path (exact route; longest-prefix wins keep it disjoint). */
-export const SSE_PATH = '/dsh-taskbord/events'
+export const SSE_PATH = '/dsh-taskboard/events'
 
 /** Stable error codes (mirror the tool-level codes plus HTTP mapping). */
 export type ApiErrorCode =

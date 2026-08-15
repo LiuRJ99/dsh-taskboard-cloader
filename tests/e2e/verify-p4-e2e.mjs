@@ -7,19 +7,19 @@ for (let i = 0; i < 30; i++) {
 }
 const post = async (path, body) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
 
-const ws = (await (await fetch(`${base}/dsh-taskbord/workspaces`)).json()).value
+const ws = (await (await fetch(`${base}/dsh-taskboard/workspaces`)).json()).value
 const target = ws.find(w => (w.title ?? '').includes('deepseekharness')) ?? ws[0]
 
 // Clean historical verification tasks (trash + purge).
-const stale = (await (await fetch(`${base}/dsh-taskbord/state`)).json()).value.tasks
+const stale = (await (await fetch(`${base}/dsh-taskboard/state`)).json()).value.tasks
   .filter(t => /P3 执行链路验证|P4 双向协作验证|prepare 排查|Dev-server verification/.test(t.title))
 for (const t of stale) {
-  if (t.trashedAt === undefined) await post(`/dsh-taskbord/tasks/${t.id}/delete`, {})
-  await post(`/dsh-taskbord/tasks/${t.id}/delete`, { purge: true })
+  if (t.trashedAt === undefined) await post(`/dsh-taskboard/tasks/${t.id}/delete`, {})
+  await post(`/dsh-taskboard/tasks/${t.id}/delete`, { purge: true })
 }
 console.log('cleaned stale tasks:', stale.length)
 
-const created = await post('/dsh-taskbord/tasks', {
+const created = await post('/dsh-taskboard/tasks', {
   title: 'P4 双向协作验证',
   workspaceId: target.id,
   urgency: 'urgent',
@@ -36,14 +36,14 @@ const created = await post('/dsh-taskbord/tasks', {
 const id = created.value.id
 console.log('task:', id, '-> run')
 
-const run = await post(`/dsh-taskbord/tasks/${id}/run`, {})
+const run = await post(`/dsh-taskboard/tasks/${id}/run`, {})
 if (!run.value?.ok) { console.log('run failed', run); process.exit(1) }
 console.log('execution session:', run.value.sessionId)
 
 let task
 for (let i = 0; i < 60; i++) {
   await new Promise(r => setTimeout(r, 3000))
-  const state = (await (await fetch(`${base}/dsh-taskbord/state`)).json()).value
+  const state = (await (await fetch(`${base}/dsh-taskboard/state`)).json()).value
   task = state.tasks.find(t => t.id === id)
   const exec = task.executions[0]
   if (exec.outcome !== 'running') break

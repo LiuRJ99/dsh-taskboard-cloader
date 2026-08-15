@@ -1,5 +1,5 @@
 /**
- * /dsh-taskbord routes on the shared DSH webserver: a JSON API for the
+ * /dsh-taskboard routes on the shared DSH webserver: a JSON API for the
  * GUI's human operations (create/update/move/comment/delete — actor `user`,
  * the done move IS allowed here) plus an SSE stream mirroring every
  * committed ledger mutation.

@@ -34,4 +34,4 @@ export const TASKBOARD_PROTOCOL = [
 export const PROTOCOL_SECTION_ORDER = 180
 
 /** Registered section name. */
-export const PROTOCOL_SECTION_NAME = 'plugin:dsh-taskbord'
+export const PROTOCOL_SECTION_NAME = 'plugin:dsh-taskboard'

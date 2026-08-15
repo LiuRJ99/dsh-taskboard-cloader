@@ -30,7 +30,7 @@ DeepSeek Harness（DSH）的 **Agent 任务看板插件**：人把工作拆成�
 - **一键真实执行**：手动「执行」在任务项目内新建全新会话（干净上下文）提交任务 prompt，回合结算记入执行记录
 - **乐观并发**：所有写操作带 `ifVersion`，冲突返回 `version_conflict`
 - **完整归因**：每次变更记录 actor（user / agent+sessionId），评论区分作者
-- **host 权威台账**：`~/.dsh/dsh-taskbord.json` 原子持久化，全局 revision 单调递增，SSE 推送 + 断线全量对账
+- **host 权威台账**：`~/.dsh/dsh-taskboard.json` 原子持久化，全局 revision 单调递增，SSE 推送 + 断线全量对账
 
 **协议硬闸（代码级强制，不靠 prompt 自觉）**
 

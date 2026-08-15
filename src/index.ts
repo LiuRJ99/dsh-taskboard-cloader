@@ -28,7 +28,7 @@ import { TaskStore } from './host/store.ts'
 import { registerTaskboardTools, workspaceFace } from './host/tools.ts'
 
 /** Ledger file name under the DSH home. */
-export const LEDGER_FILE = 'dsh-taskbord.json'
+export const LEDGER_FILE = 'dsh-taskboard.json'
 
 /** Cordis plugin name. */
 export const name = 'dsh-taskboard'
@@ -50,7 +50,7 @@ export function apply(ctx: Context): void {
     order: PROTOCOL_SECTION_ORDER,
     text: TASKBOARD_PROTOCOL,
   })
-  ctx.effect(() => disposeSection, 'dsh-taskbord: protocol section')
+  ctx.effect(() => disposeSection, 'dsh-taskboard: protocol section')
 
   // Tools, routes, execution, and the scheduler all come up with the
   // workspace registry (claim boundary + project execution need it).
@@ -93,7 +93,7 @@ export function apply(ctx: Context): void {
         },
       })
 
-      // /dsh-taskbord routes (the run action reaches the execution service).
+      // /dsh-taskboard routes (the run action reaches the execution service).
       let disposeRoutes: (() => void) | undefined
       agentCtx.inject(['webServer'], (webCtx: Context) => {
         disposeRoutes = registerTaskboardRoutes(webCtx, {

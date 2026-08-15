@@ -9,10 +9,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 /** Stub a route payload. */
 function routeResponse(path: string): unknown {
-  if (path === '/dsh-taskbord/state') {
+  if (path === '/dsh-taskboard/state') {
     return { ok: true, value: { schemaVersion: 1, revision: 3, tasks: [] } }
   }
-  if (path === '/dsh-taskbord/workspaces') {
+  if (path === '/dsh-taskboard/workspaces') {
     return { ok: true, value: [{ id: 'ws-a', path: '/proj/a', title: 'A', sessionCount: 0 }] }
   }
   throw new Error(`unexpected fetch ${path}`)
@@ -65,7 +65,7 @@ describe('client half', () => {
     // Nothing was torn down by the effect itself (the bug this guards: an
     // immediate teardown would have closed the SSE stream already).
     expect(EventSourceMock.instances.length).toBe(1)
-    expect(EventSourceMock.instances[0]!.url).toBe('/dsh-taskbord/events')
+    expect(EventSourceMock.instances[0]!.url).toBe('/dsh-taskboard/events')
     expect(disposers.every(d => typeof d === 'function')).toBe(true)
 
     // Explicit dispose through the captured disposers.
