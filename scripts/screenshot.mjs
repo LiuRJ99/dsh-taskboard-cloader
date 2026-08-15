@@ -1,7 +1,7 @@
 import puppeteer from 'puppeteer-core'
 import { mkdirSync } from 'node:fs'
 
-const OUT = 'docs'
+const OUT = 'img'
 mkdirSync(OUT, { recursive: true })
 
 const browser = await puppeteer.launch({

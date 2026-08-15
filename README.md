@@ -7,12 +7,9 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 
 ## 界面
 
-<p align="center"><img src="https://raw.githubusercontent.com/cloader/dsh-taskboard/main/docs/board.png" alt="任务看板" width="860"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/cloader/dsh-taskboard/main/img/board.png" alt="任务看板" width="880"></p>
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/cloader/dsh-taskboard/main/docs/detail.png" alt="任务详情" width="420">&nbsp;&nbsp;
-  <img src="https://raw.githubusercontent.com/cloader/dsh-taskboard/main/docs/modal.png" alt="新建任务" width="420">
-</p>
+<p align="center"><img src="https://raw.githubusercontent.com/cloader/dsh-taskboard/main/img/modal.png" alt="新建任务" width="440"></p>
 
 ## 核心功能
 
@@ -46,7 +43,7 @@ dsh plugin --profile <name> add github:cloader/dsh-taskboard   # GitHub 源
 ```bash
 npm install && npm run build    # host ESM + client CJS 双构建
 npm test                        # vitest 41 项
-node scripts/screenshot.mjs     # 重新生成 docs/ 截图（需本机 Edge）
+node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 ```
 
 License: Apache-2.0
