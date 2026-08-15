@@ -12,7 +12,7 @@ for (let i = 0; i < 30; i++) {
   await new Promise(r => setTimeout(r, 1000))
 }
 
-for (const path of ['/plugins/dsh-taskboard/client.js', '/plugins/taskboard/client.js']) {
+for (const path of ['/plugins/dsh-taskbord/client.js']) {
   try {
     const res = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(3000) })
     const text = res.ok ? await res.text() : ''

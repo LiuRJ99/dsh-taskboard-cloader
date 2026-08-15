@@ -12,12 +12,12 @@ const post = async (path, body) => {
 }
 
 // 1. pick the deepseekharness workspace (this repo)
-const ws = (await (await fetch(`${base}/taskboard/workspaces`)).json()).value
+const ws = (await (await fetch(`${base}/dsh-taskbord/workspaces`)).json()).value
 const target = ws.find(w => (w.title ?? '').includes('deepseekharness')) ?? ws[0]
 console.log('project:', target.title)
 
 // 2. create a minimal task (default model — no pin, to test the plain path)
-const created = await post('/taskboard/tasks', {
+const created = await post('/dsh-taskbord/tasks', {
   title: 'P3 执行链路验证',
   workspaceId: target.id,
   urgency: 'normal',
@@ -28,7 +28,7 @@ const id = created.json.value.id
 console.log('task created:', id)
 
 // 3. trigger the run
-const run = await post(`/taskboard/tasks/${id}/run`, {})
+const run = await post(`/dsh-taskbord/tasks/${id}/run`, {})
 console.log('run ->', run.status, JSON.stringify(run.json.value ?? run.json.error))
 if (run.status !== 202) process.exit(1)
 const sessionId = run.json.value.sessionId
@@ -37,7 +37,7 @@ const sessionId = run.json.value.sessionId
 let settled = null
 for (let i = 0; i < 60; i++) {
   await new Promise(r => setTimeout(r, 2000))
-  const state = (await (await fetch(`${base}/taskboard/state`)).json()).value
+  const state = (await (await fetch(`${base}/dsh-taskbord/state`)).json()).value
   const task = state.tasks.find(t => t.id === id)
   const exec = task?.executions?.[0]
   if (exec && exec.outcome !== 'running') { settled = { task, exec }; break }

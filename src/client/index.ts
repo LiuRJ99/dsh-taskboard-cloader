@@ -80,7 +80,7 @@ export function apply(ctx: ClientContextFace): void {
     ctx.effect?.(() => () => {
       for (const d of disposers.splice(0)) d()
       controller.dispose()
-    }, 'taskboard: client mount')
+    }, 'dsh-taskbord: client mount')
   } catch (error) {
     console.error('[dsh-taskboard] client half failed to start:', error)
   }

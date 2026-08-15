@@ -1,4 +1,4 @@
-// Real-environment verification of the /taskboard routes on the dev server.
+// Real-environment verification of the /dsh-taskbord routes on the dev server.
 const base = 'http://127.0.0.1:3177'
 
 // wait for server
@@ -20,18 +20,18 @@ async function post(path, body) {
 }
 
 // 1. state baseline
-let res = await fetch(`${base}/taskboard/state`)
+let res = await fetch(`${base}/dsh-taskbord/state`)
 console.log('GET state:', res.status, JSON.stringify(await res.json()).slice(0, 100))
 
 // 2. workspaces (real DSH registry)
-res = await fetch(`${base}/taskboard/workspaces`)
+res = await fetch(`${base}/dsh-taskbord/workspaces`)
 const ws = await res.json()
 console.log('GET workspaces:', res.status, JSON.stringify(ws.value?.map(w => `${w.id}|${w.title}`)))
 
 // 3. create a real task in the first real workspace
 const first = ws.value?.[0]
 if (first) {
-  const created = await post('/taskboard/tasks', {
+  const created = await post('/dsh-taskbord/tasks', {
     title: 'Dev-server verification task',
     workspaceId: first.id,
     urgency: 'urgent',
@@ -42,7 +42,7 @@ if (first) {
 
   // 4. lifecycle: claim → review → done (user path)
   if (id) {
-    const mv = async (ifVersion, status) => post(`/taskboard/tasks/${id}/move`, { ifVersion, status })
+    const mv = async (ifVersion, status) => post(`/dsh-taskbord/tasks/${id}/move`, { ifVersion, status })
     console.log('move in_progress:', (await mv(1, 'in_progress')).status)
     console.log('move in_review:', (await mv(2, 'in_review')).status)
     console.log('move done (user):', (await mv(3, 'done')).status)
@@ -57,7 +57,7 @@ if (first) {
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 try {
-  const ledger = JSON.parse(readFileSync(`${homedir()}/.dsh/taskboard.json`, 'utf8'))
+  const ledger = JSON.parse(readFileSync(`${homedir()}/.dsh/dsh-taskbord.json`, 'utf8'))
   console.log('ledger on disk: revision', ledger.revision, 'tasks', ledger.tasks.map(t => `${t.title}[${t.status}]`))
 } catch (error) {
   console.log('ledger read failed:', error.message)

@@ -55,17 +55,17 @@ export interface TaskboardClient {
 /** Build the client over fetch + EventSource. */
 export function createClient(): TaskboardClient {
   return {
-    state: () => unwrap<StateResponse>(fetch('/taskboard/state')),
-    workspaces: () => unwrap<WorkspaceView[]>(fetch('/taskboard/workspaces')),
-    create: body => post('/taskboard/tasks', body),
-    get: id => unwrap<TaskRecord>(fetch(`/taskboard/tasks/${encodeURIComponent(id)}`)),
-    update: (id, body) => post(`/taskboard/tasks/${encodeURIComponent(id)}/update`, body),
-    move: (id, body) => post(`/taskboard/tasks/${encodeURIComponent(id)}/move`, body),
-    comment: (id, bodyText) => post(`/taskboard/tasks/${encodeURIComponent(id)}/comment`, { body: bodyText }),
-    remove: (id, body) => post(`/taskboard/tasks/${encodeURIComponent(id)}/delete`, body),
-    run: id => post(`/taskboard/tasks/${encodeURIComponent(id)}/run`, {}),
+    state: () => unwrap<StateResponse>(fetch('/dsh-taskbord/state')),
+    workspaces: () => unwrap<WorkspaceView[]>(fetch('/dsh-taskbord/workspaces')),
+    create: body => post('/dsh-taskbord/tasks', body),
+    get: id => unwrap<TaskRecord>(fetch(`/dsh-taskbord/tasks/${encodeURIComponent(id)}`)),
+    update: (id, body) => post(`/dsh-taskbord/tasks/${encodeURIComponent(id)}/update`, body),
+    move: (id, body) => post(`/dsh-taskbord/tasks/${encodeURIComponent(id)}/move`, body),
+    comment: (id, bodyText) => post(`/dsh-taskbord/tasks/${encodeURIComponent(id)}/comment`, { body: bodyText }),
+    remove: (id, body) => post(`/dsh-taskbord/tasks/${encodeURIComponent(id)}/delete`, body),
+    run: id => post(`/dsh-taskbord/tasks/${encodeURIComponent(id)}/run`, {}),
     stream(onChange, onGap) {
-      const es = new EventSource('/taskboard/events')
+      const es = new EventSource('/dsh-taskbord/events')
       let revision: number | undefined
       const hello = (event: MessageEvent): void => {
         const payload = JSON.parse(event.data) as { revision: number }
