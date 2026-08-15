@@ -148,7 +148,8 @@ src/
     api.ts controller.ts # fetch/SSE + useSyncExternalStore 状态源
     board/*.tsx          # 看板视图（五列/筛选/卡片/详情/新建·编辑弹窗 TaskFormModal）
     sidebar-entry.ts board-mount.tsx styles.ts
-tests/                   # vitest：protocol/tools/execution/routes/client
+tests/                   # vitest：protocol/tools/execution/routes/client + smoke-host
+  e2e/                  # dev-server 手工验证脚本（P0–P4，见 tests/e2e/README.md）
 ```
 
 License: Apache-2.0
