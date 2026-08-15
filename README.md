@@ -109,7 +109,6 @@ dsh plugin --profile <name> add dsh-taskboard
 dsh plugin --profile <name> add github:cloader/dsh-taskboard
 ```
 
-> 两条路都是预构建（`lib/` 随仓库/包提交）：安装即用，无本地构建、无 `allowBuilds` 授权。
 
 本地 link 开发：profile 的 `package.json`：
 
