@@ -1,3 +1,6 @@
+[![npm version](https://img.shields.io/npm/v/dsh-taskboard.svg)](https://www.npmjs.com/package/dsh-taskboard)
+[![License](https://img.shields.io/npm/l/dsh-taskboard.svg)](https://github.com/cloader/dsh-taskboard/blob/main/LICENSE)
+
 # dsh-taskboard
 
 DeepSeek Harness（DSH）的 **Agent 任务看板插件**：人把工作拆成卡片挂上看板，agent 会话通过 `taskboard_*` 工具认领、推进、评论、移交，人最终验收。双向协作，不是单向 todo 列表。
@@ -95,19 +98,19 @@ Agent 工作流协议（随插件注入 system prompt）：开工先查板 → �
 
 ## 安装
 
-**GitHub 源安装**（收录 [awesome-dsh-plugin 精选列表](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)后，dshmarket 市场里的一键安装走的也是这条路）：
+**npm 安装（推荐）** — 已发布 [npmjs: dsh-taskboard](https://www.npmjs.com/package/dsh-taskboard)，预构建、免构建脚本授权：
+
+```bash
+dsh plugin --profile <name> add dsh-taskboard
+```
+
+**GitHub 源安装**（收录 [awesome-dsh-plugin 精选列表](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)后，dshmarket 市场一键安装走的也是这条路）：
 
 ```bash
 dsh plugin --profile <name> add github:cloader/dsh-taskboard
 ```
 
-> 构建产物 `lib/` 已随仓库提交：安装即用，无本地构建、无构建脚本授权（`allowBuilds`）。
-
-**npm 裸名安装**（需先将包发布到 npm；同样是预构建，免构建授权）：
-
-```bash
-dsh plugin --profile <name> add dsh-taskboard
-```
+> 两条路都是预构建（`lib/` 随仓库/包提交）：安装即用，无本地构建、无 `allowBuilds` 授权。
 
 本地 link 开发：profile 的 `package.json`：
 
