@@ -293,14 +293,12 @@ export class ExecutionService {
     // 1b. Worktree preparation (fail-soft): any failure degrades this run to
     //     the original directory with an isolationNote — the ledger and the
     //     execution pipeline itself never fail over git.
-    let cwd = workspace.path
     let isolationNote: string | undefined
     let prepared: PreparedWorktree | undefined
     if (isolation === 'worktree') {
       const outcome = await this.prepareIsolation(task, workspace.path, worktreePath, branch, options?.reuseWorktree === true)
       if (outcome.prepared !== undefined) {
         prepared = outcome.prepared
-        cwd = outcome.prepared.worktreePath
         // Persist the isolation facts of the run (branch is already on the
         // record from the gate mutation).
         await this.patchExecution(executionId, {
@@ -314,16 +312,21 @@ export class ExecutionService {
       }
     }
 
-    // 2. Create the fresh agent+session inside the task's project (or its
-    //    dedicated worktree), carrying the pinned model — or the deployment
-    //    default when unpinned (the persona template renders {{model}}, so
-    //    the session always needs one).
+    // 2. Create the fresh agent+session inside the task's project, carrying
+    //    the pinned model — or the deployment default when unpinned (the
+    //    persona template renders {{model}}, so the session always needs one).
+    //    The session cwd is ALWAYS the project root: DSH's session model
+    //    requires cwd === the workspace path EXACTLY (attachSession validates
+    //    it, the sidebar groups by it, and the file sandbox takes it as the
+    //    workspace-write boundary) — a subdirectory cwd (the worktree) breaks
+    //    all three. The worktree is instead handed to the agent explicitly in
+    //    the framing line below.
     let handle: Awaited<ReturnType<AgentsFace['create']>>
     try {
       const model = task.model ?? this.deps.defaultModel?.()
       handle = await this.deps.agents.create({
         sessionId,
-        meta: { cwd },
+        meta: { cwd: workspace.path },
         ...(model !== undefined ? { agentOptions: { provider: model.provider, model: model.model } } : {}),
       })
     } catch (error) {
@@ -585,9 +588,9 @@ export class ExecutionService {
       + `若无法完成：留评论说明原因，将任务移回待办 todo。`
     if (prepared !== undefined) {
       if (prepared.reused === true) {
-        text += `\n本任务启用了 Git Worktree 隔离，且本次为续跑：当前工作目录是独立分支 ${prepared.branch}，上一次执行的改动与提交都保留在原处——请先查看已有改动（git status / git log）再继续，避免重复劳动，并把新完成的工作提交到该分支。`
+        text += `\n本任务启用了 Git Worktree 隔离，且本次为续跑：任务工作目录是独立分支 ${prepared.branch} 的 worktree——\n${prepared.worktreePath}\n上一次执行的改动与提交都保留在原处——请先查看已有改动（git status / git log）再继续，避免重复劳动，并把新完成的工作提交到该分支。`
       } else {
-        text += `\n本任务启用了 Git Worktree 隔离：当前工作目录是独立分支 ${prepared.branch} 的全新检出（不含 node_modules/构建产物，构建或测试前可能需要先安装依赖）；请只在该目录内改动，并把完成的工作提交（git commit）到该分支——验收将基于该分支的提交记录合并。`
+        text += `\n本任务启用了 Git Worktree 隔离：任务工作目录是独立分支 ${prepared.branch} 的全新 worktree——\n${prepared.worktreePath}\n（全新检出，不含 node_modules/构建产物，构建或测试前可能需要先安装依赖）。\n⚠ 边界纪律：你的会话根目录是整个项目，但本任务的全部改动必须只发生在上述 worktree 目录内——命令用 workdir 指向它、文件读写用它的绝对路径；不要改动主工作区的任何其它文件；把完成的工作提交（git commit）到该分支，验收将基于该分支的提交记录合并。`
       }
     } else if (degradeNote !== undefined) {
       text += `\n⚠ 本次执行未能建立隔离，正在主项目目录中工作（原因：${degradeNote}）。该目录可能有他人未提交的改动：动手前先 git status 检查现状，改动尽量集中，结束时在评论中说明动了哪些文件；避免把未经验证的改动直接提交到主分支。`

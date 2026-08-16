@@ -469,17 +469,21 @@ describe('ExecutionService worktree isolation', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    // Prepared on the canonical path with the sanitized branch name (fresh mode by default).
+    // Session is created at the PROJECT ROOT (DSH: cwd === workspace path
+    // exactly — grouping, attach, and the file sandbox all depend on it);
+    // the worktree is delivered via the framing line instead.
     expect(git.prepareCalls).toEqual([{ root: '/proj/a', path: '/proj/a/.dsh-worktrees/t-run', branch: 'task/Fix-the-login-page+t-run', mode: 'fresh' }])
-    expect(agents.created[0]!.cwd).toBe('/proj/a/.dsh-worktrees/t-run')
+    expect(agents.created[0]!.cwd).toBe('/proj/a')
 
     // The branch name is pinned onto the task (renames never change it).
     expect(store.get('t-run')!.branch).toBe('task/Fix-the-login-page+t-run')
 
-    // The framing line steers the session onto its branch.
+    // The framing line steers the session into its worktree + branch.
     const inject = agents.injects[0] as { content: Array<{ text: string }> }
     expect(inject.content[0]!.text).toContain('Git Worktree 隔离')
     expect(inject.content[0]!.text).toContain('task/Fix-the-login-page+t-run')
+    expect(inject.content[0]!.text).toContain('/proj/a/.dsh-worktrees/t-run')
+    expect(inject.content[0]!.text).toContain('workdir')
 
     // Settlement collects the worktree evidence into the ledger.
     agents.idle(result.sessionId)
@@ -575,9 +579,12 @@ describe('ExecutionService worktree isolation', () => {
     expect(git.prepareCalls[0]!.mode).toBe('reuse')
     // The pinned branch was reused, not re-derived from the title.
     expect(git.prepareCalls[0]!.branch).toBe('task/Fix+t-run')
+    // The session still roots at the project; the worktree path is explicit.
+    expect(agents.created[0]!.cwd).toBe('/proj/a')
     const inject = agents.injects[0] as { content: Array<{ text: string }> }
     expect(inject.content[0]!.text).toContain('续跑')
     expect(inject.content[0]!.text).toContain('上一次执行的改动与提交都保留在原处')
+    expect(inject.content[0]!.text).toContain('/proj/a/.dsh-worktrees/t-run')
 
     // Baseline is the worktree's own HEAD (evidence = this run's new commits).
     const execution = store.get('t-run')!.executions[0]!
