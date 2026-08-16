@@ -52,20 +52,23 @@ async function storeWith(...tasks: TaskRecord[]): Promise<TaskStore> {
 // Shared mutable flag for the fail-path test.
 const fakeAgentsState = { failNext: false }
 
-/** Capturing agents fake: records create options, followup messages, disposals. */
+/** Capturing agents fake: records create options, injected + followup messages, disposals. */
 function fakeAgents(): AgentsFace & {
   created: Array<{ sessionId: string; cwd?: string; agentOptions?: { provider?: string; model?: string } }>
   followups: unknown[]
+  injects: unknown[]
   idle: (sessionId?: string) => void
   disposedSessions: string[]
 } {
   const created: Array<{ sessionId: string; cwd?: string; agentOptions?: { provider?: string; model?: string } }> = []
   const followups: unknown[] = []
+  const injects: unknown[] = []
   const disposedSessions: string[] = []
   const idles = new Map<string, () => void>()
   const svc = {
     created,
     followups,
+    injects,
     disposedSessions,
     idle: (sessionId?: string) => {
       if (sessionId !== undefined) idles.get(sessionId)?.()
@@ -81,13 +84,14 @@ function fakeAgents(): AgentsFace & {
         agent: {
           id: options.sessionId,
           followup: (message: unknown) => { followups.push(message) },
+          inject: (message: unknown) => { injects.push(message) },
           whenIdle: () => new Promise<void>(resolve => { idles.set(options.sessionId, resolve) }),
         },
         dispose: async () => { disposedSessions.push(options.sessionId) },
       }
     },
   } as never
-  return svc as AgentsFace & { created: typeof created; followups: typeof followups; idle: (sessionId?: string) => void; disposedSessions: string[] }
+  return svc as AgentsFace & { created: typeof created; followups: typeof followups; injects: typeof injects; idle: (sessionId?: string) => void; disposedSessions: string[] }
 }
 
 /** Event-bus fake with manual dispatch. */
@@ -130,15 +134,29 @@ describe('ExecutionService', () => {
     expect(t.executions[0]!.sessionId).toBe(result.sessionId)
     expect(t.executions[0]!.trigger).toBe('manual')
 
-    // The prompt went in as an ordinary user message.
+    // The opening pair went in as ONE turn: a plugin context line (inject,
+    // next-step) carrying the task framing + handoff protocol, then the card
+    // body as a normal user message (followup, next-turn).
+    expect(agents.injects).toHaveLength(1)
     expect(agents.followups).toHaveLength(1)
-    const message = agents.followups[0] as { content: Array<{ type: string; text: string }>; source: { kind: string } }
-    expect(message.content[0]!.type).toBe('text')
-    expect(message.content[0]!.text).toContain('DO THE THING')
-    expect(message.content[0]!.text).toContain('【任务】Run me')
-    expect(message.content[0]!.text).toContain('任务 ID: t-run')
-    expect(message.content[0]!.text).toContain('taskboard_move')
-    expect(message.source.kind).toBe('user')
+    const inject = agents.injects[0] as { content: Array<{ type: string; text: string }>; source: { kind: string; plugin?: string } }
+    const user = agents.followups[0] as { content: Array<{ type: string; text: string }>; source: { kind: string } }
+    expect(inject.content[0]!.type).toBe('text')
+    expect(inject.source.kind).toBe('plugin')
+    expect(inject.source.plugin).toBe('dsh-taskboard')
+    expect(inject.content[0]!.text).toContain('【任务看板】Run me')
+    expect(inject.content[0]!.text).toContain('ID: t-run')
+    expect(inject.content[0]!.text).toContain('taskboard_get')
+    expect(inject.content[0]!.text).toContain('taskboard_comment_add')
+    expect(inject.content[0]!.text).toContain('taskboard_move')
+    expect(inject.content[0]!.text).toContain('in_review')
+    expect(inject.content[0]!.text).toContain('移回待办 todo')
+    // The framing line carries NO card content; the user bubble carries NO protocol.
+    expect(inject.content[0]!.text).not.toContain('DO THE THING')
+    expect(user.content[0]!.type).toBe('text')
+    expect(user.source.kind).toBe('user')
+    expect(user.content[0]!.text).toContain('DO THE THING')
+    expect(user.content[0]!.text).not.toContain('taskboard_move')
 
     // Quiescence settles the execution as succeeded.
     agents.idle()

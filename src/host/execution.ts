@@ -34,6 +34,7 @@ export interface AgentsFace {
     agent: {
       id: string
       followup(message: unknown): void
+      inject(message: unknown): void
       whenIdle(): Promise<void>
     }
     dispose(): Promise<void>
@@ -251,17 +252,26 @@ export class ExecutionService {
     // 4. Record the session id (execution is really started now).
     await this.patchExecution(executionId, { sessionId })
 
-    // 5. Submit the effective prompt as an ordinary user message and settle
-    //    on quiescence (turn/end errors were already folded by the listener).
-    //    Source `user` (not `plugin`) so the opening message renders as a
-    //    normal user bubble in the conversation, exactly like a typed prompt.
-    const message = {
+    // 5. Submit the opening pair and settle on quiescence (turn/end errors
+    //    were already folded by the listener). Two messages, ONE turn:
+    //    - inject() queues the plugin framing line (next-step, no wake); it
+    //      renders as a plugin context row in the conversation.
+    //    - followup() queues the card body as a normal user message
+    //      (next-turn, wakes the driver). At claim time the loop drains ALL
+    //      next-step messages plus the one next-turn message into a single
+    //    turn — framing first, then the user bubble.
+    handle.agent.inject({
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
       role: 'user' as const,
-      content: [{ type: 'text' as const, text: this.executionPrompt(task) }],
+      content: [{ type: 'text' as const, text: this.pluginFraming(task) }],
+      source: { kind: 'plugin' as const, plugin: 'dsh-taskboard' },
+    })
+    handle.agent.followup({
+      id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: this.userBody(task) }],
       source: { kind: 'user' as const },
-    }
-    handle.agent.followup(message)
+    })
 
     // 6. Settlement watcher: mark succeeded, release the executing session's
     //    hold, and — when the session did NOT follow the handoff protocol —
@@ -386,18 +396,29 @@ export class ExecutionService {
   }
 
   /**
-   * The prompt text one execution submits (task context + instructions).
-   * The effective prompt supports two template variables, rendered from the
-   * task's own history at submit time (valuable for recurring patrols):
+   * The plugin framing line (rendered as a plugin context row): task head,
+   * already-claimed state, and the handoff protocol — everything the session
+   * must know about the board. The task id appears exactly once (here); the
+   * protocol steps below refer to it as 本任务.
+   */
+  private pluginFraming(task: TaskRecord): string {
+    return `【任务看板】${task.title}（ID: ${task.id}）\n`
+      + `本会话由任务看板执行服务启动，任务已置为进行中——无需认领；「已完成」仅限用户在界面操作（代码已限制，移了会被拒）。\n`
+      + `完成后按序交接：\n`
+      + `1. taskboard_get 读取本任务，取得最新 version\n`
+      + `2. taskboard_comment_add 留评论：做了什么改动 / 如何验证 / 剩余风险\n`
+      + `3. taskboard_move 将本任务移至待验收 in_review（带 ifVersion）\n`
+      + `若无法完成：留评论说明原因，将任务移回待办 todo。`
+  }
+
+  /**
+   * The card body as a normal user bubble: the effective prompt (explicit
+   * prompt, else title+description) with template variables resolved from
+   * the task's own history at submit time (valuable for recurring patrols):
    * `{{lastExecution}}` → the previous execution's trigger/outcome/error;
    * `{{lastComments}}` → the last three comments (who + body).
    */
-  private executionPrompt(task: TaskRecord): string {
-    const state = '本任务由执行服务启动本会话并已置为 in_progress（你无需再认领，也无需移到 done）。'
-    const tail = `完成后请：1) 用 taskboard_get 读取任务 ${task.id} 拿最新 version；`
-      + `2) 用 taskboard_comment_add 留评论（做了什么改动、如何验证、剩余风险）；`
-      + `3) 用 taskboard_move 把任务 ${task.id} 移到 in_review（带 ifVersion）。`
-    const base = effectivePrompt(task)
+  private userBody(task: TaskRecord): string {
     const lastExec = [...task.executions].reverse().find(e => e.outcome !== 'running')
     const lastExecText = lastExec === undefined
       ? '（无）'
@@ -405,10 +426,9 @@ export class ExecutionService {
     const lastCommentsText = task.comments.slice(-3)
       .map(c => `[${c.threadId !== undefined ? 'agent' : 'user'}] ${c.body}`)
       .join('\n') || '（无）'
-    const body = base
+    return effectivePrompt(task)
       .replace(/\{\{lastExecution\}\}/g, lastExecText)
       .replace(/\{\{lastComments\}\}/g, lastCommentsText)
-    return `【任务】${task.title}（任务 ID: ${task.id}）\n\n${state}\n\n${body}\n\n${tail}`
   }
 
   /** Move a task back out of in_progress (and release its hold) after a failed start. */
