@@ -10,9 +10,19 @@
  *
  * @module dsh-taskboard/host/execution
  */
-import { effectivePrompt, newExecutionId, type ExecutionRecord, type TaskRecord } from '../shared/protocol.ts'
+import {
+  effectivePrompt,
+  newCommentId,
+  newExecutionId,
+  normalizeBody,
+  type ExecutionRecord,
+  type TaskRecord,
+} from '../shared/protocol.ts'
 import { MessageId } from './sdk.ts'
 import type { TaskStore } from './store.ts'
+
+/** Default cap on concurrently running executions (env-overridable). */
+export const DEFAULT_MAX_CONCURRENT = 3
 
 /** Narrow agents face (the registry's create, structurally). */
 export interface AgentsFace {
@@ -56,11 +66,18 @@ export interface ExecutionDeps {
   mintMessageId?: () => string
   /** Best-effort session rename (pins the session list title to the task title). */
   renameSession?: (sessionId: string, title: string) => void
+  /** Max concurrently running executions across all tasks (default 3). */
+  maxConcurrent?: number
 }
 
 /** Outcome of a run request (immediate; the run settles asynchronously). */
 export type RunRequestResult =
   | { ok: true; executionId: string; sessionId: string }
+  | { ok: false; error: string }
+
+/** Outcome of a cancel request. */
+export type CancelRequestResult =
+  | { ok: true; executionId: string }
   | { ok: false; error: string }
 
 /** Whether a turn/end payload closed with an error reason. */
@@ -78,12 +95,19 @@ function isErrorTurnEnd(data: unknown): { message: string } | undefined {
   return { message }
 }
 
+/** One live execution tracked for settlement and cancellation. */
+interface RunEntry {
+  sessionId: string
+  settle: () => void
+  dispose: () => Promise<void>
+}
+
 /**
  * The execution service.
  */
 export class ExecutionService {
-  /** Execution ids currently settling. */
-  private readonly settling = new Map<string, () => void>()
+  /** Live executions by execution id (settles and cancels remove entries). */
+  private readonly runs = new Map<string, RunEntry>()
 
   /** @param deps - store + agents + workspaces + events + clock. */
   constructor(private readonly deps: ExecutionDeps) {
@@ -94,7 +118,7 @@ export class ExecutionService {
     })
   }
 
-  /** Record a turn failure against the running execution of that session. */
+  /** Record a turn failure against the running execution of that session and give the task back. */
   private noteFailure(sessionId: string, message: string): void {
     void this.deps.store.mutate('execution-recorded', (ledger) => {
       for (const task of ledger.tasks) {
@@ -103,6 +127,21 @@ export class ExecutionService {
             execution.outcome = 'failed'
             execution.error = message.slice(0, 500)
             execution.endedAt = this.deps.now()
+            // The failed session will not finish the work: hand the task back
+            // instead of leaving it stuck in in_progress forever — and leave a
+            // system comment so the GUI shows why.
+            if (task.status === 'in_progress' && task.claimedBy === sessionId) {
+              task.status = 'todo'
+              task.updatedAt = this.deps.now()
+              delete task.claimedBy
+              delete task.claimedAt
+              task.comments.push({
+                id: newCommentId(),
+                body: normalizeBody(`[系统] 执行失败：${message.slice(0, 300)}；任务已退回待办。`),
+                version: 1,
+                createdAt: this.deps.now(),
+              })
+            }
             return [task]
           }
         }
@@ -127,17 +166,23 @@ export class ExecutionService {
 
   /**
    * Run one task now (manual button or scheduler tick).
+   *
+   * The in-progress gate and the execution-open write happen inside ONE
+   * serial-queue mutation, so two overlapping run() calls (double click,
+   * overlapping scheduler ticks) can never both pass — exactly one session
+   * is opened per task.
    * @param taskId - the task to run.
    * @param trigger - what started it.
    * @returns the immediate result; settlement lands in the ledger.
    */
   async run(taskId: string, trigger: ExecutionRecord['trigger']): Promise<RunRequestResult> {
+    const max = this.deps.maxConcurrent ?? DEFAULT_MAX_CONCURRENT
+    if (this.runs.size >= max) {
+      return { ok: false, error: `execution concurrency limit reached (${this.runs.size}/${max} running)` }
+    }
     const task = this.deps.store.get(taskId)
     if (task === undefined || task.trashedAt !== undefined) {
       return { ok: false, error: `no task ${taskId}` }
-    }
-    if (task.status === 'in_progress') {
-      return { ok: false, error: 'task is already in progress' }
     }
     const workspace = this.deps.workspaces.get(task.workspaceId)
     if (workspace === undefined) {
@@ -147,10 +192,19 @@ export class ExecutionService {
     const executionId = newExecutionId()
     const sessionId = this.deps.mintSessionId?.() ?? `session-taskboard-${crypto.randomUUID()}`
 
-    // 1. Open the execution record and move the card to in_progress in one write.
+    // 1. Open the execution record, flip the card to in_progress, and record
+    //    the executing session as the claim holder — atomically.
+    let gate: string | undefined
     await this.deps.store.mutate('execution-recorded', (ledger) => {
       const target = ledger.tasks.find(t => t.id === taskId)
-      if (target === undefined) return undefined
+      if (target === undefined || target.trashedAt !== undefined) {
+        gate = `no task ${taskId}`
+        return undefined
+      }
+      if (target.status === 'in_progress') {
+        gate = 'task is already in progress'
+        return undefined
+      }
       target.executions.push({
         id: executionId,
         trigger,
@@ -160,8 +214,11 @@ export class ExecutionService {
       target.status = 'in_progress'
       target.updatedAt = this.deps.now()
       target.updatedBy = { kind: 'user' }
+      target.claimedBy = sessionId
+      target.claimedAt = this.deps.now()
       return [target]
     })
+    if (gate !== undefined) return { ok: false, error: gate }
 
     // 2. Create the fresh agent+session inside the task's project, carrying
     //    the pinned model — or the deployment default when unpinned (the
@@ -206,22 +263,44 @@ export class ExecutionService {
     }
     handle.agent.followup(message)
 
-    // 6. Settlement watcher.
+    // 6. Settlement watcher: mark succeeded, release the executing session's
+    //    hold, and — when the session did NOT follow the handoff protocol —
+    //    auto-move the card to in_review with a system comment (otherwise a
+    //    disobedient session would leave it hanging in in_progress forever).
     const settle = (): void => {
-      this.settling.delete(executionId)
+      this.runs.delete(executionId)
       void this.deps.store.mutate('execution-recorded', (ledger) => {
         for (const t of ledger.tasks) {
           const execution = t.executions.find(e => e.id === executionId)
           if (execution !== undefined && execution.outcome === 'running') {
+            const now = this.deps.now()
             execution.outcome = 'succeeded'
-            execution.endedAt = this.deps.now()
+            execution.endedAt = now
+            if (t.status === 'in_progress' && t.claimedBy === sessionId) {
+              delete t.claimedBy
+              delete t.claimedAt
+            }
+            if (t.status === 'in_progress') {
+              const commented = t.comments.some(c => c.threadId === sessionId)
+              t.comments.push({
+                id: newCommentId(),
+                body: normalizeBody(commented
+                  ? '[系统] 执行会话已结束并留有评论，但未移至待验收；系统自动移入待验收。'
+                  : '[系统] 执行会话已结束，但未按协议交接（无评论、未移至待验收）；系统自动移入待验收，请审查后退回或验收。'),
+                version: 1,
+                createdAt: now,
+              })
+              t.status = 'in_review'
+              t.updatedAt = now
+              t.updatedBy = { kind: 'user' }
+            }
             return [t]
           }
         }
         return undefined
       })
     }
-    this.settling.set(executionId, settle)
+    this.runs.set(executionId, { sessionId, settle, dispose: () => handle.dispose() })
     void handle.agent.whenIdle().then(settle, () => {
       this.noteFailure(sessionId, 'agent did not reach quiescence')
       settle()
@@ -230,22 +309,117 @@ export class ExecutionService {
     return { ok: true, executionId, sessionId }
   }
 
-  /** The prompt text one execution submits (task context + instructions). */
+  /** How many executions are currently running (for the concurrency cap). */
+  inFlight(): number {
+    return this.runs.size
+  }
+
+  /**
+   * Cancel the running execution of a task (user action): stop the agent
+   * session, mark the execution cancelled, and hand the task back to todo.
+   * @param taskId - the task whose execution should be stopped.
+   * @returns the immediate result.
+   */
+  async cancel(taskId: string): Promise<CancelRequestResult> {
+    const task = this.deps.store.get(taskId)
+    if (task === undefined) return { ok: false, error: `no task ${taskId}` }
+    const running = [...task.executions].reverse().find(e => e.outcome === 'running')
+    if (running === undefined) return { ok: false, error: 'no running execution' }
+
+    const entry = this.runs.get(running.id)
+    this.runs.delete(running.id)
+    // Stop the agent first (best effort): dispose stops the loop, unregisters
+    // the agent, and removes its session. A late whenIdle settlement no-ops —
+    // the record is no longer 'running'.
+    try {
+      await entry?.dispose()
+    } catch { /* already gone */ }
+
+    await this.deps.store.mutate('execution-recorded', (ledger) => {
+      const target = ledger.tasks.find(t => t.id === taskId)
+      if (target === undefined) return undefined
+      const execution = target.executions.find(e => e.id === running.id)
+      if (execution === undefined || execution.outcome !== 'running') return undefined
+      execution.outcome = 'cancelled'
+      execution.endedAt = this.deps.now()
+      if (target.status === 'in_progress') {
+        target.status = 'todo'
+        target.updatedAt = this.deps.now()
+        delete target.claimedBy
+        delete target.claimedAt
+      }
+      return [target]
+    })
+    return { ok: true, executionId: running.id }
+  }
+
+  /**
+   * Startup reconciliation after a host restart: executions left `running`
+   * by the previous process can never settle here (their settlement watchers
+   * died with it), so mark them failed and hand their tasks back to todo.
+   */
+  async reconcile(): Promise<void> {
+    await this.deps.store.mutate('execution-recorded', (ledger) => {
+      const now = this.deps.now()
+      const touched: TaskRecord[] = []
+      for (const task of ledger.tasks) {
+        let dirty = false
+        for (const execution of task.executions) {
+          if (execution.outcome === 'running') {
+            execution.outcome = 'failed'
+            execution.error = 'interrupted by host restart'
+            execution.endedAt = now
+            dirty = true
+          }
+        }
+        if (!dirty) continue
+        if (task.status === 'in_progress') {
+          task.status = 'todo'
+          task.updatedAt = now
+          delete task.claimedBy
+          delete task.claimedAt
+        }
+        touched.push(task)
+      }
+      return touched.length > 0 ? touched : undefined
+    })
+  }
+
+  /**
+   * The prompt text one execution submits (task context + instructions).
+   * The effective prompt supports two template variables, rendered from the
+   * task's own history at submit time (valuable for recurring patrols):
+   * `{{lastExecution}}` → the previous execution's trigger/outcome/error;
+   * `{{lastComments}}` → the last three comments (who + body).
+   */
   private executionPrompt(task: TaskRecord): string {
     const state = '本任务由执行服务启动本会话并已置为 in_progress（你无需再认领，也无需移到 done）。'
     const tail = `完成后请：1) 用 taskboard_get 读取任务 ${task.id} 拿最新 version；`
       + `2) 用 taskboard_comment_add 留评论（做了什么改动、如何验证、剩余风险）；`
       + `3) 用 taskboard_move 把任务 ${task.id} 移到 in_review（带 ifVersion）。`
-    return `【任务】${task.title}（任务 ID: ${task.id}）\n\n${state}\n\n${effectivePrompt(task)}\n\n${tail}`
+    const base = effectivePrompt(task)
+    const lastExec = [...task.executions].reverse().find(e => e.outcome !== 'running')
+    const lastExecText = lastExec === undefined
+      ? '（无）'
+      : `${lastExec.trigger} · ${lastExec.outcome}${lastExec.error !== undefined ? ` · ${lastExec.error.slice(0, 200)}` : ''} · ${new Date(lastExec.startedAt ?? 0).toISOString()}`
+    const lastCommentsText = task.comments.slice(-3)
+      .map(c => `[${c.threadId !== undefined ? 'agent' : 'user'}] ${c.body}`)
+      .join('\n') || '（无）'
+    const body = base
+      .replace(/\{\{lastExecution\}\}/g, lastExecText)
+      .replace(/\{\{lastComments\}\}/g, lastCommentsText)
+    return `【任务】${task.title}（任务 ID: ${task.id}）\n\n${state}\n\n${body}\n\n${tail}`
   }
 
-  /** Move a task back out of in_progress after a failed start. */
+  /** Move a task back out of in_progress (and release its hold) after a failed start. */
   private async revertProgress(taskId: string): Promise<void> {
     await this.deps.store.mutate('execution-recorded', (ledger) => {
       const target = ledger.tasks.find(t => t.id === taskId)
       if (target !== undefined && target.status === 'in_progress') {
         target.status = 'todo'
         target.updatedAt = this.deps.now()
+        delete target.claimedBy
+        delete target.claimedAt
         return [target]
       }
       return undefined

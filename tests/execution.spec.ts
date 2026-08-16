@@ -52,19 +52,25 @@ async function storeWith(...tasks: TaskRecord[]): Promise<TaskStore> {
 // Shared mutable flag for the fail-path test.
 const fakeAgentsState = { failNext: false }
 
-/** Capturing agents fake: records create options and followup messages. */
+/** Capturing agents fake: records create options, followup messages, disposals. */
 function fakeAgents(): AgentsFace & {
   created: Array<{ sessionId: string; cwd?: string; agentOptions?: { provider?: string; model?: string } }>
   followups: unknown[]
-  idle: () => void
+  idle: (sessionId?: string) => void
+  disposedSessions: string[]
 } {
   const created: Array<{ sessionId: string; cwd?: string; agentOptions?: { provider?: string; model?: string } }> = []
   const followups: unknown[] = []
-  let resolveIdle: (() => void) | undefined
+  const disposedSessions: string[] = []
+  const idles = new Map<string, () => void>()
   const svc = {
     created,
     followups,
-    idle: () => { resolveIdle?.() },
+    disposedSessions,
+    idle: (sessionId?: string) => {
+      if (sessionId !== undefined) idles.get(sessionId)?.()
+      else for (const resolve of idles.values()) resolve()
+    },
     async create(options: { sessionId: string; meta?: { cwd?: string }; agentOptions?: { provider?: string; model?: string } }) {
       if (fakeAgentsState.failNext) {
         fakeAgentsState.failNext = false
@@ -75,13 +81,13 @@ function fakeAgents(): AgentsFace & {
         agent: {
           id: options.sessionId,
           followup: (message: unknown) => { followups.push(message) },
-          whenIdle: () => new Promise<void>(resolve => { resolveIdle = resolve }),
+          whenIdle: () => new Promise<void>(resolve => { idles.set(options.sessionId, resolve) }),
         },
-        dispose: async () => {},
+        dispose: async () => { disposedSessions.push(options.sessionId) },
       }
     },
   } as never
-  return svc as AgentsFace & { created: typeof created; followups: typeof followups; idle: () => void }
+  return svc as AgentsFace & { created: typeof created; followups: typeof followups; idle: (sessionId?: string) => void; disposedSessions: string[] }
 }
 
 /** Event-bus fake with manual dispatch. */
@@ -173,6 +179,188 @@ describe('ExecutionService', () => {
     expect(t.executions[0]!.error).toContain('quota exceeded')
   })
 
+  it('holds the task for the executing session and hands it back on turn failure', async () => {
+    const store = await storeWith(task())
+    const agents = fakeAgents()
+    const events = fakeEvents()
+    const svc = new ExecutionService({ store, agents, workspaces, events, now: () => 1_000 })
+    const result = await svc.run('t-run', 'manual')
+    if (!result.ok) throw new Error('run failed')
+
+    // The executing session is the recorded holder for the whole run.
+    let t = store.get('t-run')!
+    expect(t.claimedBy).toBe(result.sessionId)
+    expect(t.claimedAt).toBe(1_000)
+
+    events.dispatch(result.sessionId, {
+      type: 'turn/end',
+      data: { reason: { kind: 'error', error: { message: 'quota exceeded' } } },
+    })
+    await new Promise(r => setTimeout(r, 10))
+    // Failure no longer strands the card in in_progress.
+    t = store.get('t-run')!
+    expect(t.status).toBe('todo')
+    expect(t.claimedBy).toBeUndefined()
+    expect(t.executions[0]!.outcome).toBe('failed')
+  })
+
+  it('settles and auto-hands-off to in_review with a system comment when the session did not', async () => {
+    const store = await storeWith(task())
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    const result = await svc.run('t-run', 'manual')
+    if (!result.ok) throw new Error('run failed')
+    agents.idle()
+    await new Promise(r => setTimeout(r, 10))
+    const t = store.get('t-run')!
+    expect(t.executions[0]!.outcome).toBe('succeeded')
+    expect(t.claimedBy).toBeUndefined()
+    // The session neither commented nor moved → system comment + auto in_review.
+    expect(t.status).toBe('in_review')
+    expect(t.comments).toHaveLength(1)
+    expect(t.comments[0]!.body).toContain('[系统]')
+    expect(t.comments[0]!.body).toContain('未按协议交接')
+  })
+
+  it('notes a lighter system comment when the session commented but did not move', async () => {
+    const commented = task({
+      comments: [{ id: 'c-1', body: 'done, tests pass', version: 1, createdAt: 1, threadId: 'session-worker' }],
+    })
+    const store = await storeWith(commented)
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, mintSessionId: () => 'session-worker' })
+    const result = await svc.run('t-run', 'manual')
+    if (!result.ok) throw new Error('run failed')
+    agents.idle('session-worker')
+    await new Promise(r => setTimeout(r, 10))
+    const t = store.get('t-run')!
+    expect(t.status).toBe('in_review')
+    const sysComment = t.comments.find(c => c.body.includes('[系统]'))
+    expect(sysComment?.body).toContain('留有评论')
+  })
+
+  it('notes failures with a system comment when handing the task back', async () => {
+    const store = await storeWith(task())
+    const agents = fakeAgents()
+    const events = fakeEvents()
+    const svc = new ExecutionService({ store, agents, workspaces, events, now: () => 1_000 })
+    const result = await svc.run('t-run', 'manual')
+    if (!result.ok) throw new Error('run failed')
+    events.dispatch(result.sessionId, {
+      type: 'turn/end',
+      data: { reason: { kind: 'error', error: { message: 'quota exceeded' } } },
+    })
+    await new Promise(r => setTimeout(r, 10))
+    const t = store.get('t-run')!
+    expect(t.status).toBe('todo')
+    const sysComment = t.comments.find(c => c.body.includes('[系统]'))
+    expect(sysComment?.body).toContain('执行失败')
+    expect(sysComment?.body).toContain('quota exceeded')
+  })
+
+  it('enforces the global concurrency cap across tasks', async () => {
+    const store = await storeWith(task({ id: 't-1' }), task({ id: 't-2' }), task({ id: 't-3' }), task({ id: 't-4' }))
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    expect((await svc.run('t-1', 'manual')).ok).toBe(true)
+    expect((await svc.run('t-2', 'manual')).ok).toBe(true)
+    expect((await svc.run('t-3', 'manual')).ok).toBe(true)
+    // Cap (default 3) reached: the fourth task is rejected.
+    const fourth = await svc.run('t-4', 'manual')
+    expect(fourth.ok).toBe(false)
+    if (!fourth.ok) expect(fourth.error).toContain('concurrency')
+    expect(svc.inFlight()).toBe(3)
+    // Settling one execution frees a slot.
+    agents.idle(agents.created[0]!.sessionId)
+    await new Promise(r => setTimeout(r, 10))
+    expect(svc.inFlight()).toBe(2)
+    expect((await svc.run('t-4', 'manual')).ok).toBe(true)
+  })
+
+  it('renders {{lastExecution}} and {{lastComments}} template variables', async () => {
+    const templated = task({
+      prompt: '上次结果：{{lastExecution}}\n最近评论：{{lastComments}}',
+      executions: [{ id: 'e-0', trigger: 'scheduled', startedAt: 5_000, endedAt: 6_000, outcome: 'failed', error: 'disk full' }],
+      comments: [{ id: 'c-1', body: '巡检正常', version: 1, createdAt: 4_000 }],
+    })
+    const store = await storeWith(templated)
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 10_000 })
+    const result = await svc.run('t-run', 'manual')
+    if (!result.ok) throw new Error('run failed')
+    const message = agents.followups[0] as { content: Array<{ type: string; text: string }> }
+    const text = message.content[0]!.text
+    expect(text).not.toContain('{{lastExecution}}')
+    expect(text).not.toContain('{{lastComments}}')
+    expect(text).toContain('上次结果：scheduled · failed · disk full')
+    expect(text).toContain('最近评论：[user] 巡检正常')
+  })
+
+  it('opens at most one execution for overlapping runs (atomic in-progress gate)', async () => {
+    const store = await storeWith(task())
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    const [a, b] = await Promise.all([svc.run('t-run', 'manual'), svc.run('t-run', 'manual')])
+    expect([a, b].filter(r => r.ok)).toHaveLength(1)
+    expect(agents.created).toHaveLength(1)
+    const t = store.get('t-run')!
+    expect(t.status).toBe('in_progress')
+    expect(t.executions).toHaveLength(1)
+    expect(t.claimedBy).toBe(agents.created[0]!.sessionId)
+  })
+
+  it('cancels the running execution: stops the session, marks cancelled, hands the task back', async () => {
+    const store = await storeWith(task())
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    const result = await svc.run('t-run', 'manual')
+    if (!result.ok) throw new Error('run failed')
+
+    const cancelled = await svc.cancel('t-run')
+    expect(cancelled.ok).toBe(true)
+    expect(agents.disposedSessions).toEqual([result.sessionId])
+    const t = store.get('t-run')!
+    expect(t.status).toBe('todo')
+    expect(t.claimedBy).toBeUndefined()
+    expect(t.executions[0]!.outcome).toBe('cancelled')
+    expect(t.executions[0]!.endedAt).toBe(1_000)
+    // Nothing left to cancel.
+    expect((await svc.cancel('t-run')).ok).toBe(false)
+    // A late settlement after cancel no-ops (the record is no longer running).
+    agents.idle()
+    await new Promise(r => setTimeout(r, 10))
+    expect(store.get('t-run')!.executions[0]!.outcome).toBe('cancelled')
+  })
+
+  it('reconciles stale running executions after a host restart', async () => {
+    const interrupted = task({
+      id: 't-restart',
+      status: 'in_progress',
+      claimedBy: 'session-dead',
+      claimedAt: 1,
+      executions: [{ id: 'e-1', sessionId: 'session-dead', trigger: 'manual', startedAt: 1, outcome: 'running' }],
+    })
+    const settled = task({
+      id: 't-review',
+      status: 'in_review',
+      executions: [{ id: 'e-2', sessionId: 'session-ok', trigger: 'manual', startedAt: 1, endedAt: 2, outcome: 'succeeded' }],
+    })
+    const store = await storeWith(interrupted, settled)
+    const svc = new ExecutionService({ store, agents: fakeAgents(), workspaces, events: fakeEvents(), now: () => 9_000 })
+    await svc.reconcile()
+
+    const a = store.get('t-restart')!
+    expect(a.executions[0]!.outcome).toBe('failed')
+    expect(a.executions[0]!.error).toContain('restart')
+    expect(a.executions[0]!.endedAt).toBe(9_000)
+    expect(a.status).toBe('todo')
+    expect(a.claimedBy).toBeUndefined()
+    // Healthy records untouched.
+    const b = store.get('t-review')!
+    expect(b.status).toBe('in_review')
+    expect(b.executions[0]!.outcome).toBe('succeeded')
+  })
+
   it('rejects a run on a running or unknown task', async () => {
     const store = await storeWith(task({ status: 'in_progress' }))
     const svc = new ExecutionService({ store, agents: fakeAgents(), workspaces, events: fakeEvents(), now: () => 1_000 })
@@ -191,7 +379,7 @@ describe('SchedulerService', () => {
     const runs: string[] = []
     const scheduler = new SchedulerService({
       store,
-      execution: { run: async id => { runs.push(id); return { ok: true, executionId: 'e', sessionId: 's' } } },
+      execution: { run: async id => { runs.push(id); return { ok: true, executionId: 'e', sessionId: 's' } }, inFlight: () => 0 },
       now: () => now,
     })
     await scheduler.tick()
@@ -210,7 +398,7 @@ describe('SchedulerService', () => {
     const runs2: string[] = []
     const scheduler2 = new SchedulerService({
       store: store2,
-      execution: { run: async id => { runs2.push(id); return { ok: true, executionId: 'e', sessionId: 's' } } },
+      execution: { run: async id => { runs2.push(id); return { ok: true, executionId: 'e', sessionId: 's' } }, inFlight: () => 0 },
       now: () => now,
     })
     await scheduler2.tick()
@@ -230,10 +418,39 @@ describe('SchedulerService', () => {
     const runs: string[] = []
     const scheduler = new SchedulerService({
       store,
-      execution: { run: async id => { runs.push(id); return { ok: true, executionId: 'e', sessionId: 's' } } },
+      execution: { run: async id => { runs.push(id); return { ok: true, executionId: 'e', sessionId: 's' } }, inFlight: () => 0 },
       now: () => now,
     })
     await scheduler.tick()
     expect(runs).toEqual([])
+  })
+
+  it('holds due tasks (without burning their window) while at the concurrency cap', async () => {
+    const now = 1_000_000
+    const due = task({
+      id: 't-due',
+      execution: { mode: 'scheduled', cron: '* * * * *', nextRunAt: now - 1 },
+    })
+    const store = await storeWith(due)
+    const runs: string[] = []
+    let inflight = 3
+    const scheduler = new SchedulerService({
+      store,
+      execution: {
+        run: async id => { runs.push(id); return { ok: true, executionId: 'e', sessionId: 's' } },
+        inFlight: () => inflight,
+      },
+      now: () => now,
+    })
+    // At capacity: the window is NOT advanced (nextRunAt stays in the past so
+    // the next tick retries) and nothing runs.
+    await scheduler.tick()
+    expect(runs).toEqual([])
+    expect(store.get('t-due')!.execution.nextRunAt).toBe(now - 1)
+    // Capacity frees up → the same window fires.
+    inflight = 0
+    await scheduler.tick()
+    expect(runs).toEqual(['t-due'])
+    expect(store.get('t-due')!.execution.nextRunAt).toBeGreaterThan(now)
   })
 })

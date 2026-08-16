@@ -271,6 +271,15 @@ export type TaskRecord = {
   blocked: boolean
   execution: ExecutionConfig
   model?: TaskModel
+  /**
+   * The session currently holding the in-progress claim (explicit claim or a
+   * live execution). Present only while `status === 'in_progress'`: any move
+   * out of in_progress releases it. `updatedBy` is audit-only — user edits no
+   * longer erase the holder.
+   */
+  claimedBy?: string
+  /** When the current holder claimed the task (epoch ms). */
+  claimedAt?: number
   version: number
   createdAt: number
   updatedAt: number
@@ -278,8 +287,26 @@ export type TaskRecord = {
   updatedBy: Actor
   comments: CommentRecord[]
   executions: ExecutionRecord[]
+  /** How many older execution records were pruned by the retention cap. */
+  executionsPruned?: number
   /** Soft-delete marker set by agent `taskboard_delete`; user confirms the purge. */
   trashedAt?: number
+}
+
+/** Retention cap: how many execution records each task keeps (oldest pruned). */
+export const MAX_EXECUTIONS = 20
+
+/**
+ * Enforce the execution-record retention cap on one task (in place): keep the
+ * newest {@link MAX_EXECUTIONS} records, count the dropped ones in
+ * `executionsPruned`. Running records are always the newest, never dropped.
+ * @param task - the task to prune.
+ */
+export function pruneExecutions(task: TaskRecord): void {
+  if (task.executions.length <= MAX_EXECUTIONS) return
+  const dropped = task.executions.length - MAX_EXECUTIONS
+  task.executions = task.executions.slice(-MAX_EXECUTIONS)
+  task.executionsPruned = (task.executionsPruned ?? 0) + dropped
 }
 
 /** The whole durable ledger. */
@@ -424,9 +451,51 @@ export function effectivePrompt(task: TaskRecord): string {
  * @param task - the task.
  */
 export function isClaimedBy(task: TaskRecord): string | undefined {
-  return task.status === 'in_progress' && task.updatedBy.kind === 'agent'
-    ? task.updatedBy.sessionId
-    : undefined
+  return task.status === 'in_progress' && task.claimedBy !== undefined ? task.claimedBy : undefined
+}
+
+/**
+ * Maintain the explicit claim fields around a status change: entering
+ * in_progress under a session records the holder (an execution-start or an
+ * agent claim); every move out of in_progress releases the claim (handoff,
+ * give-back, cancel). A user-driven move into in_progress records no holder —
+ * no session works on it yet.
+ * @param task - the task being written (mutated in place).
+ * @param to - the target status.
+ * @param now - current epoch ms.
+ * @param holder - the session id claiming the task, when applicable.
+ */
+export function syncClaim(task: TaskRecord, to: TaskStatus, now: number, holder?: string): void {
+  if (to !== 'in_progress') {
+    delete task.claimedBy
+    delete task.claimedAt
+  } else if (holder !== undefined) {
+    task.claimedBy = holder
+    task.claimedAt = now
+  }
+}
+
+/**
+ * Validate and normalize a pinned model: `{ provider, model }`, both
+ * non-empty trimmed strings.
+ * @param raw - the raw input.
+ * @returns the normalized model.
+ * @throws when the shape or the fields are invalid.
+ */
+export function normalizeModel(raw: unknown): TaskModel {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error('model must be { provider: string, model: string }')
+  }
+  const { provider, model } = raw as { provider?: unknown; model?: unknown }
+  if (typeof provider !== 'string' || typeof model !== 'string') {
+    throw new Error('model must be { provider: string, model: string }')
+  }
+  const p = provider.trim()
+  const m = model.trim()
+  if (p.length === 0 || m.length === 0) {
+    throw new Error('model.provider and model.model must be non-empty strings')
+  }
+  return { provider: p, model: m }
 }
 
 /**

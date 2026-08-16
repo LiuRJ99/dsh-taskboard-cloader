@@ -20,7 +20,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-agent'
 import { PROTOCOL_SECTION_NAME, PROTOCOL_SECTION_ORDER, TASKBOARD_PROTOCOL } from './host/protocol-text.ts'
-import { ExecutionService, type EventsFace } from './host/execution.ts'
+import { DEFAULT_MAX_CONCURRENT, ExecutionService, type EventsFace } from './host/execution.ts'
 import { registerTaskboardRoutes } from './host/routes.ts'
 import { SchedulerService } from './host/scheduler.ts'
 import { dshHomePath } from './host/sdk.ts'
@@ -43,6 +43,8 @@ export const inject = ['tools', 'systemPrompt']
 export function apply(ctx: Context): void {
   const store = new TaskStore({ file: dshHomePath(LEDGER_FILE) })
   const now = () => Date.now()
+  // Global execution concurrency cap (DSH_TASKBOARD_MAX_CONCURRENT overrides).
+  const maxConcurrent = Math.max(1, Number.parseInt(process.env.DSH_TASKBOARD_MAX_CONCURRENT ?? '', 10) || DEFAULT_MAX_CONCURRENT)
 
   // Agent workflow protocol (claim discipline, retry rules, done-gate).
   const disposeSection = ctx.systemPrompt.section({
@@ -56,10 +58,24 @@ export function apply(ctx: Context): void {
   // workspace registry (claim boundary + project execution need it).
   ctx.inject(['workspaceRegistry'], (wsCtx: Context) => {
     const disposers: Array<() => void> = []
+
+    // Registered model provider routes (from the host llm runtime), read
+    // lazily at call time so late availability still applies; undefined when
+    // the runtime is absent → only structural model validation runs.
+    const modelProviders = (): string[] | undefined => {
+      try {
+        const llm = wsCtx.get('llm') as { listProviders?: () => Array<{ id: string }> } | undefined
+        return llm === undefined || typeof llm.listProviders !== 'function'
+          ? undefined
+          : llm.listProviders().map(p => p.id)
+      } catch { return undefined }
+    }
+
     disposers.push(...registerTaskboardTools(wsCtx, {
       store,
       workspaces: workspaceFace(wsCtx.workspaceRegistry),
       now,
+      modelProviders,
     }))
 
     // Settlement listener over the session event bus.
@@ -101,6 +117,7 @@ export function apply(ctx: Context): void {
             return read === undefined ? undefined : read.call(selection)
           } catch { return undefined }
         },
+        maxConcurrent,
       })
 
       // /dsh-taskboard routes (the run action reaches the execution service).
@@ -111,13 +128,20 @@ export function apply(ctx: Context): void {
           workspaces: workspaceFace(wsCtx.workspaceRegistry),
           now,
           run: (taskId: string) => execution.run(taskId, 'manual'),
+          cancel: (taskId: string) => execution.cancel(taskId),
+          modelProviders,
         })
         return () => disposeRoutes?.()
       })
 
+      // Startup reconciliation: executions left 'running' by a previous host
+      // process are marked failed and their tasks handed back to todo (their
+      // settlement watchers died with that process).
+      void execution.reconcile()
+
       // Host-side cron scheduler: due scheduled tasks execute even with no
-      // browser open.
-      const scheduler = new SchedulerService({ store, execution, now })
+      // browser open. Shares the execution concurrency cap.
+      const scheduler = new SchedulerService({ store, execution, now, maxConcurrent })
       scheduler.start()
       disposers.push(() => scheduler.dispose())
 

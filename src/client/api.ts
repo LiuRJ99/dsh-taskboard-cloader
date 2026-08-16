@@ -48,6 +48,8 @@ export interface TaskboardClient {
   remove(id: string, body: DeleteTaskBody): Promise<{ trashed?: boolean; purged?: boolean }>
   /** Trigger a manual run (fresh in-project session). */
   run(id: string): Promise<{ executionId: string; sessionId: string }>
+  /** Cancel the running execution (stops the agent session; task returns to todo). */
+  cancel(id: string): Promise<{ cancelled: true; executionId: string }>
   /** Subscribe to change frames; the disposer stops the stream. */
   stream(onChange: (event: ChangeEvent) => void, onGap: () => void): () => void
 }
@@ -64,6 +66,7 @@ export function createClient(): TaskboardClient {
     comment: (id, bodyText) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/comment`, { body: bodyText }),
     remove: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/delete`, body),
     run: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/run`, {}),
+    cancel: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/cancel`, {}),
     stream(onChange, onGap) {
       const es = new EventSource('/dsh-taskboard/events')
       let revision: number | undefined

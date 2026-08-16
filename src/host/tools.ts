@@ -26,13 +26,16 @@ import {
   canTransition,
   effectivePrompt,
   isClaim,
+  isClaimedBy,
   newCommentId,
   newTaskId,
   normalizeBody,
   normalizeExecution,
+  normalizeModel,
   normalizePrompt,
   normalizeTitle,
   summarize,
+  syncClaim,
   type Actor,
   type TaskModel,
   type TaskRecord,
@@ -72,6 +75,8 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
     `状态: ${t.status} (v${t.version}) · 紧急度: ${t.urgency} · 项目: ${t.workspaceId}${t.blocked ? ' · 受阻' : ''}`,
     `执行方式: ${t.execution.mode}${t.execution.cron !== undefined ? ` cron=${t.execution.cron}` : ''}`,
   ]
+  const holder = isClaimedBy(t)
+  if (holder !== undefined) lines.push(`认领: agent ${String(holder).slice(0, 24)}（持有期间其他会话不可移动）`)
   if (t.execution.nextRunAt !== undefined) lines.push(`下次触发: ${new Date(t.execution.nextRunAt).toISOString()}`)
   if (t.model !== undefined) lines.push(`固定模型: ${t.model.provider}/${t.model.model}`)
   lines.push(`描述: ${t.description.length > 0 ? t.description : '（无）'}`)
@@ -151,6 +156,22 @@ export interface ToolDeps {
   workspaces: WorkspaceFace
   /** Current epoch ms (injectable for tests). */
   now: () => number
+  /**
+   * Registered model provider routes (from the host llm runtime), for
+   * advisory validation of pinned models; undefined = runtime unavailable,
+   * in which case only the structural check applies.
+   */
+  modelProviders?: () => string[] | undefined
+}
+
+/** Validate a pinned model: structural check always, provider route when known. */
+function checkModel(deps: ToolDeps, raw: unknown): TaskModel {
+  const model = normalizeModel(raw)
+  const providers = deps.modelProviders?.()
+  if (providers !== undefined && !providers.includes(model.provider)) {
+    throw new ToolError(ERR.invalidInput, `model provider "${model.provider}" has no registered route (available: ${providers.join(', ')})`)
+  }
+  return model
 }
 
 /** Resolve the calling agent's actor and session id. */
@@ -358,9 +379,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           throw new ToolError(ERR.invalidTransition, 'a new task cannot start as done/archived')
         }
         const execution = normalizeExecution(args.execution ?? {}, deps.now())
-        if (args.model !== undefined && (typeof args.model.provider !== 'string' || typeof args.model.model !== 'string')) {
-          throw new ToolError(ERR.invalidInput, 'model must be { provider: string, model: string }')
-        }
+        const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
         const now = deps.now()
         const task: TaskRecord = {
           id: newTaskId(),
@@ -372,7 +391,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           status,
           blocked: false,
           execution,
-          model: args.model as TaskModel | undefined,
+          model,
           version: 1,
           createdAt: now,
           updatedAt: now,
@@ -483,10 +502,11 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         if (!canTransition(task.status, to)) {
           throw new ToolError(ERR.invalidTransition, `illegal transition ${task.status} → ${to}`)
         }
-        // Exclusive hold: while a task is in_progress under an agent, no other
-        // session may move it at all (that would be a takeover).
-        if (task.status === 'in_progress' && task.updatedBy.kind === 'agent' && task.updatedBy.sessionId !== actor.sessionId) {
-          throw new ToolError(ERR.forbidden, `task is held by session ${task.updatedBy.sessionId}; never take over another session's claim`)
+        // Exclusive hold: while a task is in_progress under a session
+        // (explicit claimedBy — an agent claim or a live execution), no other
+        // session may move it (that would be a takeover).
+        if (task.status === 'in_progress' && task.claimedBy !== undefined && task.claimedBy !== actor.sessionId) {
+          throw new ToolError(ERR.forbidden, `task is held by session ${task.claimedBy}; never take over another session's claim`)
         }
         // Claim boundary: the calling session must belong to the task's project.
         if (isClaim(task.status, to)) {
@@ -501,6 +521,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         next.updatedAt = deps.now()
         next.updatedBy = actor
         if (isClaim(task.status, to)) next.blocked = false
+        // Record the holder on a claim; every move out of in_progress releases it.
+        syncClaim(next, to, deps.now(), isClaim(task.status, to) ? actor.sessionId : undefined)
         await store.mutate('task-moved', ledger => {
           const i = ledger.tasks.findIndex(t => t.id === args.id)
           ledger.tasks[i] = next

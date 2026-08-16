@@ -10,7 +10,7 @@
 /** The stylesheet text. */
 export const STYLES = `
 .dsh-atb-entry {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; position: relative;
   width: calc(100% - 8px); margin: 2px 4px; padding: 6px 10px;
   border: none; border-radius: 8px; background: transparent;
   color: var(--dsw-text-secondary, inherit); font: inherit; font-size: 13px;
@@ -19,6 +19,35 @@ export const STYLES = `
 .dsh-atb-entry:hover { background: var(--dsw-hover, rgba(128,128,128,.12)); color: var(--dsw-text-primary, inherit); }
 .dsh-atb-entry[data-active="true"] { background: var(--dsw-active, rgba(128,128,128,.18)); color: var(--dsw-text-primary, inherit); font-weight: 500; }
 .dsh-atb-entry svg { flex: none; }
+/* Status strip on the entry row's right: todo|in_progress|in_review counts. */
+.dsh-atb-entry-stats {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; line-height: 1; color: var(--dsw-text-secondary, gray);
+  font-variant-numeric: tabular-nums; white-space: nowrap; cursor: help;
+}
+.dsh-atb-entry-sep { opacity: .5; }
+/* Each rolling count wears its status color (todo blue | in_progress orange |
+   in_review purple); the separators stay in the strip's neutral gray. */
+.dsh-atb-roll[data-stat="todo"] { color: #3e63dd; }
+.dsh-atb-roll[data-stat="in_progress"] { color: #d9822b; }
+.dsh-atb-roll[data-stat="in_review"] { color: #8e4ec6; }
+/* One rolling number: fixed one-line window, overflow hidden. */
+.dsh-atb-roll {
+  position: relative; display: inline-block; overflow: hidden;
+  height: 12px; min-width: 1ch; text-align: center; vertical-align: middle;
+}
+.dsh-atb-rn { display: block; height: 12px; line-height: 12px; text-align: center; }
+/* The incoming value sits just outside the window (below for up-scroll). */
+.dsh-atb-rn-next { position: absolute; left: 0; right: 0; top: 100%; }
+.dsh-atb-roll[data-dir="down"] .dsh-atb-rn-next { top: auto; bottom: 100%; }
+.dsh-atb-roll .dsh-atb-rn { transition: transform .3s cubic-bezier(.25, .1, .25, 1); }
+.dsh-atb-roll[data-anim="1"][data-dir="up"] .dsh-atb-rn { transform: translateY(-100%); }
+.dsh-atb-roll[data-anim="1"][data-dir="down"] .dsh-atb-rn { transform: translateY(100%); }
+@media (prefers-reduced-motion: reduce) {
+  .dsh-atb-roll .dsh-atb-rn { transition: none; }
+}
+.dsh-atb-search { width: 130px; }
+.dsh-atb-badge[data-kind="stale"] { background: rgba(217,130,43,.15); color: #d9822b; }
 
 html[data-dsh-atb-active] [data-pane="conversation"] > *:not([data-dsh-atb-view]) { display: none !important; }
 .dsh-atb-view { display: none; }
@@ -28,6 +57,16 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .dsh-atb-title { font-size: 15px; font-weight: 600; margin: 0; }
 .dsh-atb-count { font-size: 12px; color: var(--dsw-text-secondary, gray); }
+.dsh-atb-ver {
+  font-size: 11px; color: var(--dsw-text-secondary, gray);
+  font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer;
+  text-decoration: none;
+  padding: 1px 9px; border-radius: 999px;
+  background: var(--dsw-bg-inset, rgba(128,128,128,.1));
+  border: 1px solid var(--dsw-border, rgba(128,128,128,.22));
+  transition: border-color .12s ease, color .12s ease;
+}
+.dsh-atb-ver:hover { border-color: var(--dsw-border-strong, rgba(128,128,128,.6)); color: inherit; }
 .dsh-atb-spacer { flex: 1; }
 .dsh-atb-select, .dsh-atb-input {
   font: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: 7px;
@@ -48,6 +87,16 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-dot[data-urgency="urgent"] { background: #e5484d; }
 .dsh-atb-dot[data-urgency="normal"] { background: #8e4ec6; }
 .dsh-atb-dot[data-urgency="relaxed"] { background: #3e63dd; }
+/* Status dots (column heads): one fixed color per lifecycle status, matching
+   the detail pane's status pills. Canceled/archived share the resting gray;
+   trashed (pending purge) keeps the red of the 待清除 badge. */
+.dsh-atb-dot[data-status="backlog"] { background: #8a8f98; }
+.dsh-atb-dot[data-status="todo"] { background: #3e63dd; }
+.dsh-atb-dot[data-status="in_progress"] { background: #d9822b; }
+.dsh-atb-dot[data-status="in_review"] { background: #8e4ec6; }
+.dsh-atb-dot[data-status="done"] { background: #2ea043; }
+.dsh-atb-dot[data-status="canceled"], .dsh-atb-dot[data-status="archived"] { background: #8a8f98; }
+.dsh-atb-dot[data-status="trashed"] { background: #e5484d; }
 
 .dsh-atb-btn {
   font: inherit; font-size: 12.5px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
@@ -178,6 +227,7 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
   transition: filter .12s ease;
 }
 .dsh-atb-detail-run:hover { filter: brightness(1.1); }
+.dsh-atb-detail-run[data-danger="true"] { background: rgba(229,72,77,.92); }
 .dsh-atb-movebtns { display: flex; gap: 6px; flex-wrap: wrap; }
 .dsh-atb-movebtn {
   font: inherit; font-size: 12px; padding: 4px 11px; border-radius: 999px; cursor: pointer;
@@ -256,7 +306,11 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-exec-outcome[data-outcome="running"] { background: rgba(217,130,43,.15); color: #d9822b; }
 .dsh-atb-exec-outcome[data-outcome="cancelled"] { background: rgba(128,128,128,.15); color: var(--dsw-text-secondary, gray); }
 .dsh-atb-exec-time { font-size: 11px; color: var(--dsw-text-secondary, gray); }
-.dsh-atb-exec-session { font-size: 11px; color: var(--dsw-text-secondary, gray); }
+.dsh-atb-exec-session {
+  font: inherit; font-size: 11px; color: var(--dsw-text-secondary, gray);
+  background: none; border: none; padding: 0; cursor: pointer;
+}
+.dsh-atb-exec-session:hover { color: var(--dsw-alias-brand-primary, inherit); text-decoration: underline dotted; }
 .dsh-atb-exec-error { flex-basis: 100%; font-size: 11px; color: #e5484d; word-break: break-all; }
 
 .dsh-atb-dangerzone {

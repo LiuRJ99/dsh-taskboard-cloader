@@ -16,6 +16,8 @@ import type { WorkspaceFace } from '../src/host/tools.ts'
 let server: Server
 let base: string
 let disposeRoutes: () => void
+let store: InstanceType<typeof TaskStore>
+let cancelCalls: string[]
 let dir: string
 
 const workspaces: WorkspaceFace = {
@@ -27,7 +29,8 @@ const workspaces: WorkspaceFace = {
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'tb-routes-'))
   server = createServer()
-  const store = new TaskStore({ file: join(dir, 'ledger.json') })
+  store = new TaskStore({ file: join(dir, 'ledger.json') })
+  cancelCalls = []
   const routes: Array<{ kind: string; path: string; handler: (req: never, res: never) => void }> = []
   const ctxFace = {
     webServer: {
@@ -37,7 +40,13 @@ beforeAll(async () => {
       },
     },
   }
-  disposeRoutes = registerTaskboardRoutes(ctxFace as never, { store, workspaces, now: () => 5_000 })
+  disposeRoutes = registerTaskboardRoutes(ctxFace as never, {
+    store,
+    workspaces,
+    now: () => 5_000,
+    cancel: async id => { cancelCalls.push(id); return { ok: true, executionId: 'e-x' } },
+    modelProviders: () => ['prov-a'],
+  })
   server.on('request', (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
     // Mirror the real webserver's longest-prefix-wins: exact routes shadow prefixes.
@@ -139,6 +148,56 @@ describe('taskboard routes', () => {
     expect(full.value.workspaceId).toBe('ws-b')
     const bad = await post(`/dsh-taskboard/tasks/${id}/update`, { ifVersion: 2, workspaceId: 'nope' })
     expect(bad.status).toBe(404)
+  })
+
+  it('keeps an agent claim alive across user edits; a user move releases it', async () => {
+    const created = await post('/dsh-taskboard/tasks', { title: 'Held', workspaceId: 'ws-a', urgency: 'normal' })
+    const id = created.json.value.id as string
+    // An agent claims it (tool semantics): explicit claimedBy fields.
+    await store.mutate('task-moved', ledger => {
+      const target = ledger.tasks.find(t => t.id === id)!
+      target.status = 'in_progress'
+      target.claimedBy = 'session-holder'
+      target.claimedAt = 5_000
+      target.version += 1
+      target.updatedBy = { kind: 'agent', sessionId: 'session-holder' }
+      return [target]
+    })
+    // The user edits the task in the GUI — the claim must survive (updatedBy
+    // is audit-only; the pre-claim-field inference lost the holder here).
+    const full1 = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    const upd = await post(`/dsh-taskboard/tasks/${id}/update`, { ifVersion: full1.value.version, title: 'Held (edited)' })
+    expect(upd.status).toBe(200)
+    const full2 = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    expect(full2.value.title).toBe('Held (edited)')
+    expect(full2.value.claimedBy).toBe('session-holder')
+    // A user move out of in_progress releases the hold.
+    const back = await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: full2.value.version, status: 'todo' })
+    expect(back.json.value.status).toBe('todo')
+    const full3 = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    expect(full3.value.claimedBy).toBeUndefined()
+  })
+
+  it('rejects unknown model providers and malformed models with 400', async () => {
+    const ghost = await post('/dsh-taskboard/tasks', { title: 'Model ghost', workspaceId: 'ws-a', urgency: 'normal', model: { provider: 'ghost', model: 'x' } })
+    expect(ghost.status).toBe(400)
+    expect(ghost.json.error.message).toContain('no registered route')
+    const malformed = await post('/dsh-taskboard/tasks', { title: 'Model bad', workspaceId: 'ws-a', urgency: 'normal', model: { provider: 5 } })
+    expect(malformed.status).toBe(400)
+    const ok = await post('/dsh-taskboard/tasks', { title: 'Model ok', workspaceId: 'ws-a', urgency: 'normal', model: { provider: 'prov-a', model: 'm-1' } })
+    expect(ok.status).toBe(201)
+    // update path validates too
+    const updBad = await post(`/dsh-taskboard/tasks/${ok.json.value.id}/update`, { ifVersion: 1, model: { provider: 'ghost', model: 'x' } })
+    expect(updBad.status).toBe(400)
+  })
+
+  it('cancels a running execution via the cancel action', async () => {
+    const created = await post('/dsh-taskboard/tasks', { title: 'Cancel me', workspaceId: 'ws-a', urgency: 'normal' })
+    const id = created.json.value.id as string
+    const res = await post(`/dsh-taskboard/tasks/${id}/cancel`, {})
+    expect(res.status).toBe(202)
+    expect(res.json.value.cancelled).toBe(true)
+    expect(cancelCalls).toContain(id)
   })
 
   it('streams SSE change events', async () => {

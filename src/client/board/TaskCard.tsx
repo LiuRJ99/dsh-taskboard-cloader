@@ -8,7 +8,7 @@
  */
 import type { BoardController } from '../controller.ts'
 import type { TaskRecord } from '../../shared/protocol.ts'
-import { fmtTime } from './TaskBoard.tsx'
+import { fmtTime, isStaleClaim } from './TaskBoard.tsx'
 
 const URGENCY_LABEL: Record<TaskRecord['urgency'], string> = { urgent: '紧急', normal: '一般', relaxed: '不急' }
 const OUTCOME_LABEL: Record<string, string> = { running: '执行中', succeeded: '成功', failed: '失败', cancelled: '已取消' }
@@ -21,10 +21,13 @@ export const DRAG_TYPE = 'application/x-dsh-atb-task'
  * @param task - the task record.
  * @param controller - the controller.
  * @param draggable - enable dragging.
+ * @param now - current epoch ms (stale-claim highlight).
  * @param onAlert - show an alert message (replaces native alert).
  */
-export function TaskCard({ task, controller, draggable = false, onAlert }: { task: TaskRecord; controller: BoardController; draggable?: boolean; onAlert?: (msg: string) => void }) {
+export function TaskCard({ task, controller, draggable = false, now, onAlert }: { task: TaskRecord; controller: BoardController; draggable?: boolean; now?: number; onAlert?: (msg: string) => void }) {
   const last = task.executions.length > 0 ? task.executions[task.executions.length - 1] : undefined
+  const running = task.executions.find(ex => ex.outcome === 'running')
+  const stale = now !== undefined && isStaleClaim(task, now)
   return (
     <button
       type="button"
@@ -33,7 +36,6 @@ export function TaskCard({ task, controller, draggable = false, onAlert }: { tas
       draggable={draggable}
       onDragStart={(e) => {
         // Block drag if a session is still executing this task
-        const running = task.executions.find(ex => ex.outcome === 'running')
         if (running !== undefined) {
           e.preventDefault()
           const msg = `该任务正在由【${task.title}】会话执行，不能拖动`
@@ -52,6 +54,7 @@ export function TaskCard({ task, controller, draggable = false, onAlert }: { tas
       <div className="dsh-atb-card-meta">
         <span className="dsh-atb-badge">{URGENCY_LABEL[task.urgency]}</span>
         {task.blocked && <span className="dsh-atb-badge" data-kind="blocked">受阻</span>}
+        {stale && <span className="dsh-atb-badge" data-kind="stale">⏱ 认领超时</span>}
         {task.execution.mode === 'scheduled' && (
           <span className="dsh-atb-badge" data-kind="scheduled">⏰ {fmtTime(task.execution.nextRunAt)}</span>
         )}

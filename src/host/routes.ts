@@ -21,9 +21,12 @@ import {
   newTaskId,
   normalizeBody,
   normalizeExecution,
+  normalizeModel,
   normalizePrompt,
   normalizeTitle,
   summarize,
+  syncClaim,
+  type TaskModel,
   type TaskRecord,
 } from '../shared/protocol.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
@@ -43,6 +46,23 @@ export interface TaskboardRoutesOptions {
   now: () => number
   /** Manual-run hook (the execution service); absent → 501. */
   run?: (taskId: string) => Promise<{ ok: true; executionId: string; sessionId: string } | { ok: false; error: string }>
+  /** Cancel hook (the execution service); absent → 501. */
+  cancel?: (taskId: string) => Promise<{ ok: true; executionId: string } | { ok: false; error: string }>
+  /**
+   * Registered model provider routes (from the host llm runtime), for
+   * advisory validation of pinned models; undefined = runtime unavailable.
+   */
+  modelProviders?: () => string[] | undefined
+}
+
+/** Validate a pinned model: structural check always, provider route when known. */
+function checkModel(raw: unknown, modelProviders?: () => string[] | undefined): TaskModel {
+  const model = normalizeModel(raw)
+  const providers = modelProviders?.()
+  if (providers !== undefined && !providers.includes(model.provider)) {
+    throw new Error(`Error: invalid_input: model provider "${model.provider}" has no registered route (available: ${providers.join(', ')})`)
+  }
+  return model
 }
 
 /** JSON-envelope writer. */
@@ -117,14 +137,6 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
   }
   store.subscribe(broadcast)
 
-  const taskPath = (id: string, action?: string): RegExp | null => {
-    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const pattern = action === undefined
-      ? `^${ROUTE_PREFIX}/tasks/${escaped}$`
-      : `^${ROUTE_PREFIX}/tasks/${escaped}/${action}$`
-    return new RegExp(pattern)
-  }
-
   const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       const url = new URL(req.url ?? '/', 'http://x')
@@ -181,7 +193,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const urgency = asUrgency(str(body, 'urgency') ?? '')
           const status = str(body, 'status') === null ? 'todo' as const : asStatus(str(body, 'status')!)
           const execution = normalizeExecution((body.execution as { mode?: string; cron?: string } | undefined) ?? {}, options.now())
-          const model = body.model as { provider: string; model: string } | undefined
+          const model = body.model === undefined ? undefined : checkModel(body.model, options.modelProviders)
           const now = options.now()
           const task: TaskRecord = {
             id: newTaskId(),
@@ -245,7 +257,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             // The GUI (task owner surface) may edit model/execution; null clears the model.
             if (body.execution !== undefined) next.execution = normalizeExecution(body.execution as { mode?: string; cron?: string }, options.now())
             if (body.model === null) next.model = undefined
-            else if (body.model !== undefined) next.model = body.model as { provider: string; model: string }
+            else if (body.model !== undefined) next.model = checkModel(body.model, options.modelProviders)
             next.version = task.version + 1
             next.updatedAt = options.now()
             next.updatedBy = { kind: 'user' }
@@ -270,6 +282,8 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             next.updatedAt = options.now()
             next.updatedBy = { kind: 'user' }
             if (task.status === 'todo' && to === 'in_progress') next.blocked = false
+            // A user move records no holder; leaving in_progress releases any hold.
+            syncClaim(next, to, options.now())
             await store.mutate('task-moved', ledger => {
               const i = ledger.tasks.findIndex(t => t.id === id)
               ledger.tasks[i] = next
@@ -332,6 +346,20 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             }
             return
           }
+          if (action === 'cancel') {
+            if (options.cancel === undefined) {
+              const f = fail('invalid_input', 'execution service unavailable')
+              json(res, f.res, 501)
+              return
+            }
+            const result = await options.cancel(id)
+            if (result.ok) json(res, { ok: true, value: { cancelled: true, executionId: result.executionId } }, 202)
+            else {
+              const f = fail('invalid_input', result.error)
+              json(res, f.res, f.status)
+            }
+            return
+          }
           const f = fail('not_found', `unknown action ${action}`)
           json(res, f.res, f.status)
         } catch (error) {
@@ -341,7 +369,6 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         return
       }
 
-      void taskPath
       res.writeHead(404)
       res.end()
     } catch (error) {

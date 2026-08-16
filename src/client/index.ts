@@ -16,6 +16,7 @@ import { BoardController } from './controller.ts'
 import { injectStyles } from './styles.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
+import { createSessionJumper, type SessionsServiceFace, type WorkspacesServiceFace } from './session-jump.ts'
 
 /** Client plugin name. */
 export const name = 'dsh-taskboard/client'
@@ -64,6 +65,15 @@ export function apply(ctx: ClientContextFace): void {
         return out
       }
     }
+
+    // Session navigation for execution rows: resolved LAZILY on every jump —
+    // apply may run before the runtime provides the services, and a captured
+    // undefined would permanently disable the jump. On a platform without
+    // them the jump degrades to an 'unavailable' notice instead of failing.
+    controller.installSessionJumper(createSessionJumper({
+      getSessions: () => ctx.get?.('sessions') as SessionsServiceFace | undefined,
+      getWorkspaces: () => ctx.get?.('workspaces') as WorkspacesServiceFace | undefined,
+    }))
 
     controller.start()
     const disposers: Array<() => void> = []

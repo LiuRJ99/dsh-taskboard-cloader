@@ -4,10 +4,11 @@
  *
  * @module dsh-taskboard/client/board/TaskBoard
  */
-import { useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { BoardController, ControllerState } from '../controller.ts'
 import type { TaskRecord, TaskStatus, Urgency } from '../../shared/protocol.ts'
 import { MAIN_STATUSES, canTransition } from '../../shared/protocol.ts'
+import { PLUGIN_VERSION } from '../../shared/version.ts'
 import { DRAG_TYPE, TaskCard } from './TaskCard.tsx'
 import { TaskDetail } from './TaskDetail.tsx'
 import { TaskFormModal } from './TaskFormModal.tsx'
@@ -40,11 +41,30 @@ export function fmtTime(ms: number | undefined): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-/** Apply the active filters to a task list. */
-function filterTasks(state: ControllerState, tasks: TaskRecord[]): TaskRecord[] {
-  return tasks.filter(t =>
+/** A claim idle for longer than this is highlighted as stale (ms). */
+export const STALE_CLAIM_MS = 30 * 60_000
+
+/** Whether the task's claim is stale (in_progress, held, idle too long). */
+export function isStaleClaim(task: TaskRecord, now: number): boolean {
+  return task.status === 'in_progress' && task.claimedAt !== undefined && now - task.claimedAt > STALE_CLAIM_MS
+}
+
+/** Urgency sort rank (urgent first). */
+const URGENCY_RANK: Record<Urgency, number> = { urgent: 0, normal: 1, relaxed: 2 }
+
+/** Apply the active filters + search + sort to a task list. */
+export function filterTasks(state: ControllerState, tasks: TaskRecord[]): TaskRecord[] {
+  const q = state.search.trim().toLowerCase()
+  const filtered = tasks.filter(t =>
     (state.filters.workspaceId === undefined || t.workspaceId === state.filters.workspaceId)
-    && (state.filters.urgencies.length === 0 || state.filters.urgencies.includes(t.urgency)))
+    && (state.filters.urgencies.length === 0 || state.filters.urgencies.includes(t.urgency))
+    && (q.length === 0 || t.title.toLowerCase().includes(q) || t.id.toLowerCase().includes(q)))
+  if (state.sortBy === 'default') return filtered
+  const sorted = [...filtered]
+  if (state.sortBy === 'updated') sorted.sort((a, b) => b.updatedAt - a.updatedAt)
+  else if (state.sortBy === 'created') sorted.sort((a, b) => b.createdAt - a.createdAt)
+  else if (state.sortBy === 'urgency') sorted.sort((a, b) => URGENCY_RANK[a.urgency] - URGENCY_RANK[b.urgency] || b.updatedAt - a.updatedAt)
+  return sorted
 }
 
 /**
@@ -56,6 +76,12 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
     cb => controller.subscribe(cb),
     () => controller.getSnapshot(),
   )
+  // Minute ticker: re-renders stale-claim highlights even without ledger changes.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(timer)
+  }, [])
   const live = filterTasks(state, state.ledger.tasks.filter(t => t.trashedAt === undefined))
   const selected = state.selectedId === undefined ? undefined : state.ledger.tasks.find(t => t.id === state.selectedId)
   const { alert: showAlert, el: alertEl } = useAlert()
@@ -69,6 +95,13 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
           + 新建任务
         </button>
         <div className="dsh-atb-spacer" />
+        <input
+          className="dsh-atb-input dsh-atb-search"
+          value={state.search}
+          placeholder="搜索标题 / ID…"
+          spellCheck={false}
+          onChange={e => controller.setSearch(e.target.value)}
+        />
         <select
           className="dsh-atb-select"
           value={state.filters.workspaceId ?? ''}
@@ -76,6 +109,17 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
         >
           <option value="">全部项目</option>
           {state.workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.title || ws.path}</option>)}
+        </select>
+        <select
+          className="dsh-atb-select"
+          value={state.sortBy}
+          title="列内排序"
+          onChange={e => controller.setSortBy(e.target.value as typeof state.sortBy)}
+        >
+          <option value="default">默认排序</option>
+          <option value="updated">最近更新</option>
+          <option value="urgency">按紧急度</option>
+          <option value="created">创建时间</option>
         </select>
         {(['urgent', 'normal', 'relaxed'] as const).map(u => (
           <button
@@ -93,6 +137,16 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
         <button type="button" className="dsh-atb-btn" onClick={() => controller.toggleSecondary()}>
           {state.secondaryOpen ? '返回看板' : '其它任务'}
         </button>
+        <button type="button" className="dsh-atb-btn" title="下载完整台账备份（JSON）" onClick={() => controller.exportJson()}>⬇ JSON</button>
+        <button type="button" className="dsh-atb-btn" title="下载任务清单（CSV）" onClick={() => controller.exportCsv()}>⬇ CSV</button>
+        <a
+          className="dsh-atb-ver"
+          href="https://github.com/cloader/dsh-taskboard"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          V{PLUGIN_VERSION}
+        </a>
       </div>
 
       {state.error !== undefined && <div className="dsh-atb-error">{state.error}</div>}
@@ -130,6 +184,7 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
                   }}
                 >
                   <div className="dsh-atb-colhead">
+                    <span className="dsh-atb-dot" data-status={status} />
                     {COLUMN_LABELS[status]}
                     <span className="dsh-atb-colcount">{columnTasks.length}</span>
                   </div>
@@ -140,6 +195,7 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
                         task={task}
                         controller={controller}
                         draggable
+                        now={now}
                         onAlert={showAlert}
                       />
                     ))}
@@ -153,7 +209,7 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
 
       {selected !== undefined && (
         <div className="dsh-atb-detailpanel">
-          <TaskDetail task={selected} controller={controller} />
+          <TaskDetail task={selected} controller={controller} now={now} />
         </div>
       )}
 
@@ -169,16 +225,42 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
   )
 }
 
-/** Secondary tab: canceled/archived/trashed rows. */
+/** Secondary tab: tasks grouped into canceled / archived / trashed columns. */
 function SecondaryTab({ controller, tasks }: { controller: BoardController; tasks: TaskRecord[] }) {
-  const rows = tasks.filter(t => t.status === 'canceled' || t.status === 'archived' || t.trashedAt !== undefined)
+  // Trashed takes precedence (a trashed task still carries its old status,
+  // but what matters to the user is the pending purge).
+  const trashed = tasks.filter(t => t.trashedAt !== undefined)
+  const archived = tasks.filter(t => t.trashedAt === undefined && t.status === 'archived')
+  const canceled = tasks.filter(t => t.trashedAt === undefined && t.status === 'canceled')
+  const groups = [
+    { label: '已取消', dot: 'canceled', rows: canceled },
+    { label: '已归档', dot: 'archived', rows: archived },
+    { label: '已删除', dot: 'trashed', rows: trashed },
+  ]
+  if (trashed.length + archived.length + canceled.length === 0) {
+    return (
+      <div className="dsh-atb-secondary">
+        <div className="dsh-atb-empty">无已取消 / 已归档 / 已删除任务</div>
+      </div>
+    )
+  }
   return (
-    <div className="dsh-atb-secondary">
-      {rows.length === 0 && <div className="dsh-atb-empty">无已取消 / 已归档 / 已删除任务</div>}
-      {rows.map(task => (
-        <TaskCard key={task.id} task={task} controller={controller} />
+    <div className="dsh-atb-columns">
+      {groups.map(group => (
+        <div className="dsh-atb-column" key={group.label}>
+          <div className="dsh-atb-colhead">
+            <span className="dsh-atb-dot" data-status={group.dot} />
+            {group.label}
+            <span className="dsh-atb-colcount">{group.rows.length}</span>
+          </div>
+          <div className="dsh-atb-cards">
+            {group.rows.map(task => (
+              <TaskCard key={task.id} task={task} controller={controller} />
+            ))}
+            {group.rows.length === 0 && <div className="dsh-atb-empty">无任务</div>}
+          </div>
+        </div>
       ))}
-      {void controller}
     </div>
   )
 }

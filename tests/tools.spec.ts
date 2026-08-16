@@ -35,12 +35,12 @@ function assertLossless(value: unknown, path = '$'): void {
 }
 
 /** Build the tool set and a fake agent exec context. */
-async function setup() {
+async function setup(deps: { modelProviders?: () => string[] | undefined } = {}) {
   const store = new TaskStore({ file: join(dir, `led-${Math.random().toString(36).slice(2)}.json`) })
   const registered: Array<Record<string, unknown>> = []
   const disposers = registerTaskboardTools(
     { tools: { register: tool => { registered.push(tool); return () => {} } } },
-    { store, workspaces, now: () => 7_000 },
+    { store, workspaces, now: () => 7_000, ...deps },
   )
   const tool = (name: string): {
     execute(args: unknown, exec: unknown): Promise<unknown>
@@ -140,6 +140,42 @@ describe('taskboard tool outputs', () => {
       .rejects.toThrow(/forbidden/)
     const moved = await tool('taskboard_move').execute({ id, status: 'in_progress', ifVersion: 1 }, exec)
     expect((moved as { task: { status: string } }).task.status).toBe('in_progress')
+    for (const dispose of disposers) dispose()
+  })
+
+  it('tracks the claim explicitly: claim records the holder; handoff releases it', async () => {
+    const { disposers, tool, exec } = await setup()
+    const created = await tool('taskboard_create').execute(
+      { title: 'Claim life', workspaceId: 'ws-a', urgency: 'normal' }, exec,
+    )
+    const id = (created as { task: { id: string } }).task.id
+    await tool('taskboard_move').execute({ id, status: 'in_progress', ifVersion: 1 }, exec)
+    let got = await tool('taskboard_get').execute({ id }, exec) as { task: { claimedBy?: string; version: number } }
+    expect(got.task.claimedBy).toBe('session-1')
+
+    // The holding session itself may hand off — and the move releases the hold.
+    const moved = await tool('taskboard_move').execute({ id, status: 'in_review', ifVersion: got.task.version }, exec)
+    expect((moved as { task: { status: string } }).task.status).toBe('in_review')
+    got = await tool('taskboard_get').execute({ id }, exec) as { task: { claimedBy?: string; version: number } }
+    expect(got.task.claimedBy).toBeUndefined()
+    for (const dispose of disposers) dispose()
+  })
+
+  it('validates pinned models structurally and against registered providers', async () => {
+    const { disposers, tool, exec } = await setup({ modelProviders: () => ['deepseek', 'openai'] })
+    // malformed: missing model id
+    await expect(tool('taskboard_create').execute(
+      { title: 'M1', workspaceId: 'ws-a', urgency: 'normal', model: { provider: 'deepseek' } }, exec,
+    )).rejects.toThrow('invalid_input')
+    // well-formed but the provider has no registered route
+    await expect(tool('taskboard_create').execute(
+      { title: 'M2', workspaceId: 'ws-a', urgency: 'normal', model: { provider: 'ghost', model: 'x' } }, exec,
+    )).rejects.toThrow('no registered route')
+    // registered provider passes and is trimmed
+    const ok = await tool('taskboard_create').execute(
+      { title: 'M3', workspaceId: 'ws-a', urgency: 'normal', model: { provider: ' deepseek ', model: ' reasoner ' } }, exec,
+    ) as { task: { model?: { provider: string; model: string } } }
+    expect(ok.task.model).toEqual({ provider: 'deepseek', model: 'reasoner' })
     for (const dispose of disposers) dispose()
   })
 })

@@ -3,7 +3,7 @@
  * discipline sentences, ledger store, and the tool-level code gates
  * (done-gate, claim boundary, version conflict, model/execution read-only).
  */
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -20,6 +20,7 @@ import {
   type TaskRecord,
 } from '../src/shared/protocol.ts'
 import { TASKBOARD_PROTOCOL } from '../src/host/protocol-text.ts'
+import { PLUGIN_VERSION } from '../src/shared/version.ts'
 import { TaskStore } from '../src/host/store.ts'
 import { ERR, registerTaskboardTools, type ToolDeps, type WorkspaceFace } from '../src/host/tools.ts'
 
@@ -103,6 +104,17 @@ describe('cron', () => {
 })
 
 // ---------------------------------------------------------------------------
+// version constant (UI badge drift guard)
+// ---------------------------------------------------------------------------
+
+describe('plugin version', () => {
+  it('PLUGIN_VERSION equals package.json version', async () => {
+    const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+    expect(PLUGIN_VERSION).toBe(pkg.version)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // protocol text regression (dashi-style: lock the discipline sentences)
 // ---------------------------------------------------------------------------
 
@@ -157,11 +169,84 @@ describe('TaskStore', () => {
 
   it('quarantines a corrupt ledger instead of throwing', async () => {
     const file = join(dir, 'corrupt.json')
-    const { writeFile } = await import('node:fs/promises')
     await writeFile(file, '{not json', 'utf8')
     const store = new TaskStore({ file })
     await expect(store.load()).resolves.toBeUndefined()
     expect(store.snapshot()).toEqual(emptyLedger())
+  })
+
+  it('hands out frozen clones — mutations cannot bypass the revision', async () => {
+    const file = join(dir, 'frozen.json')
+    const store = new TaskStore({ file })
+    await store.mutate('task-created', ledger => {
+      ledger.tasks.push(makeTask('t-f'))
+      return [ledger.tasks[0]!]
+    })
+    const snap = store.snapshot()
+    expect(Object.isFrozen(snap)).toBe(true)
+    expect(Object.isFrozen(snap.tasks[0])).toBe(true)
+    expect(Object.isFrozen(store.get('t-f'))).toBe(true)
+    // The sanctioned mutate path still works (it clones internally).
+    await store.mutate('task-updated', ledger => {
+      ledger.tasks[0]!.title = 'ok'
+      return [ledger.tasks[0]!]
+    })
+    expect(store.get('t-f')!.title).toBe('ok')
+  })
+
+  it('prunes execution records to the retention cap on every mutation', async () => {
+    const file = join(dir, 'prune.json')
+    const store = new TaskStore({ file })
+    await store.mutate('task-created', ledger => {
+      const big = makeTask('t-big', {
+        executions: Array.from({ length: 25 }, (_, i) => ({
+          id: `e-${i}`,
+          trigger: 'scheduled' as const,
+          startedAt: i,
+          endedAt: i + 1,
+          outcome: 'succeeded' as const,
+        })),
+      })
+      ledger.tasks.push(big)
+      return [big]
+    })
+    const task = store.get('t-big')!
+    expect(task.executions).toHaveLength(20)
+    expect(task.executionsPruned).toBe(5)
+    // The NEWEST records survive.
+    expect(task.executions[0]!.id).toBe('e-5')
+    expect(task.executions[19]!.id).toBe('e-24')
+  })
+
+  it('migrates legacy agent-held in_progress tasks to explicit claim fields', async () => {
+    const file = join(dir, 'legacy.json')
+    await writeFile(file, JSON.stringify({
+      schemaVersion: 1,
+      revision: 5,
+      tasks: [{
+        id: 't-old',
+        title: 'Legacy',
+        description: '',
+        prompt: '',
+        workspaceId: 'ws-a',
+        urgency: 'normal',
+        status: 'in_progress',
+        blocked: false,
+        execution: { mode: 'claim' },
+        version: 3,
+        createdAt: 0,
+        updatedAt: 42,
+        createdBy: { kind: 'user' },
+        updatedBy: { kind: 'agent', sessionId: 'sess-legacy' },
+        comments: [],
+        executions: [],
+      }],
+    }), 'utf8')
+    const store = new TaskStore({ file })
+    await store.load()
+    const task = store.get('t-old')!
+    expect(task.claimedBy).toBe('sess-legacy')
+    expect(task.claimedAt).toBe(42)
   })
 })
 

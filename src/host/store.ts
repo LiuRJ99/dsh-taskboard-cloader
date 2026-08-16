@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path'
 import {
   LEDGER_SCHEMA_VERSION,
   emptyLedger,
+  pruneExecutions,
   type TaskLedger,
   type TaskRecord,
 } from '../shared/protocol.ts'
@@ -55,7 +56,18 @@ export class TaskStore {
       const raw = await readFile(this.file, 'utf8')
       const parsed = JSON.parse(raw) as TaskLedger
       if (typeof parsed.revision === 'number' && Array.isArray(parsed.tasks)) {
-        this.ledger = { schemaVersion: LEDGER_SCHEMA_VERSION, revision: parsed.revision, tasks: parsed.tasks }
+        const tasks = parsed.tasks as TaskRecord[]
+        // Migration from pre-claim-field ledgers: an agent-held in_progress
+        // task carried its holder in updatedBy — backfill the explicit claim
+        // fields so the hold survives user edits (updatedBy is audit-only).
+        for (const task of tasks) {
+          if (task.status === 'in_progress' && task.claimedBy === undefined
+            && task.updatedBy?.kind === 'agent' && typeof task.updatedBy.sessionId === 'string') {
+            task.claimedBy = task.updatedBy.sessionId
+            task.claimedAt = task.updatedAt
+          }
+        }
+        this.ledger = { schemaVersion: LEDGER_SCHEMA_VERSION, revision: parsed.revision, tasks }
       }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
@@ -70,14 +82,19 @@ export class TaskStore {
     this.loaded = true
   }
 
-  /** The current immutable snapshot. */
+  /**
+   * The current snapshot — a deep-frozen clone. Mutating the returned value
+   * throws (strict mode) instead of silently bypassing the revision/persist
+   * path; internal state is never handed out.
+   */
   snapshot(): TaskLedger {
-    return this.ledger
+    return deepFreeze(structuredClone(this.ledger))
   }
 
-  /** Find a task by id. */
+  /** Find a task by id (frozen clone; internal state is never handed out). */
   get(id: string): TaskRecord | undefined {
-    return this.ledger.tasks.find(t => t.id === id)
+    const task = this.ledger.tasks.find(t => t.id === id)
+    return task === undefined ? undefined : deepFreeze(structuredClone(task))
   }
 
   /** Subscribe to committed changes; returns the unsubscribe. */
@@ -103,6 +120,9 @@ export class TaskStore {
       if (changed === undefined) {
         return { ledger: this.ledger, changed: [] }
       }
+      // Retention cap: every committed mutation re-checks the touched tasks,
+      // so execution history can never grow unbounded (SSE state payload).
+      for (const task of changed) pruneExecutions(task)
       draft.revision += 1
       const json = JSON.stringify(draft)
       await persistAtomic(this.file, json)
@@ -118,16 +138,17 @@ export class TaskStore {
     const result = (this.queue = this.queue.then(run, run)) as ReturnType<typeof run>
     return result
   }
+}
 
-  /** Persist the current ledger now (used after external reconciliation). */
-  async flush(kind: LedgerChange['kind'], changed: readonly TaskRecord[]): Promise<void> {
-    await this.mutate(kind, (ledger) => {
-      // replace tasks wholesale from the live snapshot objects
-      const byId = new Map(this.ledger.tasks.map(t => [t.id, t]))
-      ledger.tasks = ledger.tasks.map(t => byId.get(t.id) ?? t)
-      return [...changed]
-    })
+/** Recursively freeze a plain-data value (defense in depth for handed-out snapshots). */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    if (!Object.isFrozen(value)) Object.freeze(value)
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      deepFreeze((value as Record<string, unknown>)[key])
+    }
   }
+  return value
 }
 
 /** Atomic file persist: write temp, then rename over the target. */

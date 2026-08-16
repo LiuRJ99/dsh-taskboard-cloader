@@ -118,4 +118,243 @@ describe('client half', () => {
     controller.toggleBoard()
     expect((entry as HTMLElement).dataset.active).toBe('true')
   })
+
+  it('sidebar entry shows todo|in_progress|in_review counts with tooltip', async () => {
+    localStorage.clear()
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { mountSidebarEntry } = await import('../src/client/sidebar-entry.ts')
+
+    const mkTask = (id: string, status: string) => ({
+      id, title: id, description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: status as never, blocked: false,
+      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    })
+    const tasks = [
+      mkTask('t-1', 'todo'), mkTask('t-2', 'todo'),
+      mkTask('t-3', 'in_progress'),
+      mkTask('t-4', 'in_review'), mkTask('t-5', 'in_review'), mkTask('t-6', 'in_review'),
+      mkTask('t-7', 'done'),            // not counted
+      mkTask('t-8', 'backlog'),         // not counted
+    ]
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks }),
+      workspaces: async () => [],
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+    const dispose = mountSidebarEntry(controller)
+    disposers.push(dispose)
+    controller.start()
+    // Initial mount renders 0|0|0; the refresh then rolls each slot to the
+    // live counts. jsdom never fires transitionend, so the animation settles
+    // through the 400ms fallback — wait past it before asserting final text.
+    await new Promise(r => setTimeout(r, 460))
+
+    const stats = document.querySelector<HTMLElement>('.dsh-atb-entry-stats')
+    expect(stats).not.toBeNull()
+    // Slots + separators render as "todo|in_progress|in_review".
+    expect(stats!.textContent).toBe('2|1|3')
+    // Each slot carries its status so the stylesheet colors the digits.
+    const rolls = stats!.querySelectorAll<HTMLElement>('.dsh-atb-roll')
+    expect(rolls.length).toBe(3)
+    expect(rolls[0]!.dataset.stat).toBe('todo')
+    expect(rolls[1]!.dataset.stat).toBe('in_progress')
+    expect(rolls[2]!.dataset.stat).toBe('in_review')
+    // The tooltip explains the meaning and carries the live numbers.
+    expect(stats!.title).toContain('待办 2')
+    expect(stats!.title).toContain('进行中 1')
+    expect(stats!.title).toContain('待验收 3')
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('board columns wear status dots before their labels', async () => {
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskBoard } = await import('../src/client/board/TaskBoard.tsx')
+    const { MAIN_STATUSES } = await import('../src/shared/protocol.ts')
+
+    // One live task per lifecycle status; trashed takes precedence in the
+    // secondary tab, so the trashed task's old status stays 'canceled'.
+    const mkTask = (id: string, status: string, trashed = false) => ({
+      id, title: id, description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: status as never, blocked: false,
+      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+      ...(trashed ? { trashedAt: 1 } : {}),
+    })
+    const tasks = [
+      mkTask('t-1', 'backlog'), mkTask('t-2', 'todo'), mkTask('t-3', 'in_progress'),
+      mkTask('t-4', 'in_review'), mkTask('t-5', 'done'),
+      mkTask('t-6', 'canceled'), mkTask('t-7', 'archived'),
+      mkTask('t-8', 'canceled', true),
+    ]
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks }),
+      workspaces: async () => [],
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskBoard, { controller }))
+    controller.start()
+    // Let the refresh land and React commit outside act().
+    await new Promise(r => setTimeout(r, 20))
+
+    // Main view: one column head per main status, each starting with its
+    // status dot placed before the label text.
+    const heads = () => Array.from(host.querySelectorAll<HTMLElement>('.dsh-atb-colhead'))
+    expect(heads().length).toBe(MAIN_STATUSES.length)
+    for (const head of heads()) {
+      const dot = head.querySelector<HTMLElement>('.dsh-atb-dot')
+      expect(dot).not.toBeNull()
+      expect(head.firstChild).toBe(dot)
+    }
+    const dotStatuses = heads().map(h => h.querySelector<HTMLElement>('.dsh-atb-dot')!.dataset.status)
+    expect(dotStatuses).toEqual([...MAIN_STATUSES])
+
+    // Secondary tab: canceled / archived / trashed groups wear their dots too.
+    controller.toggleSecondary()
+    await new Promise(r => setTimeout(r, 20))
+    for (const key of ['canceled', 'archived', 'trashed']) {
+      const dot = host.querySelector<HTMLElement>(`.dsh-atb-colhead .dsh-atb-dot[data-status="${key}"]`)
+      expect(dot, `secondary dot for ${key}`).not.toBeNull()
+    }
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+  })
+
+  it('session jump opens live sessions and guards deleted/archived ones', async () => {
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { createSessionJumper } = await import('../src/client/session-jump.ts')
+
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [],
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+    controller.openBoard()
+
+    // Fake runtime services: list mirror + archive set + staging open.
+    let byId: Record<string, unknown> = { 's-live': {}, 's-arch': {} }
+    let lagging = false // when true, refresh() reveals the late-listed session
+    const opened: string[] = []
+    let refreshed = 0
+    const sessions = {
+      open: (id: string) => { opened.push(id) },
+      refresh: async () => {
+        refreshed++
+        if (lagging) byId = { ...byId, 's-late': {} }
+      },
+      list: { getSnapshot: () => ({ byId }) },
+    }
+    const workspaces = { list: { getSnapshot: () => ({ archivedSessionIds: ['s-arch'] }) } }
+
+    // LAZY resolution: services absent at first (jump degrades), then present.
+    let provided = false
+    controller.installSessionJumper(createSessionJumper({
+      getSessions: () => (provided ? sessions : undefined) as never,
+      getWorkspaces: () => (provided ? workspaces : undefined) as never,
+    }))
+    expect(await controller.openSession('s-live')).toBe('unavailable')
+    expect(controller.getSnapshot().boardOpen).toBe(true)
+    provided = true
+
+    // Listed + not archived: opens, and the board closes over the session.
+    expect(await controller.openSession('s-live')).toBe('opened')
+    expect(opened).toEqual(['s-live'])
+    expect(controller.getSnapshot().boardOpen).toBe(false)
+
+    // Archived: a definitive verdict — no refresh, never opened.
+    controller.openBoard()
+    expect(await controller.openSession('s-arch')).toBe('archived')
+    expect(refreshed).toBe(0)
+    expect(opened).toEqual(['s-live'])
+    expect(controller.getSnapshot().boardOpen).toBe(true)
+
+    // Deleted (absent from the list): one refresh re-check, still missing.
+    expect(await controller.openSession('s-gone')).toBe('missing')
+    expect(refreshed).toBe(1)
+    expect(opened).toEqual(['s-live'])
+
+    // Lagging mirror: the refresh reveals the session and the jump opens it.
+    lagging = true
+    expect(await controller.openSession('s-late')).toBe('opened')
+    expect(refreshed).toBe(2)
+    expect(opened).toEqual(['s-live', 's-late'])
+
+    controller.dispose()
+  })
+
+  it('controller: search filter, urgency sort, and persisted view state', async () => {
+    localStorage.clear()
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { filterTasks } = await import('../src/client/board/TaskBoard.tsx')
+
+    const mkTask = (id: string, title: string, urgency: 'urgent' | 'normal' | 'relaxed', updatedAt: number) => ({
+      id, title, description: '', prompt: '', workspaceId: 'ws-a', urgency,
+      status: 'todo' as const, blocked: false, execution: { mode: 'claim' as const },
+      version: 1, createdAt: updatedAt - 10, updatedAt,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    })
+    const tasks = [
+      mkTask('t-slow', '巡检服务器', 'relaxed', 100),
+      mkTask('t-fix', '修复登录 BUG', 'urgent', 50),
+      mkTask('t-doc', '补文档', 'normal', 200),
+    ]
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks }),
+      workspaces: async () => [],
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    // Search by title and by id (case-insensitive).
+    let state = controller.getSnapshot()
+    expect(filterTasks(state, tasks).map(t => t.id)).toEqual(['t-slow', 't-fix', 't-doc'])
+    controller.setSearch('BUG')
+    state = controller.getSnapshot()
+    expect(filterTasks(state, tasks).map(t => t.id)).toEqual(['t-fix'])
+    controller.setSearch('T-DOC')
+    state = controller.getSnapshot()
+    expect(filterTasks(state, tasks).map(t => t.id)).toEqual(['t-doc'])
+    controller.setSearch('')
+
+    // Sort by urgency (urgent → normal → relaxed), tie-break by updated desc.
+    controller.setSortBy('urgency')
+    state = controller.getSnapshot()
+    expect(filterTasks(state, tasks).map(t => t.id)).toEqual(['t-fix', 't-doc', 't-slow'])
+    // Sort by recent update.
+    controller.setSortBy('updated')
+    state = controller.getSnapshot()
+    expect(filterTasks(state, tasks).map(t => t.id)).toEqual(['t-doc', 't-slow', 't-fix'])
+
+    // Filters + sort persist to localStorage and hydrate a fresh controller.
+    controller.setWorkspaceFilter('ws-a')
+    const persisted = JSON.parse(localStorage.getItem('dsh-taskboard-view-v1')!) as { workspaceId?: string; sortBy?: string }
+    expect(persisted.workspaceId).toBe('ws-a')
+    expect(persisted.sortBy).toBe('updated')
+    const second = new BoardController(client as never)
+    expect(second.getSnapshot().sortBy).toBe('updated')
+    expect(second.getSnapshot().filters.workspaceId).toBe('ws-a')
+    // Search is transient — never persisted.
+    expect(persisted).not.toHaveProperty('search')
+    controller.dispose()
+    second.dispose()
+    localStorage.clear()
+  })
 })

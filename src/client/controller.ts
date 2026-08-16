@@ -11,6 +11,7 @@ import type { ChangeEvent, UpdateTaskBody, WorkspaceView } from '../shared/api.t
 import type { TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
+import type { SessionJumpResult } from './session-jump.ts'
 
 /** View filters over the ledger. */
 export interface BoardFilters {
@@ -20,12 +21,39 @@ export interface BoardFilters {
   urgencies: Urgency[]
 }
 
+/** Column sort orders. */
+export type SortBy = 'default' | 'updated' | 'urgency' | 'created'
+
+/** localStorage key for persisted view state (filters + sort). */
+const VIEW_KEY = 'dsh-taskboard-view-v1'
+
+/** Load the persisted view state (never throws; fresh on any parse error). */
+function loadView(): { workspaceId?: string; urgencies: Urgency[]; sortBy: SortBy } {
+  try {
+    const raw = localStorage.getItem(VIEW_KEY)
+    if (raw === null) return { urgencies: [], sortBy: 'default' }
+    const parsed = JSON.parse(raw) as { workspaceId?: string; urgencies?: Urgency[]; sortBy?: SortBy }
+    const sortBy = parsed.sortBy === 'updated' || parsed.sortBy === 'urgency' || parsed.sortBy === 'created' ? parsed.sortBy : 'default'
+    return {
+      workspaceId: typeof parsed.workspaceId === 'string' ? parsed.workspaceId : undefined,
+      urgencies: Array.isArray(parsed.urgencies) ? parsed.urgencies.filter(u => u === 'urgent' || u === 'normal' || u === 'relaxed') : [],
+      sortBy,
+    }
+  } catch {
+    return { urgencies: [], sortBy: 'default' }
+  }
+}
+
 /** Controller snapshot the views render. */
 export interface ControllerState {
   boardOpen: boolean
   ledger: TaskLedger
   workspaces: WorkspaceView[]
   filters: BoardFilters
+  /** Free-text search over title/id (case-insensitive). */
+  search: string
+  /** Column sort order. */
+  sortBy: SortBy
   /** Selected task id (detail view); undefined closes the detail. */
   selectedId?: string
   /** Task form modal visible (create when editingId is unset). */
@@ -38,13 +66,16 @@ export interface ControllerState {
   error?: string
 }
 
-/** Instantiate the default state. */
+/** Instantiate the default state (view state hydrated from localStorage). */
 function initialState(): ControllerState {
+  const view = loadView()
   return {
     boardOpen: false,
     ledger: emptyLedger(),
     workspaces: [],
-    filters: { urgencies: [] },
+    filters: { workspaceId: view.workspaceId, urgencies: view.urgencies },
+    search: '',
+    sortBy: view.sortBy,
     composerOpen: false,
     secondaryOpen: false,
   }
@@ -59,6 +90,7 @@ export class BoardController {
   private disposed = false
   private disposeStream: (() => void) | undefined
   private refreshInFlight: Promise<void> | undefined
+  private sessionJumper: ((sessionId: string) => Promise<SessionJumpResult>) | undefined
 
   /** @param client - the route client. */
   constructor(private readonly client: TaskboardClient) {}
@@ -137,17 +169,41 @@ export class BoardController {
   /** Toggle the board. */
   toggleBoard(): void { this.setState({ boardOpen: !this.state.boardOpen }) }
 
-  /** Set the project filter. */
+  /** Set the project filter (persisted). */
   setWorkspaceFilter(workspaceId?: string): void {
     this.setState({ filters: { ...this.state.filters, workspaceId } })
+    this.persistView()
   }
 
-  /** Toggle one urgency chip. */
+  /** Toggle one urgency chip (persisted). */
   toggleUrgency(urgency: Urgency): void {
     const set = new Set(this.state.filters.urgencies)
     if (set.has(urgency)) set.delete(urgency)
     else set.add(urgency)
     this.setState({ filters: { ...this.state.filters, urgencies: [...set] } })
+    this.persistView()
+  }
+
+  /** Set the free-text search (transient — not persisted). */
+  setSearch(search: string): void {
+    this.setState({ search })
+  }
+
+  /** Set the column sort order (persisted). */
+  setSortBy(sortBy: SortBy): void {
+    this.setState({ sortBy })
+    this.persistView()
+  }
+
+  /** Write the current view state to localStorage (best effort). */
+  private persistView(): void {
+    try {
+      localStorage.setItem(VIEW_KEY, JSON.stringify({
+        workspaceId: this.state.filters.workspaceId,
+        urgencies: this.state.filters.urgencies,
+        sortBy: this.state.sortBy,
+      }))
+    } catch { /* storage unavailable (private mode etc.) — view just won't persist */ }
   }
 
   /** Select a task (open detail). */
@@ -164,6 +220,34 @@ export class BoardController {
 
   /** Toggle the secondary tab. */
   toggleSecondary(): void { this.setState({ secondaryOpen: !this.state.secondaryOpen }) }
+
+  /**
+   * Install the session-jump bridge (built from the runtime sessions service
+   * by the client entry). Without it openSession reports 'unavailable'.
+   * @param jumper - the jump function from createSessionJumper.
+   */
+  installSessionJumper(jumper: (sessionId: string) => Promise<SessionJumpResult>): void {
+    this.sessionJumper = jumper
+  }
+
+  /**
+   * Jump to an execution's session (open it in the GUI). On success the board
+   * closes so the conversation shows; a deleted-or-archived session reports
+   * 'missing' for the caller to prompt about.
+   * @param sessionId - the execution's session id.
+   * @returns the jump outcome.
+   */
+  async openSession(sessionId: string): Promise<SessionJumpResult> {
+    if (this.sessionJumper === undefined) return 'unavailable'
+    let result: SessionJumpResult
+    try {
+      result = await this.sessionJumper(sessionId)
+    } catch {
+      return 'unavailable'
+    }
+    if (result === 'opened') this.closeBoard()
+    return result
+  }
 
   // ---------------------------------------------------------------- writes
   /** Create a task (composer submit); returns the new task id, undefined on failure. */
@@ -232,12 +316,87 @@ export class BoardController {
     }
   }
 
+  /** Cancel the running execution (stops the agent session; task returns to todo). */
+  async cancel(id: string): Promise<void> {
+    try {
+      await this.client.cancel(id)
+      await this.refresh()
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   /** Soft-delete (agent parity) then optional purge. */
   async remove(id: string, ifVersion: number, purge: boolean): Promise<void> {
     try {
       await this.client.remove(id, purge ? { purge: true } : { ifVersion })
       if (purge) this.setState({ selectedId: undefined })
       await this.refresh()
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  /** Duplicate a task into a fresh todo card (same project/urgency/prompt/execution/model). */
+  async duplicate(task: TaskRecord): Promise<void> {
+    try {
+      await this.client.create({
+        title: `${task.title}（副本）`,
+        workspaceId: task.workspaceId,
+        urgency: task.urgency,
+        description: task.description.length > 0 ? task.description : undefined,
+        prompt: task.prompt.length > 0 ? task.prompt : undefined,
+        execution: task.execution.mode === 'scheduled' && task.execution.cron !== undefined
+          ? { mode: 'scheduled', cron: task.execution.cron }
+          : { mode: 'claim' },
+        model: task.model,
+      })
+      await this.refresh()
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  /** Download the whole ledger as a JSON backup file. */
+  exportJson(): void {
+    const stamp = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const name = `dsh-taskboard-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}.json`
+    const body = JSON.stringify(this.state.ledger, null, 2)
+    this.download(name, body, 'application/json')
+  }
+
+  /** Download the task list as a CSV (BOM-prefixed for Excel + Chinese text). */
+  exportCsv(): void {
+    const esc = (v: unknown): string => {
+      const s = String(v ?? '')
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const header = ['id', 'title', 'status', 'urgency', 'blocked', 'project', 'claimedBy', 'mode', 'cron', 'nextRunAt', 'model', 'createdAt', 'updatedAt', 'comments', 'executions']
+    const rows = this.state.ledger.tasks.map(t => [
+      t.id, t.title, t.status, t.urgency, t.blocked ? 'yes' : 'no', t.workspaceId,
+      t.claimedBy ?? '', t.execution.mode, t.execution.cron ?? '',
+      t.execution.nextRunAt !== undefined ? new Date(t.execution.nextRunAt).toISOString() : '',
+      t.model !== undefined ? `${t.model.provider}/${t.model.model}` : '',
+      new Date(t.createdAt).toISOString(), new Date(t.updatedAt).toISOString(),
+      t.comments.length, t.executions.length,
+    ].map(esc).join(','))
+    const stamp = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const name = `dsh-taskboard-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}.csv`
+    this.download(name, `\uFEFF${[header.join(','), ...rows].join('\r\n')}`, 'text/csv')
+  }
+
+  /** Trigger a browser download (no-op when the DOM is unavailable). */
+  private download(filename: string, body: string, type: string): void {
+    try {
+      const blob = new Blob([body], { type })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 5_000)
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) })
     }

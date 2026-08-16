@@ -59,9 +59,104 @@ function createEntry(controller: BoardController): HTMLButtonElement {
   entry.dataset.dshAtbEntry = ''
   entry.className = 'dsh-atb-entry'
   entry.setAttribute('aria-label', 'Agent 任务看板')
-  entry.innerHTML = `<span class="dsh-atb-entry-icon">${ICON}</span><span class="dsh-atb-entry-label">任务看板</span>`
+  entry.innerHTML = `<span class="dsh-atb-entry-icon">${ICON}</span><span class="dsh-atb-entry-label">任务看板</span><span class="dsh-atb-entry-stats"></span>`
   entry.addEventListener('click', () => { controller.toggleBoard() })
   return entry
+}
+
+/**
+ * Live status counts shown at the right of the entry row:
+ * `[todo, in_progress, in_review]` (trashed tasks excluded).
+ */
+function entryStats(controller: BoardController): [number, number, number] {
+  let todo = 0
+  let inProgress = 0
+  let inReview = 0
+  for (const task of controller.getSnapshot().ledger.tasks) {
+    if (task.trashedAt !== undefined) continue
+    if (task.status === 'todo') todo++
+    else if (task.status === 'in_progress') inProgress++
+    else if (task.status === 'in_review') inReview++
+  }
+  return [todo, inProgress, inReview]
+}
+
+/**
+ * Set one rolling-number slot. Unchanged values no-op; changes animate the
+ * old value out and the new value in with a vertical scroll (up when the
+ * count grows, down when it shrinks). Plain DOM, no React.
+ */
+function setRollValue(slot: HTMLElement, value: number): void {
+  const text = String(value)
+  if (slot.dataset.value === text) return
+  const previous = slot.dataset.value
+  slot.dataset.value = text
+  slot.style.minWidth = `${text.length}ch`
+  // First render (no previous value): plain text, no animation.
+  if (previous === undefined) {
+    slot.textContent = text
+    return
+  }
+  // Finalize any in-flight animation before starting the next one.
+  if (slot.dataset.busy === '1') {
+    slot.dataset.busy = ''
+    slot.dataset.anim = ''
+  }
+  const oldEl = document.createElement('span')
+  oldEl.className = 'dsh-atb-rn'
+  oldEl.textContent = previous
+  const newEl = document.createElement('span')
+  newEl.className = 'dsh-atb-rn dsh-atb-rn-next'
+  newEl.textContent = text
+  slot.replaceChildren(oldEl, newEl)
+  // Grow → the strip scrolls up (new enters from below); shrink → down.
+  slot.dataset.dir = value > Number(previous) ? 'up' : 'down'
+  slot.dataset.busy = '1'
+  requestAnimationFrame(() => { slot.dataset.anim = '1' })
+  const finish = (): void => {
+    if (slot.dataset.busy !== '1') return
+    slot.dataset.busy = ''
+    slot.dataset.anim = ''
+    slot.textContent = slot.dataset.value ?? ''
+  }
+  slot.addEventListener('transitionend', finish, { once: true })
+  // Fallback when transitionend never fires (hidden tab, reduced motion).
+  setTimeout(finish, 400)
+}
+
+/**
+ * Wire the stats strip into the entry: builds the three slots and keeps them
+ * (plus the tooltip) in sync with every controller emit.
+ * @returns the update function (also called once immediately).
+ */
+function wireStats(entry: HTMLButtonElement, controller: BoardController): () => void {
+  const stats = entry.querySelector<HTMLElement>('.dsh-atb-entry-stats')
+  if (stats === null) return () => {}
+  // Slot order = [todo, in_progress, in_review]; each slot carries its status
+  // in data-stat so the stylesheet colors the digits (see .dsh-atb-roll).
+  const statKeys = ['todo', 'in_progress', 'in_review'] as const
+  const slots: HTMLElement[] = []
+  for (let i = 0; i < 3; i++) {
+    if (i > 0) {
+      const sep = document.createElement('span')
+      sep.className = 'dsh-atb-entry-sep'
+      sep.textContent = '|'
+      stats.append(sep)
+    }
+    const slot = document.createElement('span')
+    slot.className = 'dsh-atb-roll'
+    slot.dataset.stat = statKeys[i]
+    stats.append(slot)
+    slots.push(slot)
+  }
+  const update = (): void => {
+    const [todo, inProgress, inReview] = entryStats(controller)
+    setRollValue(slots[0]!, todo)
+    setRollValue(slots[1]!, inProgress)
+    setRollValue(slots[2]!, inReview)
+    stats.title = `待办 ${todo} ｜ 进行中 ${inProgress} ｜ 待验收 ${inReview}（待办|进行中|待验收）`
+  }
+  return update
 }
 
 /** Re-insert the entry after the New Session row (before the browser region). */
@@ -146,9 +241,11 @@ export function mountSidebarEntry(controller: BoardController): () => void {
   // alone; the timer costs one cheap contains-check per tick once placed).
   const retry = setInterval(() => { tryPlace() }, 2_000)
 
+  const syncStats = wireStats(entry, controller)
   const syncActive = () => {
     if (controller.getSnapshot().boardOpen) entry.dataset.active = 'true'
     else delete entry.dataset.active
+    syncStats()
   }
   const unsubscribe = controller.subscribe(syncActive)
   syncActive()

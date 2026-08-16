@@ -11,7 +11,8 @@ import { useState, type ReactNode } from 'react'
 import type { BoardController } from '../controller.ts'
 import type { TaskRecord } from '../../shared/protocol.ts'
 import { canTransition } from '../../shared/protocol.ts'
-import { fmtTime } from './TaskBoard.tsx'
+import { useAlert } from './AlertModal.tsx'
+import { fmtTime, isStaleClaim } from './TaskBoard.tsx'
 
 /** Statuses a user may move this task to, per the state machine. */
 function moveTargets(task: TaskRecord): TaskRecord['status'][] {
@@ -27,10 +28,10 @@ const STATUS_LABEL: Record<string, string> = { ...MOVE_LABEL }
 const URGENCY_LABEL: Record<string, string> = { urgent: '紧急', normal: '一般', relaxed: '不急' }
 const OUTCOME_LABEL: Record<string, string> = { running: '执行中', succeeded: '成功', failed: '失败', cancelled: '已取消' }
 
-/** Compact session-id display. */
+/** Compact session-id display (execution sessions carry the taskboard infix). */
 function shortId(id: string | undefined): string {
   if (id === undefined) return ''
-  return id.replace(/^session-/, '').slice(0, 8)
+  return id.replace(/^session-(taskboard-)?/, '').slice(0, 8)
 }
 
 /** Execution duration between start and end. */
@@ -51,13 +52,28 @@ function Chip({ icon, children, tone }: { icon?: string; children: ReactNode; to
  * The detail view.
  * @param task - the task record.
  * @param controller - the controller.
+ * @param now - current epoch ms (stale-claim highlight).
  */
-export function TaskDetail({ task, controller }: { task: TaskRecord; controller: BoardController }) {
+export function TaskDetail({ task, controller, now }: { task: TaskRecord; controller: BoardController; now?: number }) {
   const [comment, setComment] = useState('')
   const [confirmDone, setConfirmDone] = useState(false)
   const [confirmPurge, setConfirmPurge] = useState(false)
+  const [confirmCancel, setConfirmCancel] = useState(false)
+  const { alert: showAlert, el: alertEl } = useAlert()
   const ws = controller.getSnapshot().workspaces.find(w => w.id === task.workspaceId)
   const canRun = task.status !== 'in_progress' && task.status !== 'done' && task.status !== 'archived'
+  const runningExecution = task.executions.find(e => e.outcome === 'running')
+  const holder = task.status === 'in_progress' ? task.claimedBy : undefined
+  const stale = now !== undefined && isStaleClaim(task, now)
+
+  /** Jump to an execution's session; prompt precisely when it cannot open. */
+  const jumpToSession = (sessionId: string): void => {
+    void controller.openSession(sessionId).then(result => {
+      if (result === 'missing') showAlert(`该会话已被删除（${shortId(sessionId)}），无法打开`)
+      else if (result === 'archived') showAlert(`该会话已归档（${shortId(sessionId)}），已从会话列表隐藏`)
+      else if (result === 'unavailable') showAlert(`会话导航不可用，会话 ID：${sessionId}`)
+    })
+  }
 
   return (
     <div className="dsh-atb-detail" data-urgency={task.urgency}>
@@ -75,6 +91,11 @@ export function TaskDetail({ task, controller }: { task: TaskRecord; controller:
               <Chip icon="⏰">{task.execution.cron} · 下次 {fmtTime(task.execution.nextRunAt)}</Chip>
             )}
             {task.blocked && <Chip icon="⛔" tone="urgent">受阻</Chip>}
+            {holder !== undefined && (
+              <Chip icon={stale ? '⏱' : '🔑'} tone={stale ? 'urgent' : undefined}>
+                {stale ? '认领超时 · ' : '由 '}{shortId(holder)} 持有
+              </Chip>
+            )}
             {task.trashedAt !== undefined && <Chip icon="🗑" tone="urgent">已删除待清除</Chip>}
             <Chip>v{task.version}</Chip>
           </div>
@@ -84,6 +105,14 @@ export function TaskDetail({ task, controller }: { task: TaskRecord; controller:
         </div>
         <div className="dsh-atb-detail-topbtns">
           <button type="button" className="dsh-atb-detail-edit" onClick={() => controller.openEditor(task.id)}>✎ 编辑</button>
+          <button
+            type="button"
+            className="dsh-atb-detail-edit"
+            title="复制此任务的全部配置为一张新卡（待办列）"
+            onClick={() => void controller.duplicate(task)}
+          >
+            ⧉ 复制
+          </button>
           {canRun && (
             <button
               type="button"
@@ -94,6 +123,25 @@ export function TaskDetail({ task, controller }: { task: TaskRecord; controller:
               ▶ 立即执行
             </button>
           )}
+          {runningExecution !== undefined && (confirmCancel
+            ? (
+              <span className="dsh-atb-confirm">
+                <span className="dsh-atb-confirm-label">停止该执行会话？</span>
+                <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => { void controller.cancel(task.id); setConfirmCancel(false) }}>停止</button>
+                <button type="button" className="dsh-atb-btn" onClick={() => setConfirmCancel(false)}>取消</button>
+              </span>
+            )
+            : (
+              <button
+                type="button"
+                className="dsh-atb-detail-run"
+                data-danger="true"
+                title={`停止执行会话 ${runningExecution.sessionId ?? ''}（任务回到待办）`}
+                onClick={() => setConfirmCancel(true)}
+              >
+                ■ 停止执行
+              </button>
+            ))}
           <button type="button" className="dsh-atb-detail-close" aria-label="关闭" onClick={() => controller.select(undefined)}>✕</button>
         </div>
       </div>
@@ -132,6 +180,17 @@ export function TaskDetail({ task, controller }: { task: TaskRecord; controller:
           <button type="button" className="dsh-atb-movebtn" data-to="blocked" onClick={() => void controller.toggleBlocked(task)}>
             {task.blocked ? '✓ 解除受阻' : '⛔ 标记受阻'}
           </button>
+          {holder !== undefined && (
+            <button
+              type="button"
+              className="dsh-atb-movebtn"
+              data-to="release"
+              title={`释放 ${holder} 的认领：任务回到待办（持有会话可能仍在工作，确认它已停止后再释放）`}
+              onClick={() => void controller.move(task.id, task.version, 'todo')}
+            >
+              🔓 释放认领
+            </button>
+          )}
         </div>
       </div>
 
@@ -181,15 +240,28 @@ export function TaskDetail({ task, controller }: { task: TaskRecord; controller:
 
       {task.executions.length > 0 && (
         <div className="dsh-atb-section">
-          <h4>执行记录<span className="dsh-atb-count2">{task.executions.length}</span></h4>
+          <h4>执行记录<span className="dsh-atb-count2">{task.executions.length}</span>
+            {task.executionsPruned !== undefined && task.executionsPruned > 0 && (
+              <span className="dsh-atb-count2" title={`更早的 ${task.executionsPruned} 条执行记录已按保留上限清理`}>+{task.executionsPruned} 已清理</span>
+            )}
+          </h4>
           <div className="dsh-atb-execlist">
-            {task.executions.map(e => (
+            {[...task.executions].reverse().map(e => (
               <div key={e.id} className="dsh-atb-exec-row">
                 <span className="dsh-atb-exec-dot" data-outcome={e.outcome} />
                 <span className="dsh-atb-exec-trigger">{e.trigger === 'manual' ? '手动' : '定时'}</span>
                 <span className="dsh-atb-exec-outcome" data-outcome={e.outcome}>{OUTCOME_LABEL[e.outcome] ?? e.outcome}</span>
                 <span className="dsh-atb-exec-time">{fmtTime(e.startedAt)}{e.endedAt !== undefined && ` · ${duration(e.startedAt, e.endedAt)}`}</span>
-                {e.sessionId !== undefined && <span className="dsh-atb-exec-session" title={e.sessionId}>🤖 {shortId(e.sessionId)}</span>}
+                {e.sessionId !== undefined && (
+                  <button
+                    type="button"
+                    className="dsh-atb-exec-session"
+                    title={`点击打开该执行会话：${e.sessionId}`}
+                    onClick={() => jumpToSession(e.sessionId!)}
+                  >
+                    🤖 {shortId(e.sessionId)} ↗
+                  </button>
+                )}
                 {e.error !== undefined && <span className="dsh-atb-exec-error" title={e.error}>{e.error.slice(0, 80)}{e.error.length > 80 ? '…' : ''}</span>}
               </div>
             ))}
@@ -210,6 +282,8 @@ export function TaskDetail({ task, controller }: { task: TaskRecord; controller:
                 )
               : <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => setConfirmPurge(true)}>🔥 物理清除（需确认）</button>)}
       </div>
+
+      {alertEl}
     </div>
   )
 }
