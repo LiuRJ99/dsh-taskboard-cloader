@@ -133,7 +133,7 @@ export function apply(ctx: Context): void {
           store,
           workspaces: workspaceFace(wsCtx.workspaceRegistry),
           now,
-          run: (taskId: string) => execution.run(taskId, 'manual'),
+          run: (taskId: string, runOptions?: { reuseWorktree?: boolean }) => execution.run(taskId, 'manual', runOptions),
           cancel: (taskId: string) => execution.cancel(taskId),
           modelProviders,
           git,

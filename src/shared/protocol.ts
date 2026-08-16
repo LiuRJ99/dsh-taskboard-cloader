@@ -286,10 +286,14 @@ export type ExecutionRecord = {
   baseCommit?: string
   /** HEAD at settlement. */
   headCommit?: string
-  /** Commits between baseCommit and headCommit (hash + subject). */
+  /** Commits between baseCommit and headCommit (hash + subject; capped at 50, newest first). */
   commits?: CommitInfo[]
-  /** Uncommitted changes present at settlement (`git status --porcelain` lines). */
+  /** Total commits before the evidence cap (equals commits.length when under it). */
+  commitsTotal?: number
+  /** Uncommitted changes present at settlement (`git status --porcelain` lines; capped at 100). */
   dirtyFiles?: string[]
+  /** Total uncommitted lines before the evidence cap. */
+  dirtyFilesTotal?: number
   /** Aggregate diff stat between baseCommit and headCommit. */
   diffStat?: string
   /** How many files differ between baseCommit and headCommit. */

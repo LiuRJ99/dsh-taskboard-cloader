@@ -486,6 +486,78 @@ describe('client half', () => {
     localStorage.clear()
   })
 
+  it('detail: 续跑 button only with a pinned branch; noop merge surfaces an info alert', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
+
+    const mkTask = (branch?: string) => ({
+      id: 't-r', title: 'R', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'todo' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
+      ...(branch !== undefined ? { branch } : {}),
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    })
+
+    const runCalls: Array<[string, boolean]> = []
+    let noopNext = false
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [mkTask('task/R+t-r')] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      run: async (id: string, body?: { reuse?: boolean }) => { runCalls.push([id, body?.reuse === true]); return { executionId: 'e', sessionId: 's' } },
+      mergeBranch: async (id: string) => (noopNext
+        ? { merged: false, noop: true, branch: 'task/R+t-r' }
+        : { merged: true, branch: 'task/R+t-r' }),
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    // With a pinned branch: both 续跑 and 立即执行 appear; clicks carry reuse flag.
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskDetail, { task: mkTask('task/R+t-r') as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+    const btns = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-detail-topbtns .dsh-atb-detail-run'))
+    const resume = btns().find(b => b.textContent!.includes('续跑'))!
+    const fresh = btns().find(b => b.textContent!.includes('立即执行'))!
+    resume.click()
+    fresh.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(runCalls).toEqual([['t-r', true], ['t-r', false]])
+
+    // Noop merge: an info alert renders (task needs an isolated execution so
+    // the isolation block with the merge button shows).
+    noopNext = true
+    root.unmount()
+    const root2 = createRoot(host)
+    const task2 = { ...mkTask('task/R+t-r'), status: 'in_review', executions: [{
+      id: 'e-1', trigger: 'manual' as const, startedAt: 0, endedAt: 1, outcome: 'succeeded' as const,
+      isolation: 'worktree' as const, branch: 'task/R+t-r', worktreePath: '/p/a/.dsh-worktrees/t-r',
+      baseCommit: 'a0', headCommit: 'b1', commits: [{ hash: 'b1', subject: 'x' }], commitsTotal: 1,
+      dirtyFiles: [], dirtyFilesTotal: 0, changedFiles: 1,
+    }] }
+    root2.render(React.createElement(TaskDetail, { task: task2 as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+    const mergeBtn2 = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-iso-actions .dsh-atb-btn')).find(b => b.textContent!.includes('合并到主工作区'))!
+    mergeBtn2.click()
+    await new Promise(r => setTimeout(r, 10))
+    const confirmBtn = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn')).find(b => b.textContent === '确认合并')!
+    confirmBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(host.textContent).toContain('没有领先主工作区的新提交')
+
+    root2.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
   it('session jump opens live sessions and guards deleted/archived ones', async () => {    const { BoardController } = await import('../src/client/controller.ts')
     const { createSessionJumper } = await import('../src/client/session-jump.ts')
 

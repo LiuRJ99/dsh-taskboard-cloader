@@ -1,15 +1,22 @@
 /**
  * Host git face (0.3.0): the ONLY place dsh-taskboard shells out to git.
+ * 0.3.1: per-repo serialization of structural operations, binary probing,
+ * no-op merge detection, worktree REUSE mode, and evidence size caps.
  *
  * Design invariants (plan §3.4/§3.5):
- * - NARROW interface: detect / prepareWorktree / collect / merge /
- *   removeWorktree / deleteBranch — nothing else leaks into the plugin.
+ * - NARROW interface: detect / binaryAvailable / prepareWorktree / collect /
+ *   merge / isAncestor / removeWorktree / deleteBranch — nothing else leaks
+ *   into the plugin.
  * - FAIL-SOFT: every call has a timeout and resolves to a benign result
  *   (false / undefined / empty facts) on ANY git failure — a missing git,
  *   a locked worktree, or a damaged repo degrades execution to the original
  *   directory and NEVER fails the ledger or the run pipeline. Only the
  *   explicit user actions (merge / remove / deleteBranch) throw, with a
  *   readable message the GUI surfaces as-is.
+ * - SERIALIZED structural ops: concurrent isolated executions on the SAME
+ *   repository would race on git's index/worktree locks, so every structural
+ *   operation (prepareWorktree / merge / removeWorktree / deleteBranch) runs
+ *   inside a per-root in-process mutex. Read-only collects stay concurrent.
  * - INJECTABLE runner: the exec layer is a single function so unit tests
  *   script every path without a real git.
  *
@@ -26,6 +33,12 @@ const HEAVY_TIMEOUT_MS = 15_000
 /** Directory under a workspace where task worktrees live. */
 export const WORKTREE_DIR = '.dsh-worktrees'
 
+/** Evidence caps: commits kept per execution record (newest first). */
+export const MAX_COMMIT_EVIDENCE = 50
+
+/** Evidence caps: uncommitted-change lines kept per execution record. */
+export const MAX_DIRTY_EVIDENCE = 100
+
 /** Result of one underlying exec: `ok` is exit-0, output never null. */
 export interface ExecResult { ok: boolean; stdout: string; stderr: string }
 
@@ -38,15 +51,21 @@ export interface WorktreeInfo {
   path: string
   /** The task branch checked out there. */
   branch: string
-  /** HEAD of the main worktree when the branch was based (execution baseline). */
+  /** Baseline for evidence collection: main HEAD (fresh) or worktree HEAD (reuse). */
   baseCommit: string
+  /** True when an existing live worktree was kept as-is (续跑). */
+  reused?: boolean
 }
 
 /** Settlement facts collected from a worktree (partial on best-effort basis). */
 export interface SettlementFacts {
   headCommit?: string
   commits: CommitInfo[]
+  /** Total commits before capping (equals commits.length when under the cap). */
+  commitsTotal: number
   dirtyFiles: string[]
+  /** Total uncommitted lines before capping. */
+  dirtyFilesTotal: number
   diffStat?: string
   changedFiles: number
 }
@@ -55,16 +74,22 @@ export interface SettlementFacts {
 export interface GitFace {
   /** Whether `root` sits inside a usable git work tree (fail-soft → false). */
   detect(root: string): Promise<boolean>
+  /** Whether a usable git binary answers at all (distinguishes 未装 git vs 非 git 仓库). */
+  binaryAvailable(): Promise<boolean>
   /**
-   * Ensure a FRESH worktree at `path` on `branch`, rebased onto the main
-   * worktree's current HEAD (the 每次全新 default). Resolves undefined on
-   * any failure — callers degrade to the original directory.
+   * Ensure a worktree at `path` on `branch`. Default mode `'fresh'` resets to
+   * the main worktree's current HEAD (每次全新); mode `'reuse'` keeps a live
+   * worktree exactly as-is (续跑 — agent's commits and uncommitted changes
+   * survive) and falls back to a fresh creation when none is alive. Resolves
+   * undefined on any failure — callers degrade to the original directory.
    */
-  prepareWorktree(root: string, path: string, branch: string): Promise<WorktreeInfo | undefined>
+  prepareWorktree(root: string, path: string, branch: string, mode?: 'fresh' | 'reuse'): Promise<WorktreeInfo | undefined>
   /** Collect settlement facts (never throws; missing pieces stay unset). */
   collect(worktreePath: string, baseCommit: string): Promise<SettlementFacts>
   /** Merge `branch` into the main worktree (`--no-ff`); THROWS with a readable reason. */
   merge(root: string, branch: string): Promise<void>
+  /** Whether `branch` is already an ancestor of HEAD (a merge would be a no-op). */
+  isAncestor(root: string, branch: string): Promise<boolean>
   /** Remove a worktree; THROWS when it still has uncommitted changes. */
   removeWorktree(root: string, worktreePath: string): Promise<void>
   /** Delete a branch; THROWS (e.g. still checked out in a worktree). */
@@ -122,13 +147,39 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
   const quick = (args: string[], cwd?: string): Promise<ExecResult> => exec(args, { cwd, timeout: QUICK_TIMEOUT_MS })
   const heavy = (args: string[], cwd?: string): Promise<ExecResult> => exec(args, { cwd, timeout: HEAVY_TIMEOUT_MS })
 
+  // Per-root mutex (0.3.1): structural git ops on the SAME repository run one
+  // at a time — concurrent isolated executions must not race on git's locks.
+  const locks = new Map<string, Promise<unknown>>()
+  const withRootLock = <T>(root: string, fn: () => Promise<T>): Promise<T> => {
+    const prev = locks.get(root) ?? Promise.resolve()
+    const next = prev.then(fn, fn)
+    locks.set(root, next.catch(() => { /* the chain never blocks later ops */ }))
+    return next
+  }
+
   return {
     async detect(root) {
       const r = await quick(['rev-parse', '--is-inside-work-tree'], root)
       return r.ok && r.stdout.trim() === 'true'
     },
 
-    async prepareWorktree(root, path, branch) {
+    async binaryAvailable() {
+      const r = await quick(['--version'])
+      return r.ok && r.stdout.startsWith('git version')
+    },
+
+    prepareWorktree: (root, path, branch, mode = 'fresh') => withRootLock(root, async () => {
+      // 续跑: a live worktree at the path is kept EXACTLY as-is — the agent's
+      // commits and uncommitted changes survive; the baseline becomes the
+      // worktree's own HEAD so evidence covers only the new run.
+      if (mode === 'reuse') {
+        const wtHead = await quick(['rev-parse', 'HEAD'], path)
+        if (wtHead.ok && wtHead.stdout.trim().length > 0) {
+          return { path, branch, baseCommit: wtHead.stdout.trim(), reused: true }
+        }
+        // No live worktree → fall through to a fresh preparation.
+      }
+
       // Baseline: the main worktree's current HEAD (also validates the repo).
       const head = await quick(['rev-parse', 'HEAD'], root)
       if (!head.ok) return undefined
@@ -150,10 +201,10 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
         if (!added.ok) return undefined
       }
       return { path, branch, baseCommit }
-    },
+    }),
 
     async collect(worktreePath, baseCommit) {
-      const facts: SettlementFacts = { commits: [], dirtyFiles: [], changedFiles: 0 }
+      const facts: SettlementFacts = { commits: [], commitsTotal: 0, dirtyFiles: [], dirtyFilesTotal: 0, changedFiles: 0 }
       const range = `${baseCommit}..HEAD`
 
       const head = await quick(['rev-parse', 'HEAD'], worktreePath)
@@ -161,7 +212,7 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
 
       const log = await quick(['log', '--pretty=format:%h %s', range], worktreePath)
       if (log.ok) {
-        facts.commits = log.stdout.split('\n')
+        const commits = log.stdout.split('\n')
           .map(line => line.trim())
           .filter(line => line.length > 0)
           .map(line => {
@@ -170,11 +221,17 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
               ? { hash: line, subject: '' }
               : { hash: line.slice(0, space), subject: line.slice(space + 1) }
           })
+        // Evidence caps (0.3.1): the ledger is rewritten whole on every
+        // mutation — cap what a huge branch/status dump can add to it.
+        facts.commitsTotal = commits.length
+        facts.commits = commits.slice(0, MAX_COMMIT_EVIDENCE)
       }
 
       const status = await quick(['status', '--porcelain'], worktreePath)
       if (status.ok) {
-        facts.dirtyFiles = status.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+        const dirty = status.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+        facts.dirtyFilesTotal = dirty.length
+        facts.dirtyFiles = dirty.slice(0, MAX_DIRTY_EVIDENCE)
       }
 
       const shortstat = await quick(['diff', '--shortstat', range], worktreePath)
@@ -186,7 +243,7 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
       return facts
     },
 
-    async merge(root, branch) {
+    merge: (root, branch) => withRootLock(root, async () => {
       // Main-clean check. The plugin's own worktree directory
       // (<root>/.dsh-worktrees) shows up as untracked noise and is EXEMPT —
       // otherwise merging would be impossible without gitignoring it first.
@@ -210,9 +267,15 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
         await heavy(['merge', '--abort'], root)
         throw new Error(`合并失败：${merged.stderr.trim().slice(0, 300)}`)
       }
+    }),
+
+    async isAncestor(root, branch) {
+      // exit 0 = branch is an ancestor of (or equal to) HEAD → merge no-op.
+      const r = await quick(['merge-base', '--is-ancestor', branch, 'HEAD'], root)
+      return r.ok
     },
 
-    async removeWorktree(root, worktreePath) {
+    removeWorktree: (root, worktreePath) => withRootLock(root, async () => {
       const status = await quick(['status', '--porcelain'], worktreePath)
       if (status.ok && status.stdout.trim().length > 0) {
         const lines = status.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0)
@@ -220,11 +283,11 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
       }
       const removed = await heavy(['worktree', 'remove', worktreePath], root)
       if (!removed.ok) throw new Error(`删除 worktree 失败：${(removed.stderr.trim() || removed.stdout.trim()).slice(0, 300)}`)
-    },
+    }),
 
-    async deleteBranch(root, branch) {
+    deleteBranch: (root, branch) => withRootLock(root, async () => {
       const deleted = await heavy(['branch', '-D', branch], root)
       if (!deleted.ok) throw new Error(`删除分支失败：${deleted.stderr.trim().slice(0, 300)}`)
-    },
+    }),
   }
 }

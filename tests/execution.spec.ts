@@ -394,29 +394,32 @@ describe('ExecutionService', () => {
 /** Capturing git fake: every method records calls; behavior per-test. */
 function fakeGit(behavior: {
   detect?: boolean
-  prepare?: { path: string; branch: string; baseCommit: string } | undefined
+  binary?: boolean
+  prepare?: { path: string; branch: string; baseCommit: string; reused?: boolean }
   collect?: import('../src/host/git.ts').SettlementFacts
 }): import('../src/host/git.ts').GitFace & {
   detectCalls: string[]
-  prepareCalls: Array<{ root: string; path: string; branch: string }>
+  prepareCalls: Array<{ root: string; path: string; branch: string; mode?: string }>
   collectCalls: Array<{ path: string; base: string }>
 } {
   const detectCalls: string[] = []
-  const prepareCalls: Array<{ root: string; path: string; branch: string }> = []
+  const prepareCalls: Array<{ root: string; path: string; branch: string; mode?: string }> = []
   const collectCalls: Array<{ path: string; base: string }> = []
   return {
     detectCalls,
     prepareCalls,
     collectCalls,
     detect: async (root) => { detectCalls.push(root); return behavior.detect ?? false },
-    prepareWorktree: async (root, path, branch) => {
-      prepareCalls.push({ root, path, branch })
+    binaryAvailable: async () => behavior.binary ?? true,
+    prepareWorktree: async (root, path, branch, mode) => {
+      prepareCalls.push({ root, path, branch, mode })
       return behavior.prepare
     },
     collect: async (path, base) => {
       collectCalls.push({ path, base })
-      return behavior.collect ?? { commits: [], dirtyFiles: [], changedFiles: 0 }
+      return behavior.collect ?? { commits: [], commitsTotal: 0, dirtyFiles: [], dirtyFilesTotal: 0, changedFiles: 0 }
     },
+    isAncestor: async () => false,
     merge: async () => {},
     removeWorktree: async () => {},
     deleteBranch: async () => {},
@@ -452,7 +455,9 @@ describe('ExecutionService worktree isolation', () => {
       collect: {
         headCommit: 'fff111',
         commits: [{ hash: 'abc1234', subject: 'feat: done' }],
+        commitsTotal: 1,
         dirtyFiles: [' M src/a.ts'],
+        dirtyFilesTotal: 1,
         diffStat: '1 file changed',
         changedFiles: 1,
       },
@@ -464,8 +469,8 @@ describe('ExecutionService worktree isolation', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    // Prepared on the canonical path with the sanitized branch name.
-    expect(git.prepareCalls).toEqual([{ root: '/proj/a', path: '/proj/a/.dsh-worktrees/t-run', branch: 'task/Fix-the-login-page+t-run' }])
+    // Prepared on the canonical path with the sanitized branch name (fresh mode by default).
+    expect(git.prepareCalls).toEqual([{ root: '/proj/a', path: '/proj/a/.dsh-worktrees/t-run', branch: 'task/Fix-the-login-page+t-run', mode: 'fresh' }])
     expect(agents.created[0]!.cwd).toBe('/proj/a/.dsh-worktrees/t-run')
 
     // The branch name is pinned onto the task (renames never change it).
@@ -553,6 +558,98 @@ describe('ExecutionService worktree isolation', () => {
     expect(execution.outcome).toBe('succeeded')
     expect(execution.commits).toBeUndefined()
     expect(store.get('t-run')!.status).toBe('in_review')
+  })
+
+  it('续跑 (reuseWorktree): prepare receives reuse mode; framing says 续跑 and warns about existing work', async () => {
+    const store = await storeWith(task({ branch: 'task/Fix+t-run' }))
+    const agents = fakeAgents()
+    const git = fakeGit({
+      detect: true,
+      prepare: { path: '/proj/a/.dsh-worktrees/t-run', branch: 'task/Fix+t-run', baseCommit: 'old555', reused: true },
+    })
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git })
+
+    const result = await svc.run('t-run', 'manual', { reuseWorktree: true })
+    expect(result.ok).toBe(true)
+
+    expect(git.prepareCalls[0]!.mode).toBe('reuse')
+    // The pinned branch was reused, not re-derived from the title.
+    expect(git.prepareCalls[0]!.branch).toBe('task/Fix+t-run')
+    const inject = agents.injects[0] as { content: Array<{ text: string }> }
+    expect(inject.content[0]!.text).toContain('续跑')
+    expect(inject.content[0]!.text).toContain('上一次执行的改动与提交都保留在原处')
+
+    // Baseline is the worktree's own HEAD (evidence = this run's new commits).
+    const execution = store.get('t-run')!.executions[0]!
+    expect(execution.baseCommit).toBe('old555')
+  })
+
+  it('turn failure on an isolated run still records the worktree evidence', async () => {
+    const store = await storeWith(task({}))
+    const events = fakeEvents()
+    const agents = fakeAgents()
+    const git = fakeGit({
+      detect: true,
+      prepare: { path: '/proj/a/.dsh-worktrees/t-run', branch: 'task/t-run', baseCommit: 'abc' },
+      collect: { headCommit: 'fff', commits: [{ hash: 'fff', subject: 'wip: half done' }], commitsTotal: 1, dirtyFiles: [' M x'], dirtyFilesTotal: 1, changedFiles: 1 },
+    })
+    const svc = new ExecutionService({ store, agents, workspaces, events, now: () => 1_000, git })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+    // The turn errors out mid-flight.
+    events.dispatch(result.ok ? result.sessionId : '', { type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'quota exceeded' } } } })
+    await new Promise(r => setTimeout(r, 20))
+
+    const t = store.get('t-run')!
+    const execution = t.executions[0]!
+    expect(execution.outcome).toBe('failed')
+    expect(t.status).toBe('todo')
+    // Evidence from the failed session survived (0.3.1).
+    expect(execution.commits).toEqual([{ hash: 'fff', subject: 'wip: half done' }])
+    expect(execution.dirtyFiles).toEqual([' M x'])
+    expect(execution.headCommit).toBe('fff')
+  })
+
+  it('cancel on an isolated run still records the worktree evidence', async () => {
+    const store = await storeWith(task({}))
+    const agents = fakeAgents()
+    const git = fakeGit({
+      detect: true,
+      prepare: { path: '/proj/a/.dsh-worktrees/t-run', branch: 'task/t-run', baseCommit: 'abc' },
+      collect: { headCommit: 'ggg', commits: [{ hash: 'ggg', subject: 'wip' }], commitsTotal: 1, dirtyFiles: [], dirtyFilesTotal: 0, changedFiles: 1 },
+    })
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git })
+
+    expect((await svc.run('t-run', 'manual')).ok).toBe(true)
+    expect((await svc.cancel('t-run')).ok).toBe(true)
+    await new Promise(r => setTimeout(r, 10))
+
+    const execution = store.get('t-run')!.executions[0]!
+    expect(execution.outcome).toBe('cancelled')
+    expect(execution.commits).toEqual([{ hash: 'ggg', subject: 'wip' }])
+  })
+
+  it('degrade note distinguishes missing git binary from non-git directory; degraded framing warns', async () => {
+    // git binary missing → the note names git, not the repo.
+    const store = await storeWith(task({}))
+    const agents = fakeAgents()
+    const git = fakeGit({ detect: false, binary: false })
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git })
+    expect((await svc.run('t-run', 'manual')).ok).toBe(true)
+    let execution = store.get('t-run')!.executions[0]!
+    expect(execution.isolationNote).toContain('git 不可用')
+    const inject = agents.injects[0] as { content: Array<{ text: string }> }
+    expect(inject.content[0]!.text).toContain('未能建立隔离')
+    expect(inject.content[0]!.text).toContain('git status')
+
+    // git present but the directory is not a repo → the note names the repo.
+    const store2 = await storeWith(task({}))
+    const git2 = fakeGit({ detect: false, binary: true })
+    const svc2 = new ExecutionService({ store: store2, agents: fakeAgents(), workspaces, events: fakeEvents(), now: () => 1_000, git: git2 })
+    expect((await svc2.run('t-run', 'manual')).ok).toBe(true)
+    execution = store2.get('t-run')!.executions[0]!
+    expect(execution.isolationNote).toContain('不是 git 仓库')
   })
 })
 

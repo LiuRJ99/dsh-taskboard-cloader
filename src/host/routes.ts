@@ -51,8 +51,8 @@ export interface TaskboardRoutesOptions {
   store: TaskStore
   workspaces: RoutesWorkspaceFace
   now: () => number
-  /** Manual-run hook (the execution service); absent → 501. */
-  run?: (taskId: string) => Promise<{ ok: true; executionId: string; sessionId: string } | { ok: false; error: string }>
+  /** Manual-run hook (the execution service); absent → 501. Options carry `reuseWorktree` (续跑). */
+  run?: (taskId: string, options?: { reuseWorktree?: boolean }) => Promise<{ ok: true; executionId: string; sessionId: string } | { ok: false; error: string }>
   /** Cancel hook (the execution service); absent → 501. */
   cancel?: (taskId: string) => Promise<{ ok: true; executionId: string } | { ok: false; error: string }>
   /**
@@ -150,6 +150,21 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
   // feeds the create-form isolation toggle and the diagnostics panel.
   const gitCache = new Map<string, { value: boolean; at: number }>()
   const gitHinted = new Set<string>()
+
+  /** Whether <root>/.gitignore (missing file counts as missing) ignores our worktree dir. */
+  const gitignoreMissing = async (path: string): Promise<boolean> => {
+    try {
+      const { readFile } = await import('node:fs/promises')
+      const ignore = await readFile(join(path, '.gitignore'), 'utf8')
+      return !ignore.split('\n').some(l => {
+        const t = l.trim().replace(/\/+$/, '')
+        return t === WORKTREE_DIR || t === `/${WORKTREE_DIR}`
+      })
+    } catch {
+      return true // no .gitignore at all (or unreadable) → suggest creating one
+    }
+  }
+
   const gitAvailable = async (path: string): Promise<boolean> => {
     if (options.git === undefined) return false
     const hit = gitCache.get(path)
@@ -163,13 +178,9 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
     // worktree directory, once per workspace per host run.
     if (value && !gitHinted.has(path)) {
       gitHinted.add(path)
-      try {
-        const { readFile } = await import('node:fs/promises')
-        const ignore = await readFile(join(path, '.gitignore'), 'utf8')
-        if (!ignore.split('\n').some(l => l.trim() === WORKTREE_DIR || l.trim() === `/${WORKTREE_DIR}`)) {
-          console.info(`[dsh-taskboard] 建议在 ${path}/.gitignore 加入一行 ${WORKTREE_DIR}/ 以隐藏任务 worktree 目录（不会自动修改）`)
-        }
-      } catch { /* no .gitignore or unreadable — skip the hint */ }
+      if (await gitignoreMissing(path)) {
+        console.info(`[dsh-taskboard] 建议在 ${path}/.gitignore 加入一行 ${WORKTREE_DIR}/ 以隐藏任务 worktree 目录（不会自动修改）`)
+      }
     }
     return value
   }
@@ -189,6 +200,16 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
       }
     }
     return orphans
+  }
+
+  /** Git-enabled workspaces whose .gitignore does not cover the worktree dir. */
+  const listGitignoreSuggestions = async (): Promise<Array<{ workspaceId: string; workspacePath: string }>> => {
+    const suggestions: Array<{ workspaceId: string; workspacePath: string }> = []
+    for (const ws of workspaces.list()) {
+      if (!(await gitAvailable(ws.path))) continue
+      if (await gitignoreMissing(ws.path)) suggestions.push({ workspaceId: ws.id, workspacePath: ws.path })
+    }
+    return suggestions
   }
 
   const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -225,6 +246,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               tasks: ledger.tasks.length,
               staleRunning,
               orphanWorktrees: await listOrphanWorktrees(),
+              gitIgnoreSuggestions: await listGitignoreSuggestions(),
             },
           })
           return
@@ -426,6 +448,34 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             const purge = body.purge === true
             if (purge) {
               if (task.trashedAt === undefined) throw new Error('Error: invalid_input: purge requires a trashed task (soft-delete first)')
+              // Worktree safety before purge (plan §3.3, 0.3.1): refuse while
+              // uncommitted work remains; otherwise clean the worktree and
+              // the task branch along with the ledger entry.
+              if (options.git !== undefined) {
+                const ws = workspaces.get(task.workspaceId)
+                if (ws !== undefined) {
+                  const path = worktreePathOf(ws.path, id)
+                  try {
+                    await options.git.removeWorktree(ws.path, path)
+                  } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    if (message.includes('未提交修改')) {
+                      throw new Error(`Error: invalid_input: ${message}；请先处理这些改动（提交、续跑或手动保存）再物理清除任务`)
+                    }
+                    if (/not a working tree|not a working-tree/i.test(message)) {
+                      // An unregistered leftover dir: plain fs removal.
+                      await rm(path, { recursive: true, force: true })
+                    } else {
+                      throw new Error(`Error: invalid_input: ${message}`)
+                    }
+                  }
+                  if (task.branch !== undefined) {
+                    try {
+                      await options.git.deleteBranch(ws.path, task.branch)
+                    } catch { /* best effort: the branch may outlive the task */ }
+                  }
+                }
+              }
               await store.mutate('task-deleted', ledger => {
                 ledger.tasks = ledger.tasks.filter(t => t.id !== id)
                 return []
@@ -453,7 +503,10 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               json(res, f.res, 501)
               return
             }
-            const result = await options.run(id)
+            // `reuse: true` = 续跑: keep a live worktree/branch as-is instead
+            // of resetting to a fresh baseline (0.3.1).
+            const runOptions = body.reuse === true ? { reuseWorktree: true } : undefined
+            const result = await options.run(id, runOptions)
             if (result.ok) json(res, { ok: true, value: result }, 202)
             else {
               const f = fail('invalid_input', result.error)
@@ -488,6 +541,17 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             if (task.executions.some(e => e.outcome === 'running')) throw new Error('Error: invalid_input: 任务执行中，不能合并')
             const ws = workspaces.get(task.workspaceId)
             if (ws === undefined) throw new Error('Error: not_found: unknown workspace')
+            // No-op detection (0.3.1): a branch with no commits over HEAD
+            // merges as "already up to date" — report that instead of landing
+            // a bogus 已合并 comment.
+            let noop = false
+            try {
+              noop = await options.git.isAncestor(ws.path, task.branch)
+            } catch { /* fail-soft: proceed to the real merge */ }
+            if (noop) {
+              json(res, { ok: true, value: { merged: false, noop: true, branch: task.branch } })
+              return
+            }
             try {
               await options.git.merge(ws.path, task.branch)
             } catch (error) {

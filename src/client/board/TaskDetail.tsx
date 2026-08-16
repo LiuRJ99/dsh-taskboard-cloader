@@ -78,6 +78,7 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
       setBusy(false)
       setConfirmMerge(false)
       if (!result.ok) showAlert(`合并失败：${result.error}`)
+      else if (result.noop === true) showAlert('该分支没有领先主工作区的新提交，无需合并（可退回续跑或直接清理）')
     })
   }
 
@@ -103,7 +104,9 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
   }
 
   const commits = execution.commits ?? []
+  const commitTotal = execution.commitsTotal ?? commits.length
   const dirty = execution.dirtyFiles ?? []
+  const dirtyTotal = execution.dirtyFilesTotal ?? dirty.length
 
   return (
     <div className="dsh-atb-fieldcard" data-kind="isolation">
@@ -126,14 +129,14 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
                   <span>{c.subject}</span>
                 </div>
               ))}
-              {commits.length > 10 && <div className="dsh-atb-iso-more">… 共 {commits.length} 个提交</div>}
+              {commitTotal > 10 && <div className="dsh-atb-iso-more">… 共 {commitTotal} 个提交</div>}
             </div>
           )
         : <div className="dsh-atb-iso-nocommit">该次执行没有产生提交（改动可能未提交，见下方警告）</div>}
 
-      {dirty.length > 0 && (
+      {dirtyTotal > 0 && (
         <div className="dsh-atb-iso-dirty" title={dirty.join('\n')}>
-          ⚠ 有 {dirty.length} 处未提交修改（合并前请让 agent 提交，或手动处理）
+          ⚠ 有 {dirtyTotal} 处未提交修改（合并前请让 agent 提交，或手动处理）
         </div>
       )}
 
@@ -269,6 +272,16 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
           >
             ⧉ 复制
           </button>
+          {canRun && task.branch !== undefined && (
+            <button
+              type="button"
+              className="dsh-atb-detail-run"
+              title="续跑：保留现有 worktree 与分支（上次的改动和提交都在原处），在其上继续执行；默认「立即执行」会重置为全新基线"
+              onClick={() => void controller.run(task.id, true)}
+            >
+              ↻ 续跑
+            </button>
+          )}
           {canRun && (
             <button
               type="button"

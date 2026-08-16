@@ -73,6 +73,28 @@ try {
   assert.equal(facts2.commits.length, 0, 'branch reset → no commits over the new baseline')
   assert.equal(facts2.dirtyFiles.length, 0)
 
+  // --- 续跑 (reuse mode, 0.3.1): commits + dirty state survive ---------------
+  await writeFile(join(wt, 'kept.txt'), 'kept\n')
+  await runIn(wt, 'add', '.')
+  await runIn(wt, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'reuse: committed work')
+  await writeFile(join(wt, 'wip.txt'), 'wip\n')
+  const info3 = await git.prepareWorktree(root, wt, branch, 'reuse')
+  assert.ok(info3 !== undefined)
+  assert.equal(info3.reused, true)
+  const facts3 = await git.collect(wt, info3.baseCommit)
+  assert.equal(facts3.commits.length, 0, 'reuse baseline = worktree HEAD → no commits yet')
+  assert.equal(facts3.dirtyFiles.length, 1, 'uncommitted wip.txt survived the reuse')
+  assert.ok((await runIn(wt, 'log', '--oneline')).includes('reuse: committed work'), 'committed work survived')
+  await rm(join(wt, 'wip.txt'))
+
+  // --- isAncestor: no-op merge after merging the branch ----------------------
+  assert.equal(await git.isAncestor(root, branch), false, 'branch ahead of HEAD → not ancestor')
+  await git.merge(root, branch)
+  assert.equal(await git.isAncestor(root, branch), true, 'after merge → ancestor (no-op)')
+
+  // --- binaryAvailable --------------------------------------------------------
+  assert.equal(await git.binaryAvailable(), true)
+
   // --- remove worktree (clean now) + delete branch ---------------------------
   await git.removeWorktree(root, wt)
   await git.deleteBranch(root, branch)

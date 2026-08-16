@@ -11,9 +11,10 @@ import type {
   CreateTaskBody,
   DeleteTaskBody,
   DiagnosticsResponse,
-  MergeBranchBody,
+  MergeBranchResponse,
   MoveTaskBody,
   RejectTaskBody,
+  RunTaskBody,
   StateResponse,
   TaskRecord,
   UpdateTaskBody,
@@ -52,12 +53,12 @@ export interface TaskboardClient {
   reject(id: string, body: RejectTaskBody): Promise<TaskSummary>
   comment(id: string, bodyText: string): Promise<CommentRecord>
   remove(id: string, body: DeleteTaskBody): Promise<{ trashed?: boolean; purged?: boolean }>
-  /** Trigger a manual run (fresh in-project session). */
-  run(id: string): Promise<{ executionId: string; sessionId: string }>
+  /** Trigger a manual run (fresh in-project session); `reuse: true` = 续跑. */
+  run(id: string, body?: RunTaskBody): Promise<{ executionId: string; sessionId: string }>
   /** Cancel the running execution (stops the agent session; task returns to todo). */
   cancel(id: string): Promise<{ cancelled: true; executionId: string }>
   /** Merge the task branch into the main worktree (--no-ff, user-only). */
-  mergeBranch(id: string, body: MergeBranchBody): Promise<{ merged: true; branch: string }>
+  mergeBranch(id: string): Promise<MergeBranchResponse>
   /** Remove the task's worktree; optionally delete its branch. */
   worktreeRemove(id: string, body: WorktreeRemoveBody): Promise<{ removed: true; branchDeleted: boolean; branchError?: string }>
   /** Health diagnostics (⚙ panel). */
@@ -80,9 +81,9 @@ export function createClient(): TaskboardClient {
     reject: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/reject`, body),
     comment: (id, bodyText) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/comment`, { body: bodyText }),
     remove: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/delete`, body),
-    run: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/run`, {}),
+    run: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/run`, body ?? {}),
     cancel: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/cancel`, {}),
-    mergeBranch: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/merge`, body),
+    mergeBranch: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/merge`, {}),
     worktreeRemove: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/worktree-remove`, body),
     diagnostics: () => unwrap<DiagnosticsResponse>(fetch('/dsh-taskboard/diagnostics')),
     worktreeCleanup: (workspaceId, taskId) => post('/dsh-taskboard/worktree-cleanup', { workspaceId, taskId }),

@@ -356,10 +356,10 @@ export class BoardController {
     }
   }
 
-  /** Trigger a manual run (fresh in-project session, pinned model). */
-  async run(id: string): Promise<void> {
+  /** Trigger a manual run (fresh in-project session, pinned model); `reuse` = 续跑. */
+  async run(id: string, reuse = false): Promise<void> {
     try {
-      await this.client.run(id)
+      await this.client.run(id, reuse ? { reuse: true } : {})
       await this.refresh()
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) })
@@ -378,13 +378,13 @@ export class BoardController {
 
   /**
    * ⇥ 合并 (detail page): merge the task branch into the main worktree.
-   * @returns the outcome; failures carry the git message for an alert.
+   * @returns the outcome; `noop` means the branch had no new commits (nothing merged).
    */
-  async mergeBranch(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  async mergeBranch(id: string): Promise<{ ok: true; noop?: boolean } | { ok: false; error: string }> {
     try {
-      await this.client.mergeBranch(id, {})
+      const value = await this.client.mergeBranch(id)
       await this.refresh()
-      return { ok: true }
+      return value.noop === true ? { ok: true, noop: true } : { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }

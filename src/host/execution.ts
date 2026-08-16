@@ -104,9 +104,30 @@ function isErrorTurnEnd(data: unknown): { message: string } | undefined {
   return { message }
 }
 
+/** Prepared worktree facts threaded through a live run (settlement evidence). */
+export interface PreparedWorktree {
+  branch: string
+  worktreePath: string
+  baseCommit: string
+  /** True when an existing live worktree was kept as-is (续跑). */
+  reused?: boolean
+}
+
+/** Per-run options. */
+export interface RunOptions {
+  /**
+   * 续跑: keep a live worktree/branch exactly as-is (the previous agent's
+   * commits and uncommitted changes survive) instead of resetting to the
+   * main HEAD. Falls back to a fresh preparation when none is alive.
+   */
+  reuseWorktree?: boolean
+}
+
 /** One live execution tracked for settlement and cancellation. */
 interface RunEntry {
   sessionId: string
+  /** Worktree prepared for this run (evidence collection at ANY settlement). */
+  prepared?: PreparedWorktree
   settle: () => void
   dispose: () => Promise<void>
 }
@@ -127,35 +148,66 @@ export class ExecutionService {
     })
   }
 
+  /**
+   * Best-effort evidence collection for a prepared run (fail-soft: undefined
+   * on any git problem — settlement NEVER blocks on git).
+   */
+  private async collectEvidence(prepared: PreparedWorktree | undefined): Promise<SettlementFacts | undefined> {
+    if (prepared === undefined || this.deps.git === undefined) return undefined
+    try {
+      return await this.deps.git.collect(prepared.worktreePath, prepared.baseCommit)
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Copy collected facts onto an execution record (in place). */
+  private applyFacts(execution: ExecutionRecord, facts: SettlementFacts | undefined): void {
+    if (facts === undefined) return
+    if (facts.headCommit !== undefined) execution.headCommit = facts.headCommit
+    execution.commits = facts.commits
+    execution.commitsTotal = facts.commitsTotal
+    execution.dirtyFiles = facts.dirtyFiles
+    execution.dirtyFilesTotal = facts.dirtyFilesTotal
+    execution.changedFiles = facts.changedFiles
+    if (facts.diffStat !== undefined) execution.diffStat = facts.diffStat
+  }
+
   /** Record a turn failure against the running execution of that session and give the task back. */
   private noteFailure(sessionId: string, message: string): void {
-    void this.deps.store.mutate('execution-recorded', (ledger) => {
-      for (const task of ledger.tasks) {
-        for (const execution of task.executions) {
-          if (execution.sessionId === sessionId && execution.outcome === 'running') {
-            execution.outcome = 'failed'
-            execution.error = message.slice(0, 500)
-            execution.endedAt = this.deps.now()
-            // The failed session will not finish the work: hand the task back
-            // instead of leaving it stuck in in_progress forever — and leave a
-            // system comment so the GUI shows why.
-            if (task.status === 'in_progress' && task.claimedBy === sessionId) {
-              task.status = 'todo'
-              task.updatedAt = this.deps.now()
-              delete task.claimedBy
-              delete task.claimedAt
-              task.comments.push({
-                id: newCommentId(),
-                body: normalizeBody(`[系统] 执行失败：${message.slice(0, 300)}；任务已退回待办。`),
-                version: 1,
-                createdAt: this.deps.now(),
-              })
+    // The failed session may already have committed work — collect the
+    // evidence (best effort) BEFORE marking the execution failed (0.3.1).
+    const entry = [...this.runs.values()].find(e => e.sessionId === sessionId)
+    void this.collectEvidence(entry?.prepared).then(facts => {
+      void this.deps.store.mutate('execution-recorded', (ledger) => {
+        for (const task of ledger.tasks) {
+          for (const execution of task.executions) {
+            if (execution.sessionId === sessionId && execution.outcome === 'running') {
+              execution.outcome = 'failed'
+              execution.error = message.slice(0, 500)
+              execution.endedAt = this.deps.now()
+              this.applyFacts(execution, facts)
+              // The failed session will not finish the work: hand the task back
+              // instead of leaving it stuck in in_progress forever — and leave a
+              // system comment so the GUI shows why.
+              if (task.status === 'in_progress' && task.claimedBy === sessionId) {
+                task.status = 'todo'
+                task.updatedAt = this.deps.now()
+                delete task.claimedBy
+                delete task.claimedAt
+                task.comments.push({
+                  id: newCommentId(),
+                  body: normalizeBody(`[系统] 执行失败：${message.slice(0, 300)}；任务已退回待办。`),
+                  version: 1,
+                  createdAt: this.deps.now(),
+                })
+              }
+              return [task]
             }
-            return [task]
           }
         }
-      }
-      return undefined
+        return undefined
+      })
     })
   }
 
@@ -182,9 +234,10 @@ export class ExecutionService {
    * is opened per task.
    * @param taskId - the task to run.
    * @param trigger - what started it.
+   * @param options - per-run options (`reuseWorktree` = 续跑).
    * @returns the immediate result; settlement lands in the ledger.
    */
-  async run(taskId: string, trigger: ExecutionRecord['trigger']): Promise<RunRequestResult> {
+  async run(taskId: string, trigger: ExecutionRecord['trigger'], options?: RunOptions): Promise<RunRequestResult> {
     const max = this.deps.maxConcurrent ?? DEFAULT_MAX_CONCURRENT
     if (this.runs.size >= max) {
       return { ok: false, error: `execution concurrency limit reached (${this.runs.size}/${max} running)` }
@@ -242,9 +295,9 @@ export class ExecutionService {
     //     execution pipeline itself never fail over git.
     let cwd = workspace.path
     let isolationNote: string | undefined
-    let prepared: { branch: string; worktreePath: string; baseCommit: string } | undefined
+    let prepared: PreparedWorktree | undefined
     if (isolation === 'worktree') {
-      const outcome = await this.prepareIsolation(task, workspace.path, worktreePath, branch)
+      const outcome = await this.prepareIsolation(task, workspace.path, worktreePath, branch, options?.reuseWorktree === true)
       if (outcome.prepared !== undefined) {
         prepared = outcome.prepared
         cwd = outcome.prepared.worktreePath
@@ -304,7 +357,7 @@ export class ExecutionService {
     handle.agent.inject({
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
       role: 'user' as const,
-      content: [{ type: 'text' as const, text: this.pluginFraming(task, prepared) }],
+      content: [{ type: 'text' as const, text: this.pluginFraming(task, prepared, isolationNote) }],
       source: { kind: 'plugin' as const, plugin: 'dsh-taskboard' },
     })
     handle.agent.followup({
@@ -322,7 +375,7 @@ export class ExecutionService {
       this.runs.delete(executionId)
       void this.settleExecution(executionId, sessionId, prepared)
     }
-    this.runs.set(executionId, { sessionId, settle, dispose: () => handle.dispose() })
+    this.runs.set(executionId, { sessionId, ...(prepared !== undefined ? { prepared } : {}), settle, dispose: () => handle.dispose() })
     void handle.agent.whenIdle().then(settle, () => {
       this.noteFailure(sessionId, 'agent did not reach quiescence')
       settle()
@@ -339,14 +392,9 @@ export class ExecutionService {
   private async settleExecution(
     executionId: string,
     sessionId: string,
-    prepared: { branch: string; worktreePath: string; baseCommit: string } | undefined,
+    prepared: PreparedWorktree | undefined,
   ): Promise<void> {
-    let facts: SettlementFacts | undefined
-    if (prepared !== undefined && this.deps.git !== undefined) {
-      try {
-        facts = await this.deps.git.collect(prepared.worktreePath, prepared.baseCommit)
-      } catch { /* fail-soft: settle without evidence */ }
-    }
+    const facts = await this.collectEvidence(prepared)
     await this.deps.store.mutate('execution-recorded', (ledger) => {
       for (const t of ledger.tasks) {
         const execution = t.executions.find(e => e.id === executionId)
@@ -354,13 +402,7 @@ export class ExecutionService {
           const now = this.deps.now()
           execution.outcome = 'succeeded'
           execution.endedAt = now
-          if (facts !== undefined) {
-            if (facts.headCommit !== undefined) execution.headCommit = facts.headCommit
-            execution.commits = facts.commits
-            execution.dirtyFiles = facts.dirtyFiles
-            execution.changedFiles = facts.changedFiles
-            if (facts.diffStat !== undefined) execution.diffStat = facts.diffStat
-          }
+          this.applyFacts(execution, facts)
           if (t.status === 'in_progress' && t.claimedBy === sessionId) {
             delete t.claimedBy
             delete t.claimedAt
@@ -388,26 +430,36 @@ export class ExecutionService {
 
   /**
    * Prepare the dedicated worktree for a run (fail-soft): detect git, then
-   * create/reset the fixed task branch at a fresh baseline. On success the
-   * branch name is pinned onto the task once (renames never change it); on
-   * any failure the run degrades with a human-readable note.
+   * create/reset the fixed task branch — fresh baseline, or keep a live
+   * worktree as-is for 续跑. On success the branch name is pinned onto the
+   * task once (renames never change it); on any failure the run degrades
+   * with a human-readable note.
    */
   private async prepareIsolation(
     task: TaskRecord,
     workspacePath: string,
     worktreePath: string,
     branch: string,
-  ): Promise<{ prepared?: { branch: string; worktreePath: string; baseCommit: string }; note?: string }> {
+    reuse: boolean,
+  ): Promise<{ prepared?: PreparedWorktree; note?: string }> {
     const git = this.deps.git
     if (git === undefined) return { note: 'git 集成不可用，已在原目录执行' }
     let inside = false
     try {
       inside = await git.detect(workspacePath)
     } catch { /* fail-soft */ }
-    if (!inside) return { note: '当前项目不是 git 仓库，已在原目录执行' }
+    if (!inside) {
+      // Distinguish 未装 git from 非 git 仓库 (0.3.1): probe the binary so the
+      // degradation note names the real cause.
+      let hasBinary = true
+      try {
+        hasBinary = await git.binaryAvailable()
+      } catch { /* fail-soft → treat as repo-side */ }
+      return { note: hasBinary ? '当前项目不是 git 仓库，已在原目录执行' : 'git 不可用（未安装或不在 PATH），已在原目录执行' }
+    }
     let info
     try {
-      info = await git.prepareWorktree(workspacePath, worktreePath, branch)
+      info = await git.prepareWorktree(workspacePath, worktreePath, branch, reuse ? 'reuse' : 'fresh')
     } catch { /* fail-soft */ }
     if (info === undefined) return { note: 'worktree 准备失败（git 报错或目录被占用），已在原目录执行' }
     // Pin the branch name at first SUCCESSFUL creation (§9: 改名不改分支).
@@ -421,7 +473,14 @@ export class ExecutionService {
         return undefined
       })
     }
-    return { prepared: { branch: info.branch, worktreePath: info.path, baseCommit: info.baseCommit } }
+    return {
+      prepared: {
+        branch: info.branch,
+        worktreePath: info.path,
+        baseCommit: info.baseCommit,
+        ...(info.reused === true ? { reused: true } : {}),
+      },
+    }
   }
 
   /** How many executions are currently running (for the concurrency cap). */
@@ -450,6 +509,9 @@ export class ExecutionService {
       await entry?.dispose()
     } catch { /* already gone */ }
 
+    // The cancelled session may already have committed work — keep the
+    // evidence (best effort) so the user can inspect or 续跑 (0.3.1).
+    const facts = await this.collectEvidence(entry?.prepared)
     await this.deps.store.mutate('execution-recorded', (ledger) => {
       const target = ledger.tasks.find(t => t.id === taskId)
       if (target === undefined) return undefined
@@ -457,6 +519,7 @@ export class ExecutionService {
       if (execution === undefined || execution.outcome !== 'running') return undefined
       execution.outcome = 'cancelled'
       execution.endedAt = this.deps.now()
+      this.applyFacts(execution, facts)
       if (target.status === 'in_progress') {
         target.status = 'todo'
         target.updatedAt = this.deps.now()
@@ -506,11 +569,13 @@ export class ExecutionService {
    * must know about the board. The task id appears exactly once (here); the
    * protocol steps below refer to it as 本任务. Isolated runs add one line
    * steering the session onto its dedicated branch (commits are the evidence
-   * the user reviews at merge time).
+   * the user reviews at merge time); 续跑 and degraded runs each add their
+   * own steering line (0.3.1).
    * @param task - the task.
    * @param prepared - worktree facts when this run is isolated.
+   * @param degradeNote - why a worktree task degraded to the main directory.
    */
-  private pluginFraming(task: TaskRecord, prepared?: { branch: string; worktreePath: string }): string {
+  private pluginFraming(task: TaskRecord, prepared?: PreparedWorktree, degradeNote?: string): string {
     let text = `【任务看板】${task.title}（ID: ${task.id}）\n`
       + `本会话由任务看板执行服务启动，任务已置为进行中——无需认领；「已完成」仅限用户在界面操作（代码已限制，移了会被拒）。\n`
       + `完成后按序交接：\n`
@@ -519,7 +584,13 @@ export class ExecutionService {
       + `3. taskboard_move 将本任务移至待验收 in_review（带 ifVersion）\n`
       + `若无法完成：留评论说明原因，将任务移回待办 todo。`
     if (prepared !== undefined) {
-      text += `\n本任务启用了 Git Worktree 隔离：当前工作目录是独立分支 ${prepared.branch}；请只在该目录内改动，并把完成的工作提交（git commit）到该分支——验收将基于该分支的提交记录合并。`
+      if (prepared.reused === true) {
+        text += `\n本任务启用了 Git Worktree 隔离，且本次为续跑：当前工作目录是独立分支 ${prepared.branch}，上一次执行的改动与提交都保留在原处——请先查看已有改动（git status / git log）再继续，避免重复劳动，并把新完成的工作提交到该分支。`
+      } else {
+        text += `\n本任务启用了 Git Worktree 隔离：当前工作目录是独立分支 ${prepared.branch} 的全新检出（不含 node_modules/构建产物，构建或测试前可能需要先安装依赖）；请只在该目录内改动，并把完成的工作提交（git commit）到该分支——验收将基于该分支的提交记录合并。`
+      }
+    } else if (degradeNote !== undefined) {
+      text += `\n⚠ 本次执行未能建立隔离，正在主项目目录中工作（原因：${degradeNote}）。该目录可能有他人未提交的改动：动手前先 git status 检查现状，改动尽量集中，结束时在评论中说明动了哪些文件；避免把未经验证的改动直接提交到主分支。`
     }
     return text
   }

@@ -255,7 +255,7 @@ function DiagnosticsPanel({ controller }: { controller: BoardController }) {
                 <div className="dsh-atb-diag-grid">
                   <div className="dsh-atb-diag-item"><b>{diag.revision}</b><span>台账修订号</span></div>
                   <div className="dsh-atb-diag-item"><b>{diag.tasks}</b><span>任务总数</span></div>
-                  <div className="dsh-atb-diag-item" data-bad={diag.staleRunning > 0 ? 'true' : undefined}><b>{diag.staleRunning}</b><span>悬挂执行中</span></div>
+                  <div className="dsh-atb-diag-item" data-bad={diag.staleRunning > 0 ? 'true' : undefined}><b>{diag.staleRunning}</b><span>执行中</span></div>
                   <div className="dsh-atb-diag-item" data-bad={diag.orphanWorktrees.length > 0 ? 'true' : undefined}><b>{diag.orphanWorktrees.length}</b><span>遗留 worktree</span></div>
                 </div>
                 <div className="dsh-atb-diag-sec">
@@ -273,6 +273,22 @@ function DiagnosticsPanel({ controller }: { controller: BoardController }) {
                         </div>
                       )}
                   <div className="dsh-atb-empty2">提示：有未提交修改的遗留目录会被拒绝清理，请先手动处理其内容。live 任务的 worktree 请在任务详情页删除。</div>
+                </div>
+                <div className="dsh-atb-diag-sec">
+                  <h4>gitignore 建议</h4>
+                  {(diag.gitIgnoreSuggestions ?? []).length === 0
+                    ? <div className="dsh-atb-empty2">无待办 — 各 git 项目已忽略 .dsh-worktrees 目录</div>
+                    : (
+                        <div className="dsh-atb-diag-orphans">
+                          {diag.gitIgnoreSuggestions.map(s => (
+                            <div key={s.workspaceId} className="dsh-atb-diag-orphan">
+                              <span className="dsh-atb-diag-orphan-path" title={s.workspacePath}>
+                                {wsName(s.workspaceId)} · 建议在 .gitignore 加入一行 <code>.dsh-worktrees/</code>（不会自动修改）
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                 </div>
               </>
             )}

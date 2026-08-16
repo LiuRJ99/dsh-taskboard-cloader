@@ -88,11 +88,11 @@ export type CommentBody = { body: string }
 /** Delete request body (purge=true physically removes a trashed task). */
 export type DeleteTaskBody = { ifVersion?: number; purge?: boolean }
 
-/** Run request body (P3). */
-export type RunTaskBody = Record<string, never>
+/** Run request body; `reuse: true` = 续跑 (keep a live worktree as-is). */
+export type RunTaskBody = { reuse?: boolean }
 
-/** Merge the task branch into the main worktree (`--no-ff`, user-only). */
-export type MergeBranchBody = Record<string, never>
+/** Merge outcome: `noop: true` = the branch had no commits over HEAD (nothing merged). */
+export type MergeBranchResponse = { merged: boolean; noop?: boolean; branch: string }
 
 /** Remove a task's worktree; optionally delete its branch too. */
 export type WorktreeRemoveBody = { deleteBranch?: boolean }
@@ -100,14 +100,19 @@ export type WorktreeRemoveBody = { deleteBranch?: boolean }
 /** One orphan worktree directory (exists on disk, owned by no live task). */
 export type OrphanWorktree = { workspaceId: string; workspacePath: string; taskId: string; path: string }
 
+/** A git-enabled workspace whose .gitignore does not cover the worktree dir. */
+export type GitignoreSuggestion = { workspaceId: string; workspacePath: string }
+
 /** Health-diagnostics response (⚙ panel). */
 export type DiagnosticsResponse = {
   revision: number
   tasks: number
-  /** Executions stuck `running` at query time (host restart orphaned them). */
+  /** Executions currently marked `running`. */
   staleRunning: number
   /** Worktree directories whose task no longer exists in the ledger. */
   orphanWorktrees: OrphanWorktree[]
+  /** Git workspaces whose .gitignore does not ignore the worktree dir. */
+  gitIgnoreSuggestions: GitignoreSuggestion[]
 }
 
 /** One task (full record) response. */
