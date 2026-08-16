@@ -21,6 +21,7 @@
 import type { WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import { defineTool } from './sdk.ts'
 import {
+  asIsolation,
   asStatus,
   asUrgency,
   canTransition,
@@ -74,6 +75,7 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
     `任务 ${t.id} 「${t.title}」`,
     `状态: ${t.status} (v${t.version}) · 紧急度: ${t.urgency} · 项目: ${t.workspaceId}${t.blocked ? ' · 受阻' : ''}`,
     `执行方式: ${t.execution.mode}${t.execution.cron !== undefined ? ` cron=${t.execution.cron}` : ''}`,
+    `隔离: ${t.isolation === 'none' ? '关闭（原目录执行）' : 'Git Worktree'}${t.branch !== undefined ? `（分支 ${t.branch}）` : ''}`,
   ]
   const holder = isClaimedBy(t)
   if (holder !== undefined) lines.push(`认领: agent ${String(holder).slice(0, 24)}（持有期间其他会话不可移动）`)
@@ -348,6 +350,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           model: { type: 'string', description: 'Provider-owned model id.' },
         },
       },
+      isolation: {
+        type: 'string',
+        description: 'Code isolation for executions: "worktree" (default — each run gets a fresh git worktree on branch task/<标题>+<taskId>) or "none" (run in the project directory, zero git interaction).',
+      },
     },
     output: {
       schema: JSON_OUT,
@@ -366,6 +372,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       prompt?: string
       execution?: { mode?: string; cron?: string }
       model?: { provider?: string; model?: string }
+      isolation?: string
     }, exec: unknown) {
       try {
         const { actor } = caller(exec as ToolRunContext)
@@ -380,6 +387,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         }
         const execution = normalizeExecution(args.execution ?? {}, deps.now())
         const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
+        const isolation = args.isolation === undefined ? undefined : asIsolation(args.isolation)
         const now = deps.now()
         const task: TaskRecord = {
           id: newTaskId(),
@@ -392,6 +400,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           blocked: false,
           execution,
           model,
+          ...(isolation !== undefined ? { isolation } : {}),
           version: 1,
           createdAt: now,
           updatedAt: now,

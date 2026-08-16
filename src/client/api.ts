@@ -10,11 +10,14 @@ import type {
   ChangeEvent,
   CreateTaskBody,
   DeleteTaskBody,
+  DiagnosticsResponse,
+  MergeBranchBody,
   MoveTaskBody,
   RejectTaskBody,
   StateResponse,
   TaskRecord,
   UpdateTaskBody,
+  WorktreeRemoveBody,
   WorkspaceView,
 } from '../shared/api.ts'
 import type { CommentRecord, TaskSummary } from '../shared/protocol.ts'
@@ -53,6 +56,14 @@ export interface TaskboardClient {
   run(id: string): Promise<{ executionId: string; sessionId: string }>
   /** Cancel the running execution (stops the agent session; task returns to todo). */
   cancel(id: string): Promise<{ cancelled: true; executionId: string }>
+  /** Merge the task branch into the main worktree (--no-ff, user-only). */
+  mergeBranch(id: string, body: MergeBranchBody): Promise<{ merged: true; branch: string }>
+  /** Remove the task's worktree; optionally delete its branch. */
+  worktreeRemove(id: string, body: WorktreeRemoveBody): Promise<{ removed: true; branchDeleted: boolean; branchError?: string }>
+  /** Health diagnostics (⚙ panel). */
+  diagnostics(): Promise<DiagnosticsResponse>
+  /** Clean up one orphan worktree directory (task no longer in the ledger). */
+  worktreeCleanup(workspaceId: string, taskId: string): Promise<{ cleaned: true; path: string }>
   /** Subscribe to change frames; the disposer stops the stream. */
   stream(onChange: (event: ChangeEvent) => void, onGap: () => void): () => void
 }
@@ -71,6 +82,10 @@ export function createClient(): TaskboardClient {
     remove: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/delete`, body),
     run: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/run`, {}),
     cancel: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/cancel`, {}),
+    mergeBranch: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/merge`, body),
+    worktreeRemove: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/worktree-remove`, body),
+    diagnostics: () => unwrap<DiagnosticsResponse>(fetch('/dsh-taskboard/diagnostics')),
+    worktreeCleanup: (workspaceId, taskId) => post('/dsh-taskboard/worktree-cleanup', { workspaceId, taskId }),
     stream(onChange, onGap) {
       const es = new EventSource('/dsh-taskboard/events')
       let revision: number | undefined

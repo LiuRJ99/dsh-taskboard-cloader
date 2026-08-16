@@ -102,6 +102,29 @@ export const URGENCY_COLOR: Readonly<Record<Urgency, string>> = {
 // Execution
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-task code isolation mode (0.3.0).
+ * - `worktree`: each execution runs in a fresh `git worktree` on a dedicated
+ *   task branch (`task/<标题>+<taskId>`) under `<workspace>/.dsh-worktrees/`.
+ * - `none`: run in the workspace directory as before, zero git interaction.
+ * Omitted = the default `worktree`; non-git projects auto-degrade at run
+ * time (the execution record carries an `isolationNote` explaining why).
+ */
+export type IsolationMode = 'worktree' | 'none'
+
+/** Validate an isolation value. */
+export function asIsolation(raw: string): IsolationMode {
+  if (raw !== 'worktree' && raw !== 'none') {
+    throw new Error("isolation must be 'worktree' or 'none'")
+  }
+  return raw
+}
+
+/** Resolve a task's effective isolation (omitted → the worktree default). */
+export function effectiveIsolation(task: Pick<TaskRecord, 'isolation'>): IsolationMode {
+  return task.isolation === undefined ? 'worktree' : task.isolation
+}
+
 /** How a task may run. */
 export type ExecutionMode = 'claim' | 'scheduled'
 
@@ -237,6 +260,9 @@ export type CommentRecord = {
   threadId?: string
 }
 
+/** One commit produced by an isolated execution (hash + subject). */
+export type CommitInfo = { hash: string; subject: string }
+
 /** One execution attempt of a task. */
 export type ExecutionRecord = {
   id: string
@@ -248,6 +274,26 @@ export type ExecutionRecord = {
   endedAt?: number
   outcome: 'running' | 'succeeded' | 'failed' | 'cancelled'
   error?: string
+  /** Code isolation actually used (`none` also covers degraded worktree runs). */
+  isolation?: IsolationMode
+  /** Why worktree isolation degraded to running in the original directory. */
+  isolationNote?: string
+  /** The task branch this execution worked on (worktree runs only). */
+  branch?: string
+  /** Absolute path of the dedicated worktree (worktree runs only). */
+  worktreePath?: string
+  /** HEAD of the task branch before the execution started. */
+  baseCommit?: string
+  /** HEAD at settlement. */
+  headCommit?: string
+  /** Commits between baseCommit and headCommit (hash + subject). */
+  commits?: CommitInfo[]
+  /** Uncommitted changes present at settlement (`git status --porcelain` lines). */
+  dirtyFiles?: string[]
+  /** Aggregate diff stat between baseCommit and headCommit. */
+  diffStat?: string
+  /** How many files differ between baseCommit and headCommit. */
+  changedFiles?: number
 }
 
 /** The per-model override a task may carry; absent = session default model. */
@@ -271,6 +317,13 @@ export type TaskRecord = {
   blocked: boolean
   execution: ExecutionConfig
   model?: TaskModel
+  /** Code isolation for executions (omitted = the worktree default; see {@link IsolationMode}). */
+  isolation?: IsolationMode
+  /**
+   * The task branch fixed at the FIRST worktree creation (`task/<标题>+<taskId>`).
+   * Renaming the task afterwards never changes it (history preservation).
+   */
+  branch?: string
   /**
    * The session currently holding the in-progress claim (explicit claim or a
    * live execution). Present only while `status === 'in_progress'`: any move

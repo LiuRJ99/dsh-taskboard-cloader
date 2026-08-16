@@ -41,7 +41,7 @@ export type ApiResult<T> = ApiOk<T> | ApiFail
 export type StateResponse = TaskLedger
 
 /** Workspace listing for the UI pickers. */
-export type WorkspaceView = { id: string; path: string; title: string; sessionCount: number }
+export type WorkspaceView = { id: string; path: string; title: string; sessionCount: number; gitAvailable?: boolean }
 
 /** Create-task request body (actor is always the GUI user). */
 export type CreateTaskBody = {
@@ -52,6 +52,8 @@ export type CreateTaskBody = {
   prompt?: string
   execution?: { mode?: string; cron?: string }
   model?: { provider: string; model: string }
+  /** Code isolation for executions ('worktree' | 'none'); omitted = default. */
+  isolation?: string
 }
 
 /** Update-task request body (ifVersion mandatory). */
@@ -66,6 +68,8 @@ export type UpdateTaskBody = {
   workspaceId?: string
   execution?: { mode?: string; cron?: string }
   model?: { provider: string; model: string } | null
+  /** Change isolation; locked once the task has execution history. */
+  isolation?: string
 }
 
 /** Move-task request body (ifVersion mandatory; the user MAY move to done). */
@@ -86,6 +90,25 @@ export type DeleteTaskBody = { ifVersion?: number; purge?: boolean }
 
 /** Run request body (P3). */
 export type RunTaskBody = Record<string, never>
+
+/** Merge the task branch into the main worktree (`--no-ff`, user-only). */
+export type MergeBranchBody = Record<string, never>
+
+/** Remove a task's worktree; optionally delete its branch too. */
+export type WorktreeRemoveBody = { deleteBranch?: boolean }
+
+/** One orphan worktree directory (exists on disk, owned by no live task). */
+export type OrphanWorktree = { workspaceId: string; workspacePath: string; taskId: string; path: string }
+
+/** Health-diagnostics response (⚙ panel). */
+export type DiagnosticsResponse = {
+  revision: number
+  tasks: number
+  /** Executions stuck `running` at query time (host restart orphaned them). */
+  staleRunning: number
+  /** Worktree directories whose task no longer exists in the ledger. */
+  orphanWorktrees: OrphanWorktree[]
+}
 
 /** One task (full record) response. */
 export type TaskResponse = TaskRecord

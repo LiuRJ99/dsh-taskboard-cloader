@@ -387,6 +387,175 @@ describe('ExecutionService', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// 0.3.0 worktree isolation
+// ---------------------------------------------------------------------------
+
+/** Capturing git fake: every method records calls; behavior per-test. */
+function fakeGit(behavior: {
+  detect?: boolean
+  prepare?: { path: string; branch: string; baseCommit: string } | undefined
+  collect?: import('../src/host/git.ts').SettlementFacts
+}): import('../src/host/git.ts').GitFace & {
+  detectCalls: string[]
+  prepareCalls: Array<{ root: string; path: string; branch: string }>
+  collectCalls: Array<{ path: string; base: string }>
+} {
+  const detectCalls: string[] = []
+  const prepareCalls: Array<{ root: string; path: string; branch: string }> = []
+  const collectCalls: Array<{ path: string; base: string }> = []
+  return {
+    detectCalls,
+    prepareCalls,
+    collectCalls,
+    detect: async (root) => { detectCalls.push(root); return behavior.detect ?? false },
+    prepareWorktree: async (root, path, branch) => {
+      prepareCalls.push({ root, path, branch })
+      return behavior.prepare
+    },
+    collect: async (path, base) => {
+      collectCalls.push({ path, base })
+      return behavior.collect ?? { commits: [], dirtyFiles: [], changedFiles: 0 }
+    },
+    merge: async () => {},
+    removeWorktree: async () => {},
+    deleteBranch: async () => {},
+  }
+}
+
+describe('ExecutionService worktree isolation', () => {
+  it("explicit 'none': zero git calls, runs in the workspace directory", async () => {
+    const store = await storeWith(task({ isolation: 'none' }))
+    const agents = fakeAgents()
+    const git = fakeGit({})
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+
+    expect(git.detectCalls).toEqual([])
+    expect(git.prepareCalls).toEqual([])
+    expect(agents.created[0]!.cwd).toBe('/proj/a')
+
+    const t = store.get('t-run')!
+    expect(t.executions[0]!.isolation).toBe('none')
+    expect(t.executions[0]!.isolationNote).toBeUndefined()
+    expect(t.executions[0]!.branch).toBeUndefined()
+  })
+
+  it("worktree success: session cwd is the worktree, facts recorded, branch pinned once", async () => {
+    const store = await storeWith(task({ title: 'Fix the login page' }))
+    const agents = fakeAgents()
+    const git = fakeGit({
+      detect: true,
+      prepare: { path: '/proj/a/.dsh-worktrees/t-run', branch: 'task/Fix-the-login-page+t-run', baseCommit: 'abc000' },
+      collect: {
+        headCommit: 'fff111',
+        commits: [{ hash: 'abc1234', subject: 'feat: done' }],
+        dirtyFiles: [' M src/a.ts'],
+        diffStat: '1 file changed',
+        changedFiles: 1,
+      },
+    })
+    const events = fakeEvents()
+    const svc = new ExecutionService({ store, agents, workspaces, events, now: () => 1_000, git })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // Prepared on the canonical path with the sanitized branch name.
+    expect(git.prepareCalls).toEqual([{ root: '/proj/a', path: '/proj/a/.dsh-worktrees/t-run', branch: 'task/Fix-the-login-page+t-run' }])
+    expect(agents.created[0]!.cwd).toBe('/proj/a/.dsh-worktrees/t-run')
+
+    // The branch name is pinned onto the task (renames never change it).
+    expect(store.get('t-run')!.branch).toBe('task/Fix-the-login-page+t-run')
+
+    // The framing line steers the session onto its branch.
+    const inject = agents.injects[0] as { content: Array<{ text: string }> }
+    expect(inject.content[0]!.text).toContain('Git Worktree 隔离')
+    expect(inject.content[0]!.text).toContain('task/Fix-the-login-page+t-run')
+
+    // Settlement collects the worktree evidence into the ledger.
+    agents.idle(result.sessionId)
+    await new Promise(r => setTimeout(r, 20))
+    const settled = store.get('t-run')!
+    const execution = settled.executions[0]!
+    expect(execution.outcome).toBe('succeeded')
+    expect(execution.isolation).toBe('worktree')
+    expect(execution.branch).toBe('task/Fix-the-login-page+t-run')
+    expect(execution.worktreePath).toBe('/proj/a/.dsh-worktrees/t-run')
+    expect(execution.baseCommit).toBe('abc000')
+    expect(execution.headCommit).toBe('fff111')
+    expect(execution.commits).toEqual([{ hash: 'abc1234', subject: 'feat: done' }])
+    expect(execution.dirtyFiles).toEqual([' M src/a.ts'])
+    expect(execution.changedFiles).toBe(1)
+    expect(settled.status).toBe('in_review')
+
+    // A SECOND run (task renamed in between) reuses the pinned branch name.
+    await store.mutate('task-updated', ledger => {
+      const t = ledger.tasks.find(x => x.id === 't-run')!
+      t.status = 'todo'
+      t.title = 'Totally different title now'
+      t.version += 1
+      return [t]
+    })
+    const result2 = await svc.run('t-run', 'manual')
+    expect(result2.ok).toBe(true)
+    expect(git.prepareCalls[1]!.branch).toBe('task/Fix-the-login-page+t-run')
+  })
+
+  it('non-git workspace degrades to the original directory with a note', async () => {
+    const store = await storeWith(task({}))
+    const agents = fakeAgents()
+    const git = fakeGit({ detect: false })
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git })
+
+    expect((await svc.run('t-run', 'manual')).ok).toBe(true)
+    expect(git.prepareCalls).toEqual([])
+    expect(agents.created[0]!.cwd).toBe('/proj/a')
+
+    const execution = store.get('t-run')!.executions[0]!
+    expect(execution.isolation).toBe('none')
+    expect(execution.isolationNote).toContain('不是 git 仓库')
+    expect(execution.branch).toBeUndefined()
+    // No branch pinned onto the task (nothing was created).
+    expect(store.get('t-run')!.branch).toBeUndefined()
+  })
+
+  it('prepare failure degrades with a note; absent git face degrades too', async () => {
+    const store = await storeWith(task({}))
+    const git = fakeGit({ detect: true, prepare: undefined })
+    const svc = new ExecutionService({ store, agents: fakeAgents(), workspaces, events: fakeEvents(), now: () => 1_000, git })
+    expect((await svc.run('t-run', 'manual')).ok).toBe(true)
+    const execution = store.get('t-run')!.executions[0]!
+    expect(execution.isolation).toBe('none')
+    expect(execution.isolationNote).toContain('worktree 准备失败')
+
+    const store2 = await storeWith(task({}))
+    const svc2 = new ExecutionService({ store: store2, agents: fakeAgents(), workspaces, events: fakeEvents(), now: () => 1_000 })
+    expect((await svc2.run('t-run', 'manual')).ok).toBe(true)
+    expect(store2.get('t-run')!.executions[0]!.isolationNote).toContain('git 集成不可用')
+  })
+
+  it('collect failure never blocks settlement (fail-soft evidence)', async () => {
+    const store = await storeWith(task({}))
+    const events = fakeEvents()
+    const agents = fakeAgents()
+    const git = fakeGit({ detect: true, prepare: { path: '/proj/a/.dsh-worktrees/t-run', branch: 'task/t-run', baseCommit: 'abc' } })
+    git.collect = async () => { throw new Error('worktree vanished') }
+    const svc = new ExecutionService({ store, agents, workspaces, events, now: () => 1_000, git })
+
+    const result = await svc.run('t-run', 'manual')
+    agents.idle(result.ok ? result.sessionId : '')
+    await new Promise(r => setTimeout(r, 20))
+    const execution = store.get('t-run')!.executions[0]!
+    expect(execution.outcome).toBe('succeeded')
+    expect(execution.commits).toBeUndefined()
+    expect(store.get('t-run')!.status).toBe('in_review')
+  })
+})
+
 describe('SchedulerService', () => {
   it('advances and runs a due scheduled task, skips missed windows', async () => {    const now = Date.parse('2026-08-14T10:30:00Z') // arbitrary
     const scheduled = task({

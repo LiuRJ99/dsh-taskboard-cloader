@@ -10,7 +10,8 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { BoardController } from '../controller.ts'
-import type { Urgency } from '../../shared/protocol.ts'
+import { loadDefaultIsolation, saveDefaultIsolation } from '../controller.ts'
+import type { IsolationMode, Urgency } from '../../shared/protocol.ts'
 import { nextCronTime, parseCron } from '../../shared/protocol.ts'
 import { fmtTime } from './TaskBoard.tsx'
 
@@ -69,6 +70,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const [cron, setCron] = useState(task?.execution.cron ?? '0 9 * * *')
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
   const [model, setModel] = useState(task?.model !== undefined ? JSON.stringify(task.model) : '')
+  // Isolation toggle: create mode starts from the remembered choice (default
+  // on); edit mode starts from the task and locks once execution began.
+  const [isolation, setIsolation] = useState<IsolationMode>(task?.isolation ?? loadDefaultIsolation())
   const titleRef = useRef<HTMLInputElement>(null)
 
   // Focus the title and close on Esc while the dialog is open.
@@ -97,9 +101,25 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   // A task already in progress cannot be run again (host rejects it).
   const runBlocked = editing && task.status === 'in_progress'
 
+  // Isolation editability: locked once the task has execution history (the
+  // branch and its baseline depend on the choice — plan §3.1).
+  const isolationLocked = editing && ((task.executions?.length ?? 0) > 0 || task.status === 'in_progress')
+  const gitOk = controller.gitAvailable(workspaceId)
+  // Non-git project: the worktree option is disabled; submitting keeps the
+  // default (runtime auto-degrades with a note) instead of persisting 'none'.
+  const isolationDisabled = isolationLocked || !gitOk
+
+  /** Isolation payload for submit: undefined keeps the default (degrades naturally). */
+  const isolationPayload = (): string | undefined => {
+    if (!gitOk) return undefined
+    if (!editing) saveDefaultIsolation(isolation)
+    return isolation
+  }
+
   const submit = (): void => {
     if (!valid) return
     const picked = model !== '' ? (JSON.parse(model) as { provider: string; model: string }) : undefined
+    const isolationOut = isolationPayload()
     if (editing) {
       void controller.update(task.id, task.version, {
         title,
@@ -110,6 +130,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         // '' in edit mode clears the pinned model back to the default.
         model: picked ?? null,
+        ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
       })
     } else {
       void controller.create({
@@ -120,6 +141,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         prompt: prompt.length > 0 ? prompt : undefined,
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         model: picked,
+        ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
       })
     }
   }
@@ -128,6 +150,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const submitAndRun = (): void => {
     if (!valid || runBlocked) return
     const picked = model !== '' ? (JSON.parse(model) as { provider: string; model: string }) : undefined
+    const isolationOut = isolationPayload()
     if (editing) {
       void (async () => {
         const saved = await controller.update(task.id, task.version, {
@@ -138,6 +161,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           workspaceId,
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked ?? null,
+          ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
         })
         if (saved) await controller.run(task.id)
       })()
@@ -151,6 +175,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           prompt: prompt.length > 0 ? prompt : undefined,
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked,
+          ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
         })
         if (id !== undefined) await controller.run(id)
       })()
@@ -263,6 +288,38 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
               </span>
             </Field>
           )}
+
+          <Field label="执行隔离" full>
+            <div className="dsh-atb-mode-picker" data-disabled={isolationDisabled ? 'true' : undefined}>
+              <button
+                type="button"
+                className="dsh-atb-mode-opt"
+                data-on={isolation === 'worktree'}
+                disabled={isolationDisabled}
+                title={isolationLocked ? '任务已有执行记录，隔离方式已锁定' : !gitOk ? '当前项目非 git 仓库' : '每次执行在独立 worktree 分支上进行'}
+                onClick={() => setIsolation('worktree')}
+              >
+                <span className="dsh-atb-mode-name">🌿 Worktree 隔离</span>
+                <span className="dsh-atb-mode-hint">
+                  {isolationLocked ? '已锁定（执行开始后不可更改）' : !gitOk ? '当前项目非 git 仓库' : '独立分支 task/标题+ID，互不污染'}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="dsh-atb-mode-opt"
+                data-on={isolation === 'none'}
+                disabled={isolationDisabled}
+                title={isolationLocked ? '任务已有执行记录，隔离方式已锁定' : '直接在项目目录执行（不使用 git）'}
+                onClick={() => setIsolation('none')}
+              >
+                <span className="dsh-atb-mode-name">📁 原目录执行</span>
+                <span className="dsh-atb-mode-hint">{isolationLocked ? '已锁定（执行开始后不可更改）' : !gitOk ? '当前项目非 git 仓库，将在原目录执行' : '不使用 git，直接在项目目录工作'}</span>
+              </button>
+            </div>
+            {!gitOk && !isolationLocked && (
+              <span className="dsh-atb-isolation-note">当前项目非 git 仓库，将在原目录执行（任务仍按默认配置创建，运行时自动降级）</span>
+            )}
+          </Field>
         </div>
 
         <div className="dsh-atb-modal-foot">
@@ -300,4 +357,6 @@ interface TaskRecordLike {
   urgency: Urgency
   execution: { mode: 'claim' | 'scheduled'; cron?: string }
   model?: { provider: string; model: string }
+  isolation?: IsolationMode
+  executions?: unknown[]
 }

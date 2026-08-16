@@ -10,10 +10,13 @@
  * @module dsh-taskboard/host/routes
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { readdir, rm } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the webServer Context merge (ctx.webServer).
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
+  asIsolation,
   asStatus,
   asUrgency,
   canTransition,
@@ -29,12 +32,16 @@ import {
   type TaskModel,
   type TaskRecord,
 } from '../shared/protocol.ts'
+import { WORKTREE_DIR, worktreePathOf, type GitFace } from './git.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
 import type { TaskStore } from './store.ts'
 import type { WorkspaceFace } from './tools.ts'
 
 /** Heartbeat cadence for the SSE stream. */
 const HEARTBEAT_MS = 20_000
+
+/** How long a workspace git-detection result stays cached (fail-soft). */
+const GIT_DETECT_TTL_MS = 60_000
 
 /** The workspaces face routes need (same narrow shape as tools). */
 export type RoutesWorkspaceFace = WorkspaceFace
@@ -53,6 +60,8 @@ export interface TaskboardRoutesOptions {
    * advisory validation of pinned models; undefined = runtime unavailable.
    */
   modelProviders?: () => string[] | undefined
+  /** Git face for worktree actions + workspace git detection; absent → 501 on git actions. */
+  git?: GitFace
 }
 
 /** Validate a pinned model: structural check always, provider route when known. */
@@ -137,6 +146,51 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
   }
   store.subscribe(broadcast)
 
+  // Workspace git detection, TTL-cached and fail-soft (false on any error):
+  // feeds the create-form isolation toggle and the diagnostics panel.
+  const gitCache = new Map<string, { value: boolean; at: number }>()
+  const gitHinted = new Set<string>()
+  const gitAvailable = async (path: string): Promise<boolean> => {
+    if (options.git === undefined) return false
+    const hit = gitCache.get(path)
+    if (hit !== undefined && options.now() - hit.at < GIT_DETECT_TTL_MS) return hit.value
+    let value = false
+    try {
+      value = await options.git.detect(path)
+    } catch { /* fail-soft → false */ }
+    gitCache.set(path, { value, at: options.now() })
+    // gitignore 建议 (plan §3.2): suggest (never write) ignoring our
+    // worktree directory, once per workspace per host run.
+    if (value && !gitHinted.has(path)) {
+      gitHinted.add(path)
+      try {
+        const { readFile } = await import('node:fs/promises')
+        const ignore = await readFile(join(path, '.gitignore'), 'utf8')
+        if (!ignore.split('\n').some(l => l.trim() === WORKTREE_DIR || l.trim() === `/${WORKTREE_DIR}`)) {
+          console.info(`[dsh-taskboard] 建议在 ${path}/.gitignore 加入一行 ${WORKTREE_DIR}/ 以隐藏任务 worktree 目录（不会自动修改）`)
+        }
+      } catch { /* no .gitignore or unreadable — skip the hint */ }
+    }
+    return value
+  }
+
+  /** List orphan worktree dirs: entries under <ws>/.dsh-worktrees owned by no ledger task. */
+  const listOrphanWorktrees = async (): Promise<Array<{ workspaceId: string; workspacePath: string; taskId: string; path: string }>> => {
+    const orphans: Array<{ workspaceId: string; workspacePath: string; taskId: string; path: string }> = []
+    const known = new Set(store.snapshot().tasks.map(t => t.id))
+    for (const ws of workspaces.list()) {
+      let entries: string[] = []
+      try {
+        const dirents = await readdir(join(ws.path, WORKTREE_DIR), { withFileTypes: true })
+        entries = dirents.filter(e => e.isDirectory()).map(e => e.name)
+      } catch { /* no worktrees dir → nothing to do */ }
+      for (const taskId of entries) {
+        if (!known.has(taskId)) orphans.push({ workspaceId: ws.id, workspacePath: ws.path, taskId, path: worktreePathOf(ws.path, taskId) })
+      }
+    }
+    return orphans
+  }
+
   const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       const url = new URL(req.url ?? '/', 'http://x')
@@ -150,7 +204,29 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           return
         }
         if (pathname === `${ROUTE_PREFIX}/workspaces`) {
-          json(res, { ok: true, value: workspaces.list() })
+          const list = workspaces.list()
+          const flags = await Promise.all(list.map(ws => gitAvailable(ws.path)))
+          json(res, {
+            ok: true,
+            value: list.map((ws, i) => ({ ...ws, sessionCount: 0, gitAvailable: flags[i] })),
+          })
+          return
+        }
+        if (pathname === `${ROUTE_PREFIX}/diagnostics`) {
+          const ledger = store.snapshot()
+          let staleRunning = 0
+          for (const t of ledger.tasks) {
+            for (const e of t.executions) if (e.outcome === 'running') staleRunning += 1
+          }
+          json(res, {
+            ok: true,
+            value: {
+              revision: ledger.revision,
+              tasks: ledger.tasks.length,
+              staleRunning,
+              orphanWorktrees: await listOrphanWorktrees(),
+            },
+          })
           return
         }
         const taskMatch = pathname.match(new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)$`))
@@ -194,6 +270,8 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const status = str(body, 'status') === null ? 'todo' as const : asStatus(str(body, 'status')!)
           const execution = normalizeExecution((body.execution as { mode?: string; cron?: string } | undefined) ?? {}, options.now())
           const model = body.model === undefined ? undefined : checkModel(body.model, options.modelProviders)
+          const isolationRaw = str(body, 'isolation')
+          const isolation = isolationRaw === null ? undefined : asIsolation(isolationRaw)
           const now = options.now()
           const task: TaskRecord = {
             id: newTaskId(),
@@ -206,6 +284,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             blocked: false,
             execution,
             model,
+            ...(isolation !== undefined ? { isolation } : {}),
             version: 1,
             createdAt: now,
             updatedAt: now,
@@ -227,7 +306,9 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
       }
 
       // ------------------------------------------- POST /tasks/:id/{action}
-      const actionMatch = pathname.match(new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/(\\w+)$`))
+      // (\w+ after the id would not match hyphenated actions like
+      // worktree-remove, hence the explicit class.)
+      const actionMatch = pathname.match(new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/([\\w-]+)$`))
       if (actionMatch !== null) {
         const id = actionMatch[1]!
         const action = actionMatch[2]!
@@ -258,6 +339,15 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             if (body.execution !== undefined) next.execution = normalizeExecution(body.execution as { mode?: string; cron?: string }, options.now())
             if (body.model === null) next.model = undefined
             else if (body.model !== undefined) next.model = checkModel(body.model, options.modelProviders)
+            // Isolation may change only before the first execution (分支与基线
+            // 取决于该选择 — plan §3.1: 执行开始后锁定).
+            const isolationRaw = str(body, 'isolation')
+            if (isolationRaw !== null) {
+              if (task.executions.length > 0 || task.status === 'in_progress') {
+                throw new Error('Error: invalid_input: isolation 已锁定（任务已有执行记录），不可修改')
+              }
+              next.isolation = asIsolation(isolationRaw)
+            }
             next.version = task.version + 1
             next.updatedAt = options.now()
             next.updatedBy = { kind: 'user' }
@@ -385,8 +475,106 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             }
             return
           }
+          if (action === 'merge') {
+            // ⇥ 合并 (detail page, user-only): merge the task branch into the
+            // main worktree with --no-ff; conflicts are reported verbatim.
+            if (options.git === undefined) {
+              const f = fail('invalid_input', 'git integration unavailable')
+              json(res, f.res, 501)
+              return
+            }
+            if (task.branch === undefined) throw new Error('Error: invalid_input: 该任务还没有 worktree 分支（未隔离执行过）')
+            if (task.status === 'in_progress') throw new Error('Error: invalid_input: 任务执行中，不能合并')
+            if (task.executions.some(e => e.outcome === 'running')) throw new Error('Error: invalid_input: 任务执行中，不能合并')
+            const ws = workspaces.get(task.workspaceId)
+            if (ws === undefined) throw new Error('Error: not_found: unknown workspace')
+            try {
+              await options.git.merge(ws.path, task.branch)
+            } catch (error) {
+              throw new Error(`Error: invalid_input: ${error instanceof Error ? error.message : String(error)}`)
+            }
+            const mergedComment = { id: newCommentId(), body: normalizeBody(`[系统] 分支 ${task.branch} 已合并到主工作区（--no-ff）。`), version: 1, createdAt: options.now() }
+            const next = structuredClone(task)
+            next.comments.push(mergedComment)
+            next.version = task.version + 1
+            next.updatedAt = options.now()
+            await store.mutate('comment-added', ledger => {
+              const i = ledger.tasks.findIndex(t => t.id === id)
+              ledger.tasks[i] = next
+              return [next]
+            })
+            json(res, { ok: true, value: { merged: true, branch: task.branch } })
+            return
+          }
+          if (action === 'worktree-remove') {
+            // 🗑 删除 worktree (detail page): refuses uncommitted changes;
+            // optionally deletes the task branch after the worktree is gone.
+            if (options.git === undefined) {
+              const f = fail('invalid_input', 'git integration unavailable')
+              json(res, f.res, 501)
+              return
+            }
+            if (task.executions.some(e => e.outcome === 'running')) throw new Error('Error: invalid_input: 任务执行中，不能删除 worktree')
+            const ws = workspaces.get(task.workspaceId)
+            if (ws === undefined) throw new Error('Error: not_found: unknown workspace')
+            const path = worktreePathOf(ws.path, id)
+            try {
+              await options.git.removeWorktree(ws.path, path)
+            } catch (error) {
+              throw new Error(`Error: invalid_input: ${error instanceof Error ? error.message : String(error)}`)
+            }
+            let branchDeleted = false
+            let branchError: string | undefined
+            if (body.deleteBranch === true && task.branch !== undefined) {
+              try {
+                await options.git.deleteBranch(ws.path, task.branch)
+                branchDeleted = true
+              } catch (error) {
+                branchError = error instanceof Error ? error.message : String(error)
+              }
+            }
+            json(res, { ok: true, value: { removed: true, branchDeleted, ...(branchError !== undefined ? { branchError } : {}) } })
+            return
+          }
           const f = fail('not_found', `unknown action ${action}`)
           json(res, f.res, f.status)
+        } catch (error) {
+          const f = toFail(error)
+          json(res, f.res, f.status)
+        }
+        return
+      }
+
+      // -------------------------------------- POST /worktree-cleanup (⚙ 诊断)
+      if (pathname === `${ROUTE_PREFIX}/worktree-cleanup`) {
+        try {
+          if (options.git === undefined) {
+            const f = fail('invalid_input', 'git integration unavailable')
+            json(res, f.res, 501)
+            return
+          }
+          const workspaceId = str(body, 'workspaceId') ?? ''
+          const taskId = str(body, 'taskId') ?? ''
+          const ws = workspaces.get(workspaceId)
+          if (ws === undefined) throw new Error('Error: not_found: unknown workspace')
+          // Only dirs owned by NO ledger task may be cleaned here; live tasks
+          // remove their worktree from the detail page.
+          if (store.get(taskId) !== undefined) throw new Error('Error: invalid_input: 任务仍在看板中，请从任务详情页删除其 worktree')
+          const path = worktreePathOf(ws.path, taskId)
+          try {
+            await options.git.removeWorktree(ws.path, path)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            // An unregistered leftover (git no longer knows this worktree):
+            // fall back to direct fs removal — the dir lives inside the
+            // plugin's own .dsh-worktrees scope.
+            if (/not a working tree|not a working-tree/i.test(message)) {
+              await rm(path, { recursive: true, force: true })
+            } else {
+              throw new Error(`Error: invalid_input: ${message}`)
+            }
+          }
+          json(res, { ok: true, value: { cleaned: true, path } })
         } catch (error) {
           const f = toFail(error)
           json(res, f.res, f.status)

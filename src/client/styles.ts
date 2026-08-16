@@ -468,6 +468,51 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
   color: var(--dsw-alias-label-primary, inherit);
 }
 .dsh-atb-alert .dsh-atb-btn { padding: 6px 28px; font-size: 13px; }
+
+/* ---------- 0.3.0 isolation ---------- */
+.dsh-atb-isolation-note { display: block; margin-top: 6px; font-size: 11px; color: var(--dsw-alias-label-tertiary, gray); }
+.dsh-atb-mode-picker[data-disabled="true"] .dsh-atb-mode-opt { cursor: not-allowed; opacity: .55; }
+.dsh-atb-iso-none { font-size: 12.5px; color: var(--dsw-alias-label-secondary, inherit); }
+.dsh-atb-iso-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 8px; }
+.dsh-atb-iso-fact { font-size: 11.5px; color: var(--dsw-alias-label-secondary, inherit); }
+.dsh-atb-iso-fact b { font-weight: 600; color: var(--dsw-alias-state-business-primary, #3e63dd); }
+.dsh-atb-iso-commits { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+.dsh-atb-iso-commit { display: flex; gap: 8px; font-size: 11.5px; align-items: baseline; }
+.dsh-atb-iso-commit code {
+  font-family: ui-monospace, Consolas, monospace; font-size: 10.5px;
+  color: var(--dsh-alias-state-business-primary, #3e63dd); flex-shrink: 0;
+}
+.dsh-atb-iso-commit span { word-break: break-all; color: var(--dsw-alias-label-secondary, inherit); }
+.dsh-atb-iso-more { font-size: 11px; color: var(--dsw-alias-label-tertiary, gray); }
+.dsh-atb-iso-nocommit { font-size: 11.5px; color: var(--dsw-alias-label-tertiary, gray); margin-bottom: 8px; }
+.dsh-atb-iso-dirty {
+  font-size: 11.5px; color: var(--dsw-alias-state-error-primary, #e5484d);
+  background: rgba(229,72,77,.09); border: 1px solid rgba(229,72,77,.35);
+  border-radius: 8px; padding: 6px 10px; margin-bottom: 8px;
+}
+.dsh-atb-iso-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dsh-atb-iso-hint { font-size: 11px; color: var(--dsw-alias-label-tertiary, gray); }
+
+/* ---------- 0.3.0 diagnostics ---------- */
+.dsh-atb-diag { max-width: 520px; width: min(520px, 92vw); }
+.dsh-atb-diag-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
+.dsh-atb-diag-item {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 10px 6px; border-radius: 10px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,.04));
+}
+.dsh-atb-diag-item b { font-size: 18px; font-weight: 700; }
+.dsh-atb-diag-item span { font-size: 10.5px; color: var(--dsw-alias-label-tertiary, gray); }
+.dsh-atb-diag-item[data-bad="true"] b { color: var(--dsw-alias-state-error-primary, #e5484d); }
+.dsh-atb-diag-sec h4 { margin: 0 0 8px; font-size: 12.5px; }
+.dsh-atb-diag-orphans { display: flex; flex-direction: column; gap: 6px; }
+.dsh-atb-diag-orphan {
+  display: flex; align-items: center; gap: 10px; justify-content: space-between;
+  padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25));
+}
+.dsh-atb-diag-orphan-path { font-size: 11.5px; font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
 `
 
 let injected = false

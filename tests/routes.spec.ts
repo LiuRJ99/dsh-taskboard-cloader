@@ -5,12 +5,13 @@
  * stream.
  */
 import { createServer, type Server } from 'node:http'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { registerTaskboardRoutes } from '../src/host/routes.ts'
 import { TaskStore } from '../src/host/store.ts'
+import type { GitFace } from '../src/host/git.ts'
 import type { WorkspaceFace } from '../src/host/tools.ts'
 
 let server: Server
@@ -20,10 +21,44 @@ let store: InstanceType<typeof TaskStore>
 let cancelCalls: string[]
 let dir: string
 
+// Mutable workspace list + mutable git behavior (0.3.0 tests swap these).
+const wsList: Array<{ id: string; path: string; title: string }> = [
+  { id: 'ws-a', path: '/proj/a', title: 'A' },
+  { id: 'ws-b', path: '/proj/b', title: 'B' },
+]
 const workspaces: WorkspaceFace = {
   resolveByPath: async path => (path === '/proj/a' ? { id: 'ws-a' } : path === '/proj/b' ? { id: 'ws-b' } : undefined),
-  get: id => id === 'ws-a' ? { id: 'ws-a', path: '/proj/a', title: 'A' } : id === 'ws-b' ? { id: 'ws-b', path: '/proj/b', title: 'B' } : undefined,
-  list: () => [{ id: 'ws-a', path: '/proj/a', title: 'A' }, { id: 'ws-b', path: '/proj/b', title: 'B' }],
+  get: id => wsList.find(w => w.id === id),
+  list: () => wsList.slice(),
+}
+
+/** Swappable git behavior for the routes under test. */
+const gitBehavior = {
+  mergeError: undefined as string | undefined,
+  removeError: undefined as undefined | ((path: string) => string | undefined),
+  branchDeleteError: undefined as string | undefined,
+  detect: async (_root: string) => false,
+  merged: [] as Array<{ root: string; branch: string }>,
+  removed: [] as string[],
+  deletedBranches: [] as string[],
+}
+const gitFace: GitFace = {
+  detect: root => gitBehavior.detect(root),
+  prepareWorktree: async () => undefined,
+  collect: async () => ({ commits: [], dirtyFiles: [], changedFiles: 0 }),
+  merge: async (root, branch) => {
+    gitBehavior.merged.push({ root, branch })
+    if (gitBehavior.mergeError !== undefined) throw new Error(gitBehavior.mergeError)
+  },
+  removeWorktree: async (_root, path) => {
+    gitBehavior.removed.push(path)
+    const error = gitBehavior.removeError?.(path)
+    if (error !== undefined) throw new Error(error)
+  },
+  deleteBranch: async (_root, branch) => {
+    gitBehavior.deletedBranches.push(branch)
+    if (gitBehavior.branchDeleteError !== undefined) throw new Error(gitBehavior.branchDeleteError)
+  },
 }
 
 beforeAll(async () => {
@@ -46,6 +81,7 @@ beforeAll(async () => {
     now: () => 5_000,
     cancel: async id => { cancelCalls.push(id); return { ok: true, executionId: 'e-x' } },
     modelProviders: () => ['prov-a'],
+    git: gitFace,
   })
   server.on('request', (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
@@ -83,10 +119,13 @@ describe('taskboard routes', () => {
     expect(body.value.tasks).toEqual([])
   })
 
-  it('lists workspaces for the picker', async () => {
+  it('lists workspaces for the picker (with git availability)', async () => {
     const res = await fetch(`${base}/dsh-taskboard/workspaces`)
     const body = await res.json()
-    expect(body.value).toEqual([{ id: 'ws-a', path: '/proj/a', title: 'A' }, { id: 'ws-b', path: '/proj/b', title: 'B' }])
+    expect(body.value).toEqual([
+      { id: 'ws-a', path: '/proj/a', title: 'A', sessionCount: 0, gitAvailable: false },
+      { id: 'ws-b', path: '/proj/b', title: 'B', sessionCount: 0, gitAvailable: false },
+    ])
   })
 
   it('creates a task and rejects bad payloads', async () => {
@@ -261,5 +300,131 @@ describe('taskboard routes', () => {
     const created = await createP
     expect(created.status).toBe(201)
     controller.abort()
+  })
+
+  // ------------------------------------------------------------- 0.3.0 worktree
+  it('create accepts isolation; update locks it once executions exist', async () => {
+    const created = await post('/dsh-taskboard/tasks', { title: 'Iso task', workspaceId: 'ws-a', urgency: 'normal', isolation: 'none' })
+    expect(created.status).toBe(201)
+    expect(created.json.value.id).toBeTruthy()
+    const id = created.json.value.id as string
+    const full = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    expect(full.value.isolation).toBe('none')
+
+    const badIso = await post('/dsh-taskboard/tasks', { title: 'Iso bad', workspaceId: 'ws-a', urgency: 'normal', isolation: 'docker' })
+    expect(badIso.status).toBe(400)
+
+    // Before any execution: switching is allowed.
+    const switchOk = await post(`/dsh-taskboard/tasks/${id}/update`, { ifVersion: full.value.version, isolation: 'worktree' })
+    expect(switchOk.status).toBe(200)
+    const full2 = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    expect(full2.value.isolation).toBe('worktree')
+
+    // After an execution record exists: locked.
+    await store.mutate('execution-recorded', ledger => {
+      const target = ledger.tasks.find(t => t.id === id)!
+      target.executions.push({ id: 'e-1', trigger: 'manual', startedAt: 5_000, outcome: 'succeeded', endedAt: 5_100 })
+      target.version += 1
+      return [target]
+    })
+    const full3 = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    const locked = await post(`/dsh-taskboard/tasks/${id}/update`, { ifVersion: full3.value.version, isolation: 'none' })
+    expect(locked.status).toBe(400)
+    expect(locked.json.error.message).toContain('已锁定')
+  })
+
+  it('merge: needs a branch; merges --no-ff and leaves a system comment; git failures map to 400', async () => {
+    const created = await post('/dsh-taskboard/tasks', { title: 'Merge me', workspaceId: 'ws-a', urgency: 'normal' })
+    const id = created.json.value.id as string
+
+    // No branch yet → 400.
+    const noBranch = await post(`/dsh-taskboard/tasks/${id}/merge`, {})
+    expect(noBranch.status).toBe(400)
+    expect(noBranch.json.error.message).toContain('worktree 分支')
+
+    // Give the task a pinned branch (as a successful isolated run would).
+    await store.mutate('task-updated', ledger => {
+      const target = ledger.tasks.find(t => t.id === id)!
+      target.branch = 'task/Merge-me+t-x'
+      target.version += 1
+      return [target]
+    })
+
+    gitBehavior.mergeError = '主工作区有 3 处未提交修改，请先提交或暂存后再合并'
+    const dirty = await post(`/dsh-taskboard/tasks/${id}/merge`, {})
+    expect(dirty.status).toBe(400)
+    expect(dirty.json.error.message).toContain('未提交修改')
+
+    gitBehavior.mergeError = undefined
+    gitBehavior.merged = []
+    const okMerge = await post(`/dsh-taskboard/tasks/${id}/merge`, {})
+    expect(okMerge.status).toBe(200)
+    expect(okMerge.json.value).toEqual({ merged: true, branch: 'task/Merge-me+t-x' })
+    expect(gitBehavior.merged).toEqual([{ root: '/proj/a', branch: 'task/Merge-me+t-x' }])
+
+    // A system comment landed on the task.
+    const full = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    const mergeComment = (full.value.comments as Array<{ body: string }>).find(c => c.body.includes('已合并到主工作区'))
+    expect(mergeComment).toBeTruthy()
+  })
+
+  it('worktree-remove: refuses dirty worktrees with 400; deleteBranch failures surface as branchError', async () => {
+    const created = await post('/dsh-taskboard/tasks', { title: 'Clean me', workspaceId: 'ws-a', urgency: 'normal' })
+    const id = created.json.value.id as string
+    await store.mutate('task-updated', ledger => {
+      const target = ledger.tasks.find(t => t.id === id)!
+      target.branch = 'task/Clean-me+t-y'
+      return [target]
+    })
+
+    gitBehavior.removeError = () => 'worktree 有 2 处未提交修改，拒绝删除：\n M a\n M b'
+    const dirty = await post(`/dsh-taskboard/tasks/${id}/worktree-remove`, {})
+    expect(dirty.status).toBe(400)
+    expect(dirty.json.error.message).toContain('未提交修改')
+
+    gitBehavior.removeError = undefined
+    gitBehavior.removed = []
+    gitBehavior.branchDeleteError = "error: Cannot delete branch 'task/Clean-me+t-y' checked out at '/x'"
+    const res = await post(`/dsh-taskboard/tasks/${id}/worktree-remove`, { deleteBranch: true })
+    expect(res.status).toBe(200)
+    expect(res.json.value.removed).toBe(true)
+    expect(res.json.value.branchDeleted).toBe(false)
+    expect(res.json.value.branchError).toContain('checked out')
+    expect(gitBehavior.removed).toEqual([`/proj/a/.dsh-worktrees/${id}`])
+
+    gitBehavior.branchDeleteError = undefined
+    const res2 = await post(`/dsh-taskboard/tasks/${id}/worktree-remove`, { deleteBranch: true })
+    expect(res2.json.value.branchDeleted).toBe(true)
+  })
+
+  it('diagnostics lists orphan worktrees and cleanup removes them (fs fallback)', async () => {
+    // A real directory on disk owned by NO ledger task = orphan.
+    const ghostPath = join(dir, '.dsh-worktrees', 't-ghost')
+    await mkdir(ghostPath, { recursive: true })
+    wsList.push({ id: 'ws-tmp', path: dir, title: 'TMP' })
+    try {
+      let diag = await (await fetch(`${base}/dsh-taskboard/diagnostics`)).json()
+      const orphan = diag.value.orphanWorktrees.find((o: { taskId: string }) => o.taskId === 't-ghost')
+      expect(orphan).toEqual({ workspaceId: 'ws-tmp', workspacePath: dir, taskId: 't-ghost', path: ghostPath.replaceAll('\\', '/') })
+
+      // Cleanup with git reporting "not a working tree" → fs fallback.
+      gitBehavior.removeError = () => 'fatal: not a working tree: ' + ghostPath
+      const clean = await post('/dsh-taskboard/worktree-cleanup', { workspaceId: 'ws-tmp', taskId: 't-ghost' })
+      expect(clean.status).toBe(200)
+      expect(clean.json.value.cleaned).toBe(true)
+
+      diag = await (await fetch(`${base}/dsh-taskboard/diagnostics`)).json()
+      expect(diag.value.orphanWorktrees.find((o: { taskId: string }) => o.taskId === 't-ghost')).toBeUndefined()
+
+      // Cleanup refuses a task that still exists in the ledger.
+      const created = await post('/dsh-taskboard/tasks', { title: 'Live', workspaceId: 'ws-a', urgency: 'normal' })
+      const liveId = created.json.value.id as string
+      const refuse = await post('/dsh-taskboard/worktree-cleanup', { workspaceId: 'ws-tmp', taskId: liveId })
+      expect(refuse.status).toBe(400)
+      expect(refuse.json.error.message).toContain('详情页')
+    } finally {
+      wsList.splice(wsList.findIndex(w => w.id === 'ws-tmp'), 1)
+      gitBehavior.removeError = undefined
+    }
   })
 })

@@ -7,8 +7,8 @@
  *
  * @module dsh-taskboard/client/controller
  */
-import type { ChangeEvent, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
-import type { TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
+import type { ChangeEvent, DiagnosticsResponse, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
+import type { IsolationMode, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
 import type { SessionJumpResult } from './session-jump.ts'
@@ -26,6 +26,26 @@ export type SortBy = 'default' | 'updated' | 'urgency' | 'created'
 
 /** localStorage key for persisted view state (filters + sort). */
 const VIEW_KEY = 'dsh-taskboard-view-v1'
+
+/** localStorage key for the remembered isolation toggle choice (0.3.0). */
+const ISOLATION_KEY = 'dsh-taskboard-isolation-v1'
+
+/** Load the remembered default isolation (worktree unless explicitly turned off). */
+export function loadDefaultIsolation(): IsolationMode {
+  try {
+    const raw = localStorage.getItem(ISOLATION_KEY)
+    return raw === 'none' ? 'none' : 'worktree'
+  } catch {
+    return 'worktree'
+  }
+}
+
+/** Remember the isolation toggle choice across forms (best effort). */
+export function saveDefaultIsolation(mode: IsolationMode): void {
+  try {
+    localStorage.setItem(ISOLATION_KEY, mode)
+  } catch { /* storage unavailable — choice just won't persist */ }
+}
 
 /** Load the persisted view state (never throws; fresh on any parse error). */
 function loadView(): { workspaceId?: string; urgencies: Urgency[]; sortBy: SortBy } {
@@ -62,6 +82,10 @@ export interface ControllerState {
   editingId?: string
   /** Secondary (canceled/archived/trashed) tab visible. */
   secondaryOpen: boolean
+  /** Health-diagnostics panel (⚙) visible. */
+  diagOpen: boolean
+  /** Last fetched diagnostics payload (⚙ panel). */
+  diagnostics?: DiagnosticsResponse
   /** Transient error surface (action failures); cleared on next success. */
   error?: string
 }
@@ -78,6 +102,7 @@ function initialState(): ControllerState {
     sortBy: view.sortBy,
     composerOpen: false,
     secondaryOpen: false,
+    diagOpen: false,
   }
 }
 
@@ -221,6 +246,12 @@ export class BoardController {
   /** Toggle the secondary tab. */
   toggleSecondary(): void { this.setState({ secondaryOpen: !this.state.secondaryOpen }) }
 
+  /** Whether a workspace passed git detection (form toggle enablement). */
+  gitAvailable(workspaceId: string | undefined): boolean {
+    if (workspaceId === undefined) return true
+    return this.state.workspaces.find(w => w.id === workspaceId)?.gitAvailable === true
+  }
+
   /**
    * Install the session-jump bridge (built from the runtime sessions service
    * by the client entry). Without it openSession reports 'unavailable'.
@@ -345,6 +376,56 @@ export class BoardController {
     }
   }
 
+  /**
+   * ⇥ 合并 (detail page): merge the task branch into the main worktree.
+   * @returns the outcome; failures carry the git message for an alert.
+   */
+  async mergeBranch(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      await this.client.mergeBranch(id, {})
+      await this.refresh()
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /**
+   * 🗑 删除 worktree (detail page), optionally deleting the task branch too.
+   * @returns the outcome; failures carry the git message for an alert.
+   */
+  async removeWorktree(id: string, deleteBranch: boolean): Promise<{ ok: true; branchError?: string } | { ok: false; error: string }> {
+    try {
+      const value = await this.client.worktreeRemove(id, { deleteBranch })
+      await this.refresh()
+      return value.branchError !== undefined ? { ok: true, branchError: value.branchError } : { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /** Open the ⚙ diagnostics panel and fetch a fresh snapshot. */
+  openDiagnostics(): void {
+    this.setState({ diagOpen: true })
+    void this.client.diagnostics()
+      .then(diagnostics => this.setState({ diagnostics }))
+      .catch(error => this.setState({ error: error instanceof Error ? error.message : String(error) }))
+  }
+
+  /** Close the ⚙ diagnostics panel. */
+  closeDiagnostics(): void { this.setState({ diagOpen: false }) }
+
+  /** Clean one orphan worktree (⚙ panel); refreshes the diagnostics payload. */
+  async cleanupOrphan(workspaceId: string, taskId: string): Promise<void> {
+    try {
+      await this.client.worktreeCleanup(workspaceId, taskId)
+      const diagnostics = await this.client.diagnostics()
+      this.setState({ diagnostics, error: undefined })
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   /** Soft-delete (agent parity) then optional purge. */
   async remove(id: string, ifVersion: number, purge: boolean): Promise<void> {
     try {
@@ -356,7 +437,7 @@ export class BoardController {
     }
   }
 
-  /** Duplicate a task into a fresh todo card (same project/urgency/prompt/execution/model). */
+  /** Duplicate a task into a fresh todo card (same project/urgency/prompt/execution/model/isolation). */
   async duplicate(task: TaskRecord): Promise<void> {
     try {
       await this.client.create({
@@ -369,6 +450,7 @@ export class BoardController {
           ? { mode: 'scheduled', cron: task.execution.cron }
           : { mode: 'claim' },
         model: task.model,
+        isolation: task.isolation,
       })
       await this.refresh()
     } catch (error) {

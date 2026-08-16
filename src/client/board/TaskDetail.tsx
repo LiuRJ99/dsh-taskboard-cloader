@@ -9,7 +9,7 @@
  */
 import { useState, type ReactNode } from 'react'
 import type { BoardController } from '../controller.ts'
-import type { TaskRecord } from '../../shared/protocol.ts'
+import type { ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
 import { canTransition } from '../../shared/protocol.ts'
 import { useAlert } from './AlertModal.tsx'
 import { fmtTime, isStaleClaim } from './TaskBoard.tsx'
@@ -46,6 +46,158 @@ function duration(startedAt: number | undefined, endedAt: number | undefined): s
 /** Small labelled meta chip. */
 function Chip({ icon, children, tone }: { icon?: string; children: ReactNode; tone?: string }) {
   return <span className="dsh-atb-chip2" data-tone={tone}>{icon !== undefined && <span className="dsh-atb-chip2-icon">{icon}</span>}{children}</span>
+}
+
+/** The most recent execution carrying isolation facts, newest first. */
+function latestIsolated(task: TaskRecord): ExecutionRecord | undefined {
+  return [...task.executions].reverse().find(e => e.isolation !== undefined || e.worktreePath !== undefined || e.isolationNote !== undefined)
+}
+
+/** Short commit hash for display. */
+function shortHash(hash: string | undefined): string {
+  return hash === undefined ? '' : hash.slice(0, 8)
+}
+
+/**
+ * The 0.3.0 isolation block: branch / baseline→head commits / change stats /
+ * uncommitted-changes warning, plus the user-only git actions (merge /
+ * remove worktree — plan §3.3).
+ */
+function IsolationBlock({ task, controller }: { task: TaskRecord; controller: BoardController }) {
+  const { alert: showAlert, el: alertEl } = useAlert()
+  const [confirmMerge, setConfirmMerge] = useState(false)
+  const [confirmRemove, setConfirmRemove] = useState<'wt' | 'wtb' | null>(null)
+  const [busy, setBusy] = useState(false)
+  const execution = latestIsolated(task)
+  const running = task.executions.some(e => e.outcome === 'running')
+  if (execution === undefined) return null
+
+  const doMerge = (): void => {
+    setBusy(true)
+    void controller.mergeBranch(task.id).then(result => {
+      setBusy(false)
+      setConfirmMerge(false)
+      if (!result.ok) showAlert(`合并失败：${result.error}`)
+    })
+  }
+
+  const doRemove = (deleteBranch: boolean): void => {
+    setBusy(true)
+    void controller.removeWorktree(task.id, deleteBranch).then(result => {
+      setBusy(false)
+      setConfirmRemove(null)
+      if (!result.ok) showAlert(`删除失败：${result.error}`)
+      else if (result.branchError !== undefined) showAlert(`worktree 已删除，但分支删除失败：${result.branchError}`)
+    })
+  }
+
+  // Degraded / off isolation: one quiet line explaining why.
+  if (execution.isolation !== 'worktree' || execution.worktreePath === undefined) {
+    return (
+      <div className="dsh-atb-fieldcard" data-kind="isolation">
+        <div className="dsh-atb-fieldcard-label">执行隔离</div>
+        <div className="dsh-atb-iso-none">📁 原目录执行{execution.isolationNote !== undefined ? ` · ${execution.isolationNote}` : ''}</div>
+        {alertEl}
+      </div>
+    )
+  }
+
+  const commits = execution.commits ?? []
+  const dirty = execution.dirtyFiles ?? []
+
+  return (
+    <div className="dsh-atb-fieldcard" data-kind="isolation">
+      <div className="dsh-atb-fieldcard-label">执行隔离 · Worktree</div>
+      <div className="dsh-atb-iso-facts">
+        <span className="dsh-atb-iso-fact" title={execution.worktreePath}>🌿 分支 <b>{execution.branch ?? task.branch}</b></span>
+        <span className="dsh-atb-iso-fact">基线 {shortHash(execution.baseCommit)} → {shortHash(execution.headCommit)}</span>
+        {execution.changedFiles !== undefined && execution.changedFiles > 0 && (
+          <span className="dsh-atb-iso-fact">改动 {execution.changedFiles} 个文件</span>
+        )}
+        {execution.diffStat !== undefined && <span className="dsh-atb-iso-fact" title={execution.diffStat}>{execution.diffStat}</span>}
+      </div>
+
+      {commits.length > 0
+        ? (
+            <div className="dsh-atb-iso-commits">
+              {commits.slice(0, 10).map(c => (
+                <div key={c.hash} className="dsh-atb-iso-commit">
+                  <code>{shortHash(c.hash)}</code>
+                  <span>{c.subject}</span>
+                </div>
+              ))}
+              {commits.length > 10 && <div className="dsh-atb-iso-more">… 共 {commits.length} 个提交</div>}
+            </div>
+          )
+        : <div className="dsh-atb-iso-nocommit">该次执行没有产生提交（改动可能未提交，见下方警告）</div>}
+
+      {dirty.length > 0 && (
+        <div className="dsh-atb-iso-dirty" title={dirty.join('\n')}>
+          ⚠ 有 {dirty.length} 处未提交修改（合并前请让 agent 提交，或手动处理）
+        </div>
+      )}
+
+      <div className="dsh-atb-iso-actions">
+        {running
+          ? <span className="dsh-atb-iso-hint">执行中 — 结束后可合并或清理</span>
+          : confirmMerge
+            ? (
+                <span className="dsh-atb-confirm">
+                  <span className="dsh-atb-confirm-label">将分支以 --no-ff 合并到主工作区？</span>
+                  <button type="button" className="dsh-atb-btn" data-primary="true" disabled={busy} onClick={doMerge}>确认合并</button>
+                  <button type="button" className="dsh-atb-btn" onClick={() => setConfirmMerge(false)}>取消</button>
+                </span>
+              )
+            : (
+                <button
+                  type="button"
+                  className="dsh-atb-btn"
+                  disabled={busy}
+                  title="在主工作区 git merge --no-ff 该任务分支（要求主区干净；冲突会原样报告）"
+                  onClick={() => setConfirmMerge(true)}
+                >
+                  ⇥ 合并到主工作区
+                </button>
+              )}
+        {!running && (confirmRemove === null
+          ? (
+              <>
+                <button
+                  type="button"
+                  className="dsh-atb-btn"
+                  data-danger="true"
+                  disabled={busy}
+                  title="git worktree remove（有未提交修改时拒绝）"
+                  onClick={() => setConfirmRemove('wt')}
+                >
+                  🗑 删除 worktree
+                </button>
+                {task.branch !== undefined && (
+                  <button
+                    type="button"
+                    className="dsh-atb-btn"
+                    data-danger="true"
+                    disabled={busy}
+                    title="删除 worktree 并删除任务分支（有未提交修改时拒绝）"
+                    onClick={() => setConfirmRemove('wtb')}
+                  >
+                    🗑 删 worktree + 分支
+                  </button>
+                )}
+              </>
+            )
+          : (
+              <span className="dsh-atb-confirm">
+                <span className="dsh-atb-confirm-label">{confirmRemove === 'wtb' ? '删除 worktree 并删除分支？' : '删除 worktree 目录？'}</span>
+                <button type="button" className="dsh-atb-btn" data-danger="true" disabled={busy} onClick={() => doRemove(confirmRemove === 'wtb')}>确认删除</button>
+                <button type="button" className="dsh-atb-btn" onClick={() => setConfirmRemove(null)}>取消</button>
+              </span>
+            ))}
+        {!running && confirmRemove === null && !confirmMerge && <span className="dsh-atb-iso-hint">分支与 worktree 保留中 — 可退回继续修改</span>}
+      </div>
+      {alertEl}
+    </div>
+  )
 }
 
 /**
@@ -91,6 +243,10 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
               <Chip icon="⏰">{task.execution.cron} · 下次 {fmtTime(task.execution.nextRunAt)}</Chip>
             )}
             {task.blocked && <Chip icon="⛔" tone="urgent">受阻</Chip>}
+            {task.branch !== undefined && (
+              <Chip icon="🌿" tone={undefined}>Worktree · {task.branch.length > 28 ? `${task.branch.slice(0, 28)}…` : task.branch}</Chip>
+            )}
+            {(task.isolation === undefined || task.isolation === 'worktree') && task.branch === undefined && <Chip icon="🌿">Worktree 隔离</Chip>}
             {holder !== undefined && (
               <Chip icon={stale ? '⏱' : '🔑'} tone={stale ? 'urgent' : undefined}>
                 {stale ? '认领超时 · ' : '由 '}{shortId(holder)} 持有
@@ -159,6 +315,8 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
           <div className="dsh-atb-promptbox">{task.prompt}</div>
         </div>
       )}
+
+      <IsolationBlock task={task} controller={controller} />
 
       <div className="dsh-atb-detail-actions">
         <div className="dsh-atb-movebtns">

@@ -18,8 +18,8 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 - 任务挂项目：认领校验会话归属，跨项目不可抢
 - 紧急度三色（紧急/一般/不急）筛选与色条；搜索（标题/ID）与列内排序，筛选排序持久化
 - 列头状态色圆点：待规划灰 / 待办蓝 / 进行中橙 / 待验收紫 / 已完成绿 / 已删除红
-- 新建/编辑弹窗：项目、模型、紧急度、执行方式、cron 实时校验与下次运行预览
-- 详情面板：状态流转（done 仅限人工）、agent/用户评论流、执行记录（倒序，最新在最上；会话 ID 点击跳转打开该执行会话；已删除/已归档分开提示）、停止执行
+- 新建/编辑弹窗：项目、模型、紧急度、执行方式、cron 实时校验与下次运行预览、执行隔离开关
+- 详情面板：状态流转（done 仅限人工）、agent/用户评论流、执行记录（倒序，最新在最上；会话 ID 点击跳转打开该执行会话；已删除/已归档分开提示）、停止执行、Worktree 隔离块（分支 / 提交 / 改动统计 / 合并与清理）
 - 待验收列卡片快捷操作：「✓ 完成」一键验收、「✗ 退回」退回待办并可附退回原因（agent 开工前会读）
 
 **Agent 工具（taskboard_\*）**
@@ -28,8 +28,10 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 
 **执行**
 - 手动执行或 cron 定时：每次执行在任务项目内新建全新会话（干净上下文、可指定模型）；开场两条消息同一回合送达——插件上下文行携带任务框架与交接协议（含失败回退路径），卡片内容（提示词或标题+描述）以正常用户消息呈现
+- **Git Worktree 隔离执行（0.3.0）**：任务级开关（默认开、记住上次选择），每次执行在 `<项目>/.dsh-worktrees/<任务ID>` 独立 worktree 上进行，分支 `task/<标题>+<任务ID>`（首次创建后定死，改名不改）；会话开场即引导 agent 在该分支上提交；结算自动采集提交列表 / 未提交修改警告 / 改动统计；非 git 项目或 git 不可用时自动降级原目录执行（执行记录注明降级原因，台账与执行主流程永不因 git 失败而失败）；验收时详情页一键 `--no-ff` 合并到主工作区（主区脏或冲突原样报告，不自动解决）、删除 worktree（有未提交修改时拒绝）、可选删分支
 - host 侧调度：关掉浏览器照常触发；错过窗口跳过不补跑
 - 乐观并发（ifVersion）+ 完整归因（谁改的、哪个会话执行的）
+- ⚙ 健康诊断：台账基本项 + 遗留 worktree（台账无主但目录存在）一键清理
 
 ## 安装
 
@@ -44,11 +46,24 @@ dsh plugin --profile <name> add github:cloader/dsh-taskboard   # GitHub 源
 
 ```bash
 npm install && npm run build    # host ESM + client CJS 双构建
-npm test                        # vitest 67 项
+npm test                        # vitest 97 项
+node tests/manual-git-e2e.mjs   # 真 git 端到端手测（worktree 全链路）
 node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 ```
 
 ## 升级日志
+
+### 0.3.0
+
+- **Git Worktree 隔离执行（旗舰）**：并发执行互不污染代码，验收即审分支
+  - 任务级隔离开关：新建表单「执行隔离」（默认 Worktree、记住上次选择；非 git 项目自动禁用并提示）；`taskboard_create` 增 `isolation` 参数；复制任务携带；首次执行前可改、开始后锁定
+  - 执行链路：每次全新 worktree（`git worktree add --force` 到固定路径 `.dsh-worktrees/<任务ID>`，固定分支 `task/<标题>+<任务ID>`，标题清洗+截断、空标题回退纯 ID、改名不改分支）；执行会话 cwd 指向 worktree；开场框架行引导 agent 把改动提交到该分支
+  - 结算采集：提交列表（hash+主题）、未提交修改警告、改动统计与文件数——「执行记录 ↔ commits 关联」并入本轮
+  - 验收操作（详情页）：⇥ 合并（`--no-ff`，主区脏/冲突原样报告且自动 `merge --abort` 复原）、🗑 删除 worktree（有未提交修改拒绝，可选连分支删除）、保留分支退回继续修改
+  - 安全规则：显式关闭 = 全程零 git 调用；非 git 项目 / git 不可用 / 超时全部自动降级原目录（isolationNote 注明原因，fail-soft：台账与执行永不因 git 失败而失败）；合并的干净检查豁免插件自有的 `.dsh-worktrees/` 目录；所有 git 操作带超时（查询 2s / 结构操作 15s）
+  - host 新模块 `src/host/git.ts`：窄接口 GitFace（detect/prepare/collect/merge/remove/deleteBranch），exec 层可注入（测试零真 git）；workspaces 路由下发 git 检测结果（60s 缓存）；启动时对未忽略 `.dsh-worktrees/` 的项目提示 gitignore 建议（不自动改）
+- **⚙ 健康诊断**：台账基本项（修订号/任务数/悬挂执行中）+ 遗留 worktree 列表（台账无主但目录存在）一键清理（未注册目录 fs 兜底，有未提交修改仍拒绝）
+- `taskboard_get` 详情输出隔离与分支信息；测试 67 → 97 项
 
 ### 0.2.2
 

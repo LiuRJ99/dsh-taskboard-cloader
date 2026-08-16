@@ -11,13 +11,16 @@
  * @module dsh-taskboard/host/execution
  */
 import {
+  effectiveIsolation,
   effectivePrompt,
   newCommentId,
   newExecutionId,
   normalizeBody,
   type ExecutionRecord,
+  type IsolationMode,
   type TaskRecord,
 } from '../shared/protocol.ts'
+import { sanitizeBranchName, worktreePathOf, type GitFace, type SettlementFacts } from './git.ts'
 import { MessageId } from './sdk.ts'
 import type { TaskStore } from './store.ts'
 
@@ -69,6 +72,11 @@ export interface ExecutionDeps {
   renameSession?: (sessionId: string, title: string) => void
   /** Max concurrently running executions across all tasks (default 3). */
   maxConcurrent?: number
+  /**
+   * Git face for worktree isolation (0.3.0). Absent → every worktree-mode
+   * task degrades to the original directory with an isolationNote.
+   */
+  git?: GitFace
 }
 
 /** Outcome of a run request (immediate; the run settles asynchronously). */
@@ -193,6 +201,13 @@ export class ExecutionService {
     const executionId = newExecutionId()
     const sessionId = this.deps.mintSessionId?.() ?? `session-taskboard-${crypto.randomUUID()}`
 
+    // 0. Resolve code isolation (plan §3.2): explicit 'none' → zero git calls;
+    //    'worktree' (also the omitted default) → prepare below, degrading to
+    //    the original directory fail-soft on any git problem.
+    const isolation: IsolationMode = effectiveIsolation(task)
+    const branch = task.branch ?? sanitizeBranchName(task.title, task.id)
+    const worktreePath = worktreePathOf(workspace.path, task.id)
+
     // 1. Open the execution record, flip the card to in_progress, and record
     //    the executing session as the claim holder — atomically.
     let gate: string | undefined
@@ -211,6 +226,7 @@ export class ExecutionService {
         trigger,
         startedAt: this.deps.now(),
         outcome: 'running',
+        ...(isolation === 'none' ? { isolation: 'none' as const } : { isolation: 'worktree' as const, branch }),
       })
       target.status = 'in_progress'
       target.updatedAt = this.deps.now()
@@ -221,15 +237,40 @@ export class ExecutionService {
     })
     if (gate !== undefined) return { ok: false, error: gate }
 
-    // 2. Create the fresh agent+session inside the task's project, carrying
-    //    the pinned model — or the deployment default when unpinned (the
-    //    persona template renders {{model}}, so the session always needs one).
+    // 1b. Worktree preparation (fail-soft): any failure degrades this run to
+    //     the original directory with an isolationNote — the ledger and the
+    //     execution pipeline itself never fail over git.
+    let cwd = workspace.path
+    let isolationNote: string | undefined
+    let prepared: { branch: string; worktreePath: string; baseCommit: string } | undefined
+    if (isolation === 'worktree') {
+      const outcome = await this.prepareIsolation(task, workspace.path, worktreePath, branch)
+      if (outcome.prepared !== undefined) {
+        prepared = outcome.prepared
+        cwd = outcome.prepared.worktreePath
+        // Persist the isolation facts of the run (branch is already on the
+        // record from the gate mutation).
+        await this.patchExecution(executionId, {
+          worktreePath: outcome.prepared.worktreePath,
+          baseCommit: outcome.prepared.baseCommit,
+        })
+      } else {
+        isolationNote = outcome.note
+        // Degraded run: clear the optimistic worktree markers.
+        await this.patchExecution(executionId, { isolation: 'none', isolationNote, branch: undefined, worktreePath: undefined, baseCommit: undefined })
+      }
+    }
+
+    // 2. Create the fresh agent+session inside the task's project (or its
+    //    dedicated worktree), carrying the pinned model — or the deployment
+    //    default when unpinned (the persona template renders {{model}}, so
+    //    the session always needs one).
     let handle: Awaited<ReturnType<AgentsFace['create']>>
     try {
       const model = task.model ?? this.deps.defaultModel?.()
       handle = await this.deps.agents.create({
         sessionId,
-        meta: { cwd: workspace.path },
+        meta: { cwd },
         ...(model !== undefined ? { agentOptions: { provider: model.provider, model: model.model } } : {}),
       })
     } catch (error) {
@@ -263,7 +304,7 @@ export class ExecutionService {
     handle.agent.inject({
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
       role: 'user' as const,
-      content: [{ type: 'text' as const, text: this.pluginFraming(task) }],
+      content: [{ type: 'text' as const, text: this.pluginFraming(task, prepared) }],
       source: { kind: 'plugin' as const, plugin: 'dsh-taskboard' },
     })
     handle.agent.followup({
@@ -274,41 +315,12 @@ export class ExecutionService {
     })
 
     // 6. Settlement watcher: mark succeeded, release the executing session's
-    //    hold, and — when the session did NOT follow the handoff protocol —
-    //    auto-move the card to in_review with a system comment (otherwise a
-    //    disobedient session would leave it hanging in in_progress forever).
+    //    hold, collect the worktree evidence (commits / dirty / diff), and —
+    //    when the session did NOT follow the handoff protocol — auto-move the
+    //    card to in_review with a system comment.
     const settle = (): void => {
       this.runs.delete(executionId)
-      void this.deps.store.mutate('execution-recorded', (ledger) => {
-        for (const t of ledger.tasks) {
-          const execution = t.executions.find(e => e.id === executionId)
-          if (execution !== undefined && execution.outcome === 'running') {
-            const now = this.deps.now()
-            execution.outcome = 'succeeded'
-            execution.endedAt = now
-            if (t.status === 'in_progress' && t.claimedBy === sessionId) {
-              delete t.claimedBy
-              delete t.claimedAt
-            }
-            if (t.status === 'in_progress') {
-              const commented = t.comments.some(c => c.threadId === sessionId)
-              t.comments.push({
-                id: newCommentId(),
-                body: normalizeBody(commented
-                  ? '[系统] 执行会话已结束并留有评论，但未移至待验收；系统自动移入待验收。'
-                  : '[系统] 执行会话已结束，但未按协议交接（无评论、未移至待验收）；系统自动移入待验收，请审查后退回或验收。'),
-                version: 1,
-                createdAt: now,
-              })
-              t.status = 'in_review'
-              t.updatedAt = now
-              t.updatedBy = { kind: 'user' }
-            }
-            return [t]
-          }
-        }
-        return undefined
-      })
+      void this.settleExecution(executionId, sessionId, prepared)
     }
     this.runs.set(executionId, { sessionId, settle, dispose: () => handle.dispose() })
     void handle.agent.whenIdle().then(settle, () => {
@@ -317,6 +329,99 @@ export class ExecutionService {
     })
 
     return { ok: true, executionId, sessionId }
+  }
+
+  /**
+   * Settle one execution: collect worktree facts first (fail-soft — git
+   * problems never block settlement), then commit outcome + release + the
+   * protocol-auto-review move in ONE ledger mutation.
+   */
+  private async settleExecution(
+    executionId: string,
+    sessionId: string,
+    prepared: { branch: string; worktreePath: string; baseCommit: string } | undefined,
+  ): Promise<void> {
+    let facts: SettlementFacts | undefined
+    if (prepared !== undefined && this.deps.git !== undefined) {
+      try {
+        facts = await this.deps.git.collect(prepared.worktreePath, prepared.baseCommit)
+      } catch { /* fail-soft: settle without evidence */ }
+    }
+    await this.deps.store.mutate('execution-recorded', (ledger) => {
+      for (const t of ledger.tasks) {
+        const execution = t.executions.find(e => e.id === executionId)
+        if (execution !== undefined && execution.outcome === 'running') {
+          const now = this.deps.now()
+          execution.outcome = 'succeeded'
+          execution.endedAt = now
+          if (facts !== undefined) {
+            if (facts.headCommit !== undefined) execution.headCommit = facts.headCommit
+            execution.commits = facts.commits
+            execution.dirtyFiles = facts.dirtyFiles
+            execution.changedFiles = facts.changedFiles
+            if (facts.diffStat !== undefined) execution.diffStat = facts.diffStat
+          }
+          if (t.status === 'in_progress' && t.claimedBy === sessionId) {
+            delete t.claimedBy
+            delete t.claimedAt
+          }
+          if (t.status === 'in_progress') {
+            const commented = t.comments.some(c => c.threadId === sessionId)
+            t.comments.push({
+              id: newCommentId(),
+              body: normalizeBody(commented
+                ? '[系统] 执行会话已结束并留有评论，但未移至待验收；系统自动移入待验收。'
+                : '[系统] 执行会话已结束，但未按协议交接（无评论、未移至待验收）；系统自动移入待验收，请审查后退回或验收。'),
+              version: 1,
+              createdAt: now,
+            })
+            t.status = 'in_review'
+            t.updatedAt = now
+            t.updatedBy = { kind: 'user' }
+          }
+          return [t]
+        }
+      }
+      return undefined
+    })
+  }
+
+  /**
+   * Prepare the dedicated worktree for a run (fail-soft): detect git, then
+   * create/reset the fixed task branch at a fresh baseline. On success the
+   * branch name is pinned onto the task once (renames never change it); on
+   * any failure the run degrades with a human-readable note.
+   */
+  private async prepareIsolation(
+    task: TaskRecord,
+    workspacePath: string,
+    worktreePath: string,
+    branch: string,
+  ): Promise<{ prepared?: { branch: string; worktreePath: string; baseCommit: string }; note?: string }> {
+    const git = this.deps.git
+    if (git === undefined) return { note: 'git 集成不可用，已在原目录执行' }
+    let inside = false
+    try {
+      inside = await git.detect(workspacePath)
+    } catch { /* fail-soft */ }
+    if (!inside) return { note: '当前项目不是 git 仓库，已在原目录执行' }
+    let info
+    try {
+      info = await git.prepareWorktree(workspacePath, worktreePath, branch)
+    } catch { /* fail-soft */ }
+    if (info === undefined) return { note: 'worktree 准备失败（git 报错或目录被占用），已在原目录执行' }
+    // Pin the branch name at first SUCCESSFUL creation (§9: 改名不改分支).
+    if (task.branch === undefined) {
+      await this.deps.store.mutate('task-updated', (ledger) => {
+        const target = ledger.tasks.find(t => t.id === task.id)
+        if (target !== undefined && target.branch === undefined) {
+          target.branch = branch
+          return [target]
+        }
+        return undefined
+      })
+    }
+    return { prepared: { branch: info.branch, worktreePath: info.path, baseCommit: info.baseCommit } }
   }
 
   /** How many executions are currently running (for the concurrency cap). */
@@ -399,16 +504,24 @@ export class ExecutionService {
    * The plugin framing line (rendered as a plugin context row): task head,
    * already-claimed state, and the handoff protocol — everything the session
    * must know about the board. The task id appears exactly once (here); the
-   * protocol steps below refer to it as 本任务.
+   * protocol steps below refer to it as 本任务. Isolated runs add one line
+   * steering the session onto its dedicated branch (commits are the evidence
+   * the user reviews at merge time).
+   * @param task - the task.
+   * @param prepared - worktree facts when this run is isolated.
    */
-  private pluginFraming(task: TaskRecord): string {
-    return `【任务看板】${task.title}（ID: ${task.id}）\n`
+  private pluginFraming(task: TaskRecord, prepared?: { branch: string; worktreePath: string }): string {
+    let text = `【任务看板】${task.title}（ID: ${task.id}）\n`
       + `本会话由任务看板执行服务启动，任务已置为进行中——无需认领；「已完成」仅限用户在界面操作（代码已限制，移了会被拒）。\n`
       + `完成后按序交接：\n`
       + `1. taskboard_get 读取本任务，取得最新 version\n`
       + `2. taskboard_comment_add 留评论：做了什么改动 / 如何验证 / 剩余风险\n`
       + `3. taskboard_move 将本任务移至待验收 in_review（带 ifVersion）\n`
       + `若无法完成：留评论说明原因，将任务移回待办 todo。`
+    if (prepared !== undefined) {
+      text += `\n本任务启用了 Git Worktree 隔离：当前工作目录是独立分支 ${prepared.branch}；请只在该目录内改动，并把完成的工作提交（git commit）到该分支——验收将基于该分支的提交记录合并。`
+    }
+    return text
   }
 
   /**

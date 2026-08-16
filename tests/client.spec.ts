@@ -347,8 +347,146 @@ describe('client half', () => {
     localStorage.clear()
   })
 
-  it('session jump opens live sessions and guards deleted/archived ones', async () => {
+  it('isolation toggle: defaults on, remembers the choice, disables on non-git projects', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController, loadDefaultIsolation } = await import('../src/client/controller.ts')
+    const { TaskFormModal } = await import('../src/client/board/TaskFormModal.tsx')
+
+    const creates: unknown[] = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      // ws-git reports gitAvailable; ws-plain does not.
+      workspaces: async () => [
+        { id: 'ws-git', path: '/p/g', title: 'G', sessionCount: 0, gitAvailable: true },
+        { id: 'ws-plain', path: '/p/n', title: 'N', sessionCount: 0, gitAvailable: false },
+      ],
+      stream: () => () => {},
+      create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    // Create mode: default = worktree (on), remembered from localStorage.
+    localStorage.setItem('dsh-taskboard-isolation-v1', 'none')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskFormModal, { controller }))
+    await new Promise(r => setTimeout(r, 10))
+
+    const opts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
+    expect(opts().length).toBeGreaterThanOrEqual(2)
+    // The isolation pair is the second mode-picker in the modal.
+    const isoPicker = Array.from(host.querySelectorAll<HTMLElement>('.dsh-atb-mode-picker'))[1]!
+    const isoOpts = () => Array.from(isoPicker.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
+    expect(isoOpts()[0]!.dataset.on).toBe('false') // remembered 'none'
+    expect(isoOpts()[1]!.dataset.on).toBe('true')
+
+    // Switch to worktree, submit on the git workspace → isolation sent + persisted.
+    isoOpts()[0]!.click()
+    await new Promise(r => setTimeout(r, 10))
+    const title = host.querySelector<HTMLInputElement>('input[maxlength="200"]')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setter?.call(title, 'Iso task')
+    title.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '创建任务'))!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(creates[0]).toMatchObject({ title: 'Iso task', isolation: 'worktree' })
+    expect(loadDefaultIsolation()).toBe('worktree')
+
+    // Non-git workspace: both options disabled, hint shown, isolation omitted.
+    const wsSelect = host.querySelector<HTMLSelectElement>('select')!
+    wsSelect.value = 'ws-plain'
+    wsSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    expect(isoOpts().every(o => o.disabled)).toBe(true)
+    expect(host.querySelector('.dsh-atb-isolation-note')?.textContent).toContain('非 git 仓库')
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '创建任务'))!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(creates[1]).toMatchObject({ workspaceId: 'ws-plain' })
+    expect((creates[1] as Record<string, unknown>).isolation).toBeUndefined()
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('detail renders the isolation block; merge/remove call the controller', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
     const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
+
+    const task = {
+      id: 't-iso', title: 'Isolated work', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'in_review' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 3, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      branch: 'task/Isolated-work+t-iso',
+      comments: [], executions: [{
+        id: 'e-1', trigger: 'manual' as const, startedAt: 0, endedAt: 10, outcome: 'succeeded' as const,
+        isolation: 'worktree' as const, branch: 'task/Isolated-work+t-iso',
+        worktreePath: '/proj/a/.dsh-worktrees/t-iso', baseCommit: 'aaaa0000', headCommit: 'bbbb1111',
+        commits: [{ hash: 'bbbb1111', subject: 'feat: the change' }],
+        dirtyFiles: [' M src/a.ts'], diffStat: '1 file changed', changedFiles: 1,
+      }],
+    }
+    const calls: Array<{ op: string; id: string; deleteBranch?: boolean }> = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [task] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      mergeBranch: async (id: string) => { calls.push({ op: 'merge', id }); return { ok: true } },
+      worktreeRemove: async (id: string, body: { deleteBranch?: boolean }) => { calls.push({ op: 'remove', id, deleteBranch: body.deleteBranch }); return { ok: true } },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskDetail, { task: task as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+
+    // The isolation block shows branch, commits, stats, and the dirty warning.
+    const block = host.querySelector<HTMLElement>('.dsh-atb-fieldcard[data-kind="isolation"]')!
+    expect(block).not.toBeNull()
+    expect(block.textContent).toContain('task/Isolated-work+t-iso')
+    expect(block.textContent).toContain('feat: the change')
+    expect(block.textContent).toContain('1 处未提交修改')
+
+    // ⇥ 合并: confirm flow reaches controller.mergeBranch.
+    const mergeBtn = Array.from(block.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn')).find(b => b.textContent!.includes('合并到主工作区'))!
+    mergeBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    const confirmBtn = Array.from(block.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn')).find(b => b.textContent === '确认合并')!
+    confirmBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(calls).toEqual([{ op: 'merge', id: 't-iso' }])
+
+    // 🗑 删 worktree + 分支: confirm reaches controller.removeWorktree(true).
+    const removeBtn = Array.from(block.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn')).find(b => b.textContent!.includes('worktree + 分支'))!
+    removeBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    const confirmRemove = Array.from(block.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn')).find(b => b.textContent === '确认删除')!
+    confirmRemove.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(calls[1]).toEqual({ op: 'remove', id: 't-iso', deleteBranch: true })
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('session jump opens live sessions and guards deleted/archived ones', async () => {    const { BoardController } = await import('../src/client/controller.ts')
     const { createSessionJumper } = await import('../src/client/session-jump.ts')
 
     const client = {

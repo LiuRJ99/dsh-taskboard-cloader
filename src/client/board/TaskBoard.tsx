@@ -137,6 +137,7 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
         <button type="button" className="dsh-atb-btn" onClick={() => controller.toggleSecondary()}>
           {state.secondaryOpen ? '返回看板' : '其它任务'}
         </button>
+        <button type="button" className="dsh-atb-btn" title="健康诊断：遗留 worktree、台账基本项" onClick={() => controller.openDiagnostics()}>⚙ 诊断</button>
         <button type="button" className="dsh-atb-btn" title="下载完整台账备份（JSON）" onClick={() => controller.exportJson()}>⬇ JSON</button>
         <button type="button" className="dsh-atb-btn" title="下载任务清单（CSV）" onClick={() => controller.exportCsv()}>⬇ CSV</button>
         <a
@@ -220,7 +221,63 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
         />
       )}
 
+      {state.diagOpen && <DiagnosticsPanel controller={controller} />}
+
       {alertEl}
+    </div>
+  )
+}
+
+/** ⚙ Health-diagnostics panel (plan §3.6): ledger basics + orphan worktrees + one-click cleanup. */
+function DiagnosticsPanel({ controller }: { controller: BoardController }) {
+  const state = controller.getSnapshot()
+  const diag = state.diagnostics
+  const wsName = (id: string): string => {
+    const ws = state.workspaces.find(w => w.id === id)
+    return ws?.title ?? ws?.path ?? id.slice(0, 8)
+  }
+  return (
+    <div className="dsh-atb-modal-backdrop" onClick={e => { if (e.target === e.currentTarget) controller.closeDiagnostics() }}>
+      <div className="dsh-atb-modal dsh-atb-diag" role="dialog" aria-modal="true" aria-label="健康诊断">
+        <div className="dsh-atb-modal-head">
+          <span className="dsh-atb-modal-headicon">⚙</span>
+          <div className="dsh-atb-modal-headtext">
+            <h3>健康诊断</h3>
+            <p>台账基本项与 worktree 遗留清理</p>
+          </div>
+          <button type="button" className="dsh-atb-modal-close" aria-label="关闭" onClick={() => controller.closeDiagnostics()}>✕</button>
+        </div>
+        <div className="dsh-atb-modal-body">
+          {diag === undefined
+            ? <div className="dsh-atb-empty2">读取中…</div>
+            : (
+              <>
+                <div className="dsh-atb-diag-grid">
+                  <div className="dsh-atb-diag-item"><b>{diag.revision}</b><span>台账修订号</span></div>
+                  <div className="dsh-atb-diag-item"><b>{diag.tasks}</b><span>任务总数</span></div>
+                  <div className="dsh-atb-diag-item" data-bad={diag.staleRunning > 0 ? 'true' : undefined}><b>{diag.staleRunning}</b><span>悬挂执行中</span></div>
+                  <div className="dsh-atb-diag-item" data-bad={diag.orphanWorktrees.length > 0 ? 'true' : undefined}><b>{diag.orphanWorktrees.length}</b><span>遗留 worktree</span></div>
+                </div>
+                <div className="dsh-atb-diag-sec">
+                  <h4>遗留 worktree（台账无主但目录存在）</h4>
+                  {diag.orphanWorktrees.length === 0
+                    ? <div className="dsh-atb-empty2">无遗留 — 各项目 .dsh-worktrees 目录干净</div>
+                    : (
+                        <div className="dsh-atb-diag-orphans">
+                          {diag.orphanWorktrees.map(o => (
+                            <div key={o.path} className="dsh-atb-diag-orphan">
+                              <span className="dsh-atb-diag-orphan-path" title={o.path}>{wsName(o.workspaceId)} · {o.taskId}</span>
+                              <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => void controller.cleanupOrphan(o.workspaceId, o.taskId)}>清理</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                  <div className="dsh-atb-empty2">提示：有未提交修改的遗留目录会被拒绝清理，请先手动处理其内容。live 任务的 worktree 请在任务详情页删除。</div>
+                </div>
+              </>
+            )}
+        </div>
+      </div>
     </div>
   )
 }

@@ -21,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-agent'
 import { PROTOCOL_SECTION_NAME, PROTOCOL_SECTION_ORDER, TASKBOARD_PROTOCOL } from './host/protocol-text.ts'
 import { DEFAULT_MAX_CONCURRENT, ExecutionService, type EventsFace } from './host/execution.ts'
+import { createGitFace } from './host/git.ts'
 import { registerTaskboardRoutes } from './host/routes.ts'
 import { SchedulerService } from './host/scheduler.ts'
 import { dshHomePath } from './host/sdk.ts'
@@ -85,6 +86,10 @@ export function apply(ctx: Context): void {
       }),
     }
 
+    // The narrow git face shared by execution (worktree isolation) and the
+    // routes (merge / remove / workspace detection).
+    const git = createGitFace()
+
     wsCtx.inject(['agents'], (agentCtx: Context) => {
       const execution = new ExecutionService({
         store,
@@ -100,6 +105,7 @@ export function apply(ctx: Context): void {
         },
         events,
         now,
+        git,
         renameSession: (sessionId, title) => {
           // Best-effort: pin the execution session's title to the task title
           // through the log-backed session-title service (user-sourced rename).
@@ -130,6 +136,7 @@ export function apply(ctx: Context): void {
           run: (taskId: string) => execution.run(taskId, 'manual'),
           cancel: (taskId: string) => execution.cancel(taskId),
           modelProviders,
+          git,
         })
         return () => disposeRoutes?.()
       })
