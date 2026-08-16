@@ -81,6 +81,7 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
   if (holder !== undefined) lines.push(`认领: agent ${String(holder).slice(0, 24)}（持有期间其他会话不可移动）`)
   if (t.execution.nextRunAt !== undefined) lines.push(`下次触发: ${new Date(t.execution.nextRunAt).toISOString()}`)
   if (t.model !== undefined) lines.push(`固定模型: ${t.model.provider}/${t.model.model}`)
+  if (t.presetId !== undefined) lines.push(`执行模式: ${t.presetId}（未指定时为部署默认 preset）`)
   lines.push(`描述: ${t.description.length > 0 ? t.description : '（无）'}`)
   lines.push(`执行 Prompt: ${t.effectivePrompt ?? effectivePrompt(t)}`)
   if (t.comments.length > 0) {
@@ -354,6 +355,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         type: 'string',
         description: 'Code isolation for executions: "worktree" (default — each run gets a fresh git worktree on branch task/<标题>+<taskId>) or "none" (run in the project directory, zero git interaction).',
       },
+      presetId: {
+        type: 'string',
+        description: 'Agent preset the execution session is composed from (its tool set / persona); default = the deployment default preset. Optional.',
+      },
     },
     output: {
       schema: JSON_OUT,
@@ -373,6 +378,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       execution?: { mode?: string; cron?: string }
       model?: { provider?: string; model?: string }
       isolation?: string
+      presetId?: string
     }, exec: unknown) {
       try {
         const { actor } = caller(exec as ToolRunContext)
@@ -388,6 +394,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         const execution = normalizeExecution(args.execution ?? {}, deps.now())
         const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
         const isolation = args.isolation === undefined ? undefined : asIsolation(args.isolation)
+        const presetId = args.presetId?.trim() || undefined
         const now = deps.now()
         const task: TaskRecord = {
           id: newTaskId(),
@@ -401,6 +408,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           execution,
           model,
           ...(isolation !== undefined ? { isolation } : {}),
+          ...(presetId !== undefined ? { presetId } : {}),
           version: 1,
           createdAt: now,
           updatedAt: now,

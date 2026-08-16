@@ -31,8 +31,10 @@ export const DEFAULT_MAX_CONCURRENT = 3
 export interface AgentsFace {
   create(options: {
     sessionId: string
-    meta?: { cwd?: string }
+    meta?: { cwd?: string; agentPreset?: string }
     agentOptions?: { provider?: string; model?: string }
+    /** Preset composition callback: mounts tools/persona into the agent's scoped context. */
+    setup?: (agentCtx: unknown) => Promise<void> | void
   }): Promise<{
     agent: {
       id: string
@@ -42,6 +44,18 @@ export interface AgentsFace {
     }
     dispose(): Promise<void>
   }>
+}
+
+/**
+ * The preset composition an execution session is built from — the shape
+ * apiproxy's ensureSession produces: resolve → record on the session header,
+ * mount → inside agents.create's setup callback.
+ */
+export interface AgentComposition {
+  /** The resolved preset id recorded on the session header. */
+  agentPreset: string
+  /** Mounts the preset's plugins (tools, persona) into the agent's scope. */
+  setup: (agentCtx: unknown) => Promise<void> | void
 }
 
 /** Narrow workspaces face for execution. */
@@ -77,6 +91,14 @@ export interface ExecutionDeps {
    * task degrades to the original directory with an isolationNote.
    */
   git?: GitFace
+  /**
+   * Resolve the preset composition for an execution session (0.3.3): hands
+   * the session its tool set. Absent → sessions run on the bare host
+   * composition (pre-preset behavior). A rejection fails the run through
+   * the existing failure path — a broken preset never yields a half-composed
+   * session (same rollback semantics as apiproxy).
+   */
+  composeAgent?: (presetId?: string) => Promise<AgentComposition | undefined>
 }
 
 /** Outcome of a run request (immediate; the run settles asynchronously). */
@@ -321,13 +343,30 @@ export class ExecutionService {
     //    workspace-write boundary) — a subdirectory cwd (the worktree) breaks
     //    all three. The worktree is instead handed to the agent explicitly in
     //    the framing line below.
+    //    Preset composition (0.3.3): resolve BEFORE creation so the header
+    //    snapshots `agentPreset` and the setup callback mounts the preset's
+    //    tools/persona into the agent's scope. undefined composeAgent (or an
+    //    absent preset roster) keeps the bare host composition.
+    let composition: AgentComposition | undefined
+    try {
+      composition = this.deps.composeAgent === undefined ? undefined : await this.deps.composeAgent(task.presetId)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await this.patchExecution(executionId, { outcome: 'failed', error: `preset 组合失败：${message.slice(0, 400)}`, endedAt: this.deps.now() })
+      await this.revertProgress(taskId)
+      return { ok: false, error: `preset composition failed: ${message}` }
+    }
     let handle: Awaited<ReturnType<AgentsFace['create']>>
     try {
       const model = task.model ?? this.deps.defaultModel?.()
       handle = await this.deps.agents.create({
         sessionId,
-        meta: { cwd: workspace.path },
+        meta: {
+          cwd: workspace.path,
+          ...(composition !== undefined ? { agentPreset: composition.agentPreset } : {}),
+        },
         ...(model !== undefined ? { agentOptions: { provider: model.provider, model: model.model } } : {}),
+        ...(composition !== undefined ? { setup: composition.setup } : {}),
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

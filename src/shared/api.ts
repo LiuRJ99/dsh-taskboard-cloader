@@ -54,6 +54,8 @@ export type CreateTaskBody = {
   model?: { provider: string; model: string }
   /** Code isolation for executions ('worktree' | 'none'); omitted = default. */
   isolation?: string
+  /** Agent preset for execution sessions; omitted = deployment default. */
+  presetId?: string
 }
 
 /** Update-task request body (ifVersion mandatory). */
@@ -70,6 +72,8 @@ export type UpdateTaskBody = {
   model?: { provider: string; model: string } | null
   /** Change isolation; locked once the task has execution history. */
   isolation?: string
+  /** Change the execution preset (takes effect on the next run). */
+  presetId?: string | null
 }
 
 /** Move-task request body (ifVersion mandatory; the user MAY move to done). */

@@ -558,6 +558,57 @@ describe('client half', () => {
     localStorage.clear()
   })
 
+  it('preset dropdown: pre-selects the deployment default on create, submits the choice', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskFormModal } = await import('../src/client/board/TaskFormModal.tsx')
+
+    const creates: unknown[] = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
+    }
+    const controller = new BoardController(client as never)
+    // presetCatalog face: 标准 is the deployment default, 梁神 also available.
+    ;(controller as unknown as { presetCatalog?: () => Promise<unknown> }).presetCatalog = async () => ({
+      presets: [{ id: 'standard', name: '标准模式' }, { id: 'liangshen', name: '梁神模式' }],
+      defaultId: 'standard',
+    })
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskFormModal, { controller }))
+    await new Promise(r => setTimeout(r, 30))
+
+    // The preset select exists and pre-selects the deployment default.
+    const presetSelect = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
+      .find(s => Array.from(s.options).some(o => o.value === 'standard'))!
+    expect(presetSelect).toBeTruthy()
+    expect(presetSelect.value).toBe('standard')
+
+    // Fill the title, submit → the default preset id rides along.
+    const title = host.querySelector<HTMLInputElement>('input[maxlength="200"]')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setter?.call(title, 'Preset task')
+    title.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '创建任务'))!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(creates[0]).toMatchObject({ title: 'Preset task', presetId: 'standard' })
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
   it('session jump opens live sessions and guards deleted/archived ones', async () => {    const { BoardController } = await import('../src/client/controller.ts')
     const { createSessionJumper } = await import('../src/client/session-jump.ts')
 

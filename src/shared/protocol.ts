@@ -324,6 +324,13 @@ export type TaskRecord = {
   /** Code isolation for executions (omitted = the worktree default; see {@link IsolationMode}). */
   isolation?: IsolationMode
   /**
+   * The agent preset execution sessions are composed from (omitted = the
+   * deployment default preset). Recorded on the session header and mounted
+   * via the presets service at creation — this is what hands the session its
+   * tool set. Editable any time (each run composes fresh).
+   */
+  presetId?: string
+  /**
    * The task branch fixed at the FIRST worktree creation (`task/<标题>+<taskId>`).
    * Renaming the task afterwards never changes it (history preservation).
    */

@@ -117,6 +117,12 @@ function num(body: Record<string, unknown>, key: string): number | undefined | n
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
+/** Normalize an agent preset id: trimmed, non-empty; empty string → undefined. */
+function normalizePresetId(raw: string | null): string | undefined {
+  const t = (raw ?? '').trim()
+  return t.length === 0 ? undefined : t
+}
+
 /** Map a thrown domain error to the envelope. */
 function toFail(error: unknown): { res: ApiFail; status: number } {
   const message = error instanceof Error ? error.message : String(error)
@@ -294,6 +300,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const model = body.model === undefined ? undefined : checkModel(body.model, options.modelProviders)
           const isolationRaw = str(body, 'isolation')
           const isolation = isolationRaw === null ? undefined : asIsolation(isolationRaw)
+          const presetId = normalizePresetId(str(body, 'presetId'))
           const now = options.now()
           const task: TaskRecord = {
             id: newTaskId(),
@@ -307,6 +314,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             execution,
             model,
             ...(isolation !== undefined ? { isolation } : {}),
+            ...(presetId !== undefined ? { presetId } : {}),
             version: 1,
             createdAt: now,
             updatedAt: now,
@@ -370,6 +378,9 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               }
               next.isolation = asIsolation(isolationRaw)
             }
+            // Preset may change any time: each run composes fresh.
+            if (body.presetId === null) delete next.presetId
+            else if (body.presetId !== undefined) next.presetId = normalizePresetId(str(body, 'presetId'))!
             next.version = task.version + 1
             next.updatedAt = options.now()
             next.updatedBy = { kind: 'user' }

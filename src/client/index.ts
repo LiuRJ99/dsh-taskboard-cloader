@@ -24,11 +24,14 @@ export const name = 'dsh-taskboard/client'
 /** Required client services (fiber inject waiting). */
 export const inject = ['connection']
 
-/** Narrow connection face for the model catalog. */
+/** Narrow connection face for the model catalog + preset roster. */
 interface ConnectionFace {
   api: {
     llm: {
       models(payload: Record<string, never>): Promise<{ result: { ok: true; value: { groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string }> }> } } | { ok: false } }>
+    }
+    agentPresets?: {
+      list(payload: Record<string, never>): Promise<{ result: { ok: true; value: { presets: Array<{ id: string; name?: string; isDefault: boolean }> } } | { ok: false } }>
     }
   }
 }
@@ -63,6 +66,20 @@ export function apply(ctx: ClientContextFace): void {
           }
         }
         return out
+      }
+
+      // Preset roster for the composer (0.3.3): agentPreset.list over the
+      // connection RPC — [{id, name}] plus which one is the deployment
+      // default (the form pre-selects it on create).
+      type PresetRow = { id: string; name?: string }
+      ;(controller as unknown as { presetCatalog?: () => Promise<{ presets: PresetRow[]; defaultId?: string }> }).presetCatalog = async (): Promise<{ presets: PresetRow[]; defaultId?: string }> => {
+        const list = connection.api.agentPresets
+        if (list === undefined) return { presets: [] }
+        const response = await list.list({})
+        if (!response.result.ok) return { presets: [] }
+        const presets = response.result.value.presets.map((p: { id: string; name?: string }) => ({ id: p.id, name: p.name }))
+        const def = response.result.value.presets.find((p: { id: string; isDefault: boolean }) => p.isDefault)
+        return { presets, ...(def !== undefined ? { defaultId: def.id } : {}) }
       }
     }
 

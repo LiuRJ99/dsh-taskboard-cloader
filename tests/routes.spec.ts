@@ -340,6 +340,39 @@ describe('taskboard routes', () => {
     expect(locked.json.error.message).toContain('已锁定')
   })
 
+  it('presetId: create stores it (trimmed), update swaps it any time, null clears it', async () => {
+    // Create with a preset; empty string = omitted.
+    const a = await post('/dsh-taskboard/tasks', { title: 'Preset A', workspaceId: 'ws-a', urgency: 'normal', presetId: '  liangshen  ' })
+    expect(a.status).toBe(201)
+    const idA = a.json.value.id as string
+    const fullA = await (await fetch(`${base}/dsh-taskboard/tasks/${idA}`)).json()
+    expect(fullA.value.presetId).toBe('liangshen')
+
+    const b = await post('/dsh-taskboard/tasks', { title: 'Preset B', workspaceId: 'ws-a', urgency: 'normal', presetId: '' })
+    const idB = b.json.value.id as string
+    const fullB = await (await fetch(`${base}/dsh-taskboard/tasks/${idB}`)).json()
+    expect(fullB.value.presetId).toBeUndefined()
+
+    // Update swaps the preset even AFTER executions exist (each run composes fresh).
+    await store.mutate('execution-recorded', ledger => {
+      const target = ledger.tasks.find(t => t.id === idA)!
+      target.executions.push({ id: 'e-9', trigger: 'manual', startedAt: 5_000, outcome: 'succeeded', endedAt: 5_100 })
+      target.version += 1
+      return [target]
+    })
+    const fullA2 = await (await fetch(`${base}/dsh-taskboard/tasks/${idA}`)).json()
+    const swapped = await post(`/dsh-taskboard/tasks/${idA}/update`, { ifVersion: fullA2.value.version, presetId: 'standard' })
+    expect(swapped.status).toBe(200)
+    const fullA3 = await (await fetch(`${base}/dsh-taskboard/tasks/${idA}`)).json()
+    expect(fullA3.value.presetId).toBe('standard')
+
+    // null clears it back to "follow the deployment default".
+    const cleared = await post(`/dsh-taskboard/tasks/${idA}/update`, { ifVersion: fullA3.value.version, presetId: null })
+    expect(cleared.status).toBe(200)
+    const fullA4 = await (await fetch(`${base}/dsh-taskboard/tasks/${idA}`)).json()
+    expect(fullA4.value.presetId).toBeUndefined()
+  })
+
   it('merge: needs a branch; merges --no-ff and leaves a system comment; git failures map to 400', async () => {
     const created = await post('/dsh-taskboard/tasks', { title: 'Merge me', workspaceId: 'ws-a', urgency: 'normal' })
     const id = created.json.value.id as string

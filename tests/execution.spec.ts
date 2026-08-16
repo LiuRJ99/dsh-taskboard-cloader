@@ -54,13 +54,13 @@ const fakeAgentsState = { failNext: false }
 
 /** Capturing agents fake: records create options, injected + followup messages, disposals. */
 function fakeAgents(): AgentsFace & {
-  created: Array<{ sessionId: string; cwd?: string; agentOptions?: { provider?: string; model?: string } }>
+  created: Array<{ sessionId: string; cwd?: string; agentPreset?: string; setup?: unknown; agentOptions?: { provider?: string; model?: string } }>
   followups: unknown[]
   injects: unknown[]
   idle: (sessionId?: string) => void
   disposedSessions: string[]
 } {
-  const created: Array<{ sessionId: string; cwd?: string; agentOptions?: { provider?: string; model?: string } }> = []
+  const created: Array<{ sessionId: string; cwd?: string; agentPreset?: string; setup?: unknown; agentOptions?: { provider?: string; model?: string } }> = []
   const followups: unknown[] = []
   const injects: unknown[] = []
   const disposedSessions: string[] = []
@@ -74,12 +74,12 @@ function fakeAgents(): AgentsFace & {
       if (sessionId !== undefined) idles.get(sessionId)?.()
       else for (const resolve of idles.values()) resolve()
     },
-    async create(options: { sessionId: string; meta?: { cwd?: string }; agentOptions?: { provider?: string; model?: string } }) {
+    async create(options: { sessionId: string; meta?: { cwd?: string; agentPreset?: string }; setup?: (agentCtx: unknown) => Promise<void> | void; agentOptions?: { provider?: string; model?: string } }) {
       if (fakeAgentsState.failNext) {
         fakeAgentsState.failNext = false
         throw new Error('provider has no adapter')
       }
-      created.push({ sessionId: options.sessionId, cwd: options.meta?.cwd, agentOptions: options.agentOptions })
+      created.push({ sessionId: options.sessionId, cwd: options.meta?.cwd, agentPreset: options.meta?.agentPreset, setup: options.setup, agentOptions: options.agentOptions })
       return {
         agent: {
           id: options.sessionId,
@@ -657,6 +657,88 @@ describe('ExecutionService worktree isolation', () => {
     expect((await svc2.run('t-run', 'manual')).ok).toBe(true)
     execution = store2.get('t-run')!.executions[0]!
     expect(execution.isolationNote).toContain('不是 git 仓库')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 0.3.3 preset composition
+// ---------------------------------------------------------------------------
+
+describe('ExecutionService preset composition', () => {
+  it('composes the session from the task preset: header records it, setup mounts it', async () => {
+    const store = await storeWith(task({ presetId: 'liangshen' }))
+    const agents = fakeAgents()
+    const mounted: Array<{ ctx: unknown; preset: string }> = []
+    const composeCalls: Array<string | undefined> = []
+    const svc = new ExecutionService({
+      store,
+      agents,
+      workspaces,
+      events: fakeEvents(),
+      now: () => 1_000,
+      composeAgent: async (presetId) => {
+        composeCalls.push(presetId)
+        if (presetId === undefined) return undefined
+        return {
+          agentPreset: presetId,
+          setup: async (ctx: unknown) => { mounted.push({ ctx, preset: presetId }) },
+        }
+      },
+    })
+
+    expect((await svc.run('t-run', 'manual')).ok).toBe(true)
+    // The task's preset reached the composer.
+    expect(composeCalls).toEqual(['liangshen'])
+    // agents.create received the header marker AND the setup callback.
+    expect(agents.created[0]!.agentPreset).toBe('liangshen')
+    expect(typeof agents.created[0]!.setup).toBe('function')
+    expect(agents.created[0]!.cwd).toBe('/proj/a')
+  })
+
+  it('undefined composeAgent or an undefined composition keeps the bare session (no header marker)', async () => {
+    const store = await storeWith(task({}))
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    expect((await svc.run('t-run', 'manual')).ok).toBe(true)
+    expect(agents.created[0]!.agentPreset).toBeUndefined()
+    expect(agents.created[0]!.setup).toBeUndefined()
+
+    // composeAgent present but returning undefined (no roster) → same shape.
+    const store2 = await storeWith(task({}))
+    const agents2 = fakeAgents()
+    const svc2 = new ExecutionService({ store: store2, agents: agents2, workspaces, events: fakeEvents(), now: () => 1_000, composeAgent: async () => undefined })
+    expect((await svc2.run('t-run', 'manual')).ok).toBe(true)
+    expect(agents2.created[0]!.agentPreset).toBeUndefined()
+    expect(agents2.created[0]!.setup).toBeUndefined()
+  })
+
+  it('a broken preset fails the run through the existing failure path (no half-composed session)', async () => {
+    const store = await storeWith(task({ presetId: 'ghost' }))
+    const agents = fakeAgents()
+    const svc = new ExecutionService({
+      store,
+      agents,
+      workspaces,
+      events: fakeEvents(),
+      now: () => 1_000,
+      composeAgent: async (presetId) => {
+        // Missing preset: the presets service throws on resolve.
+        if (presetId === 'ghost') throw new Error('no preset "ghost" in the roster')
+        return undefined
+      },
+    })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('no preset "ghost"')
+
+    // No session was created; the execution is failed and the task back to todo.
+    expect(agents.created).toEqual([])
+    const t = store.get('t-run')!
+    expect(t.executions[0]!.outcome).toBe('failed')
+    expect(t.executions[0]!.error).toContain('preset 组合失败')
+    expect(t.status).toBe('todo')
   })
 })
 

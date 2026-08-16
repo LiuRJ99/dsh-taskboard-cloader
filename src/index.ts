@@ -106,6 +106,22 @@ export function apply(ctx: Context): void {
         events,
         now,
         git,
+        // Preset composition (0.3.3): mirror apiproxy's composeAgent — resolve
+        // the id BEFORE creation (the session header snapshots meta), mount
+        // inside the factory's setup callback. No roster service → undefined
+        // (bare host composition, the pre-preset behavior).
+        composeAgent: async (presetId) => {
+          const presets = agentCtx.get('agentPresets') as {
+            resolve(id?: string): Promise<{ id: string }>
+            mount(agentCtx: unknown, id?: string): Promise<unknown>
+          } | undefined
+          if (presets === undefined) return undefined
+          const resolved = await presets.resolve(presetId)
+          return {
+            agentPreset: resolved.id,
+            setup: async (ctx: unknown) => { await presets.mount(ctx, resolved.id) },
+          }
+        },
         renameSession: (sessionId, title) => {
           // Best-effort: pin the execution session's title to the task title
           // through the log-backed session-title service (user-sourced rename).

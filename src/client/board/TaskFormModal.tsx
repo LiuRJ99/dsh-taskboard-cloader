@@ -70,6 +70,11 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const [cron, setCron] = useState(task?.execution.cron ?? '0 9 * * *')
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
   const [model, setModel] = useState(task?.model !== undefined ? JSON.stringify(task.model) : '')
+  // Preset roster (0.3.3): create mode PRE-SELECTS the deployment default
+  // (标准模式 in this deployment); '' = 跟随部署默认 (submit omits the field).
+  const [presetId, setPresetId] = useState(task?.presetId ?? '')
+  const [presets, setPresets] = useState<Array<{ id: string; name?: string }>>([])
+  const [presetDefault, setPresetDefault] = useState<string | undefined>(undefined)
   // Isolation toggle: create mode starts from the remembered choice (default
   // on); edit mode starts from the task and locks once execution began.
   const [isolation, setIsolation] = useState<IsolationMode>(task?.isolation ?? loadDefaultIsolation())
@@ -91,6 +96,18 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     if (face === undefined) return
     void face().then(setCatalog).catch(() => setCatalog([]))
   }, [controller])
+
+  // Preset roster: same lazy face; pre-select the deployment default in
+  // create mode so executions run with a real tool set out of the box.
+  useEffect(() => {
+    const face = (controller as unknown as { presetCatalog?: () => Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }> }).presetCatalog
+    if (face === undefined) return
+    void face().then(roster => {
+      setPresets(roster.presets)
+      setPresetDefault(roster.defaultId)
+      if (task?.presetId === undefined && roster.defaultId !== undefined) setPresetId(roster.defaultId)
+    }).catch(() => setPresets([]))
+  }, [controller, task?.presetId])
 
   // Live cron validation + next-run preview (same math as the host).
   const cronMatch = mode === 'scheduled' ? parseCron(cron.trim()) : null
@@ -116,10 +133,14 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     return isolation
   }
 
+  /** Preset payload: '' = follow the deployment default (submit omits). */
+  const presetPayload = (): string | undefined => (presetId.trim().length > 0 ? presetId.trim() : undefined)
+
   const submit = (): void => {
     if (!valid) return
     const picked = model !== '' ? (JSON.parse(model) as { provider: string; model: string }) : undefined
     const isolationOut = isolationPayload()
+    const presetOut = presetPayload()
     if (editing) {
       void controller.update(task.id, task.version, {
         title,
@@ -131,6 +152,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         // '' in edit mode clears the pinned model back to the default.
         model: picked ?? null,
         ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
+        presetId: presetOut ?? null,
       })
     } else {
       void controller.create({
@@ -142,6 +164,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         model: picked,
         ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
+        ...(presetOut !== undefined ? { presetId: presetOut } : {}),
       })
     }
   }
@@ -151,6 +174,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     if (!valid || runBlocked) return
     const picked = model !== '' ? (JSON.parse(model) as { provider: string; model: string }) : undefined
     const isolationOut = isolationPayload()
+    const presetOut = presetPayload()
     if (editing) {
       void (async () => {
         const saved = await controller.update(task.id, task.version, {
@@ -162,6 +186,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked ?? null,
           ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
+          presetId: presetOut ?? null,
         })
         if (saved) await controller.run(task.id)
       })()
@@ -176,6 +201,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked,
           ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
+          ...(presetOut !== undefined ? { presetId: presetOut } : {}),
         })
         if (id !== undefined) await controller.run(id)
       })()
@@ -223,6 +249,19 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
               ))}
             </select>
           </Field>
+
+          {presets.length > 0 && (
+            <Field label="执行模式（preset）">
+              <select value={presetId} onChange={e => setPresetId(e.target.value)} title="执行会话按该 preset 组合（决定工具集与人设）；默认 = 部署默认 preset">
+                <option value="">跟随部署默认{presetDefault !== undefined ? `（当前：${presets.find(p => p.id === presetDefault)?.name ?? presetDefault}）` : ''}</option>
+                {presets.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.name ?? p.id}{p.id === presetDefault ? '（部署默认）' : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
 
           <Field label="紧急度" full>
             <div className="dsh-atb-urgency-picker">
@@ -358,5 +397,6 @@ interface TaskRecordLike {
   execution: { mode: 'claim' | 'scheduled'; cron?: string }
   model?: { provider: string; model: string }
   isolation?: IsolationMode
+  presetId?: string
   executions?: unknown[]
 }

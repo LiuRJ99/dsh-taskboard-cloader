@@ -242,6 +242,7 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
             <Chip tone={task.urgency}>● {URGENCY_LABEL[task.urgency] ?? task.urgency}</Chip>
             <Chip icon="📁">{ws?.title ?? shortId(task.workspaceId)}</Chip>
             {task.model !== undefined && <Chip icon="✦">{task.model.model}</Chip>}
+            {task.presetId !== undefined && <Chip icon="🎛" >{task.presetId}</Chip>}
             {task.execution.mode === 'scheduled' && (
               <Chip icon="⏰">{task.execution.cron} · 下次 {fmtTime(task.execution.nextRunAt)}</Chip>
             )}

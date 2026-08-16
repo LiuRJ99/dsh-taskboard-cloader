@@ -451,6 +451,7 @@ export class BoardController {
           : { mode: 'claim' },
         model: task.model,
         isolation: task.isolation,
+        ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
       })
       await this.refresh()
     } catch (error) {
