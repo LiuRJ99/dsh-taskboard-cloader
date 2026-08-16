@@ -71,6 +71,13 @@ export type UpdateTaskBody = {
 /** Move-task request body (ifVersion mandatory; the user MAY move to done). */
 export type MoveTaskBody = { ifVersion: number; status: string }
 
+/**
+ * Quick-reject request body (card ✗ button): move back to todo plus an
+ * optional user comment, committed as ONE ledger mutation so a failed move
+ * can never strand an orphan comment.
+ */
+export type RejectTaskBody = { ifVersion: number; body?: string }
+
 /** Comment request body. */
 export type CommentBody = { body: string }
 

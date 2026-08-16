@@ -120,6 +120,47 @@ describe('taskboard routes', () => {
     expect(stale.json.error.code).toBe('version_conflict')
   })
 
+  it('quick-reject: in_review → todo with optional note, atomically', async () => {
+    const created = await post('/dsh-taskboard/tasks', { title: 'QuickReject', workspaceId: 'ws-a', urgency: 'normal' })
+    const id = created.json.value.id as string
+    await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: 1, status: 'in_progress' })
+    await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: 2, status: 'in_review' })
+
+    // With a note: one call moves back AND appends the user comment.
+    const withNote = await post(`/dsh-taskboard/tasks/${id}/reject`, { ifVersion: 3, body: '  样式不对，改下按钮颜色  ' })
+    expect(withNote.status).toBe(200)
+    expect(withNote.json.value.status).toBe('todo')
+    const full1 = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    expect(full1.value.version).toBe(4)
+    expect(full1.value.comments.length).toBe(1)
+    expect(full1.value.comments[0].body).toBe('样式不对，改下按钮颜色')
+
+    // Without a note: plain move, no comment.
+    const bare = await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: 4, status: 'in_progress' })
+    expect(bare.json.value.status).toBe('in_progress')
+    await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: 5, status: 'in_review' })
+    const noNote = await post(`/dsh-taskboard/tasks/${id}/reject`, { ifVersion: 6, body: '   ' })
+    expect(noNote.status).toBe(200)
+    expect(noNote.json.value.status).toBe('todo')
+    const full2 = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    expect(full2.value.comments.length).toBe(1) // whitespace-only note → skipped
+
+    // Stale version: the move fails and NO orphan comment appears.
+    await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: 7, status: 'in_progress' })
+    await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: 8, status: 'in_review' })
+    const stale = await post(`/dsh-taskboard/tasks/${id}/reject`, { ifVersion: 99, body: 'should not land' })
+    expect(stale.status).toBe(409)
+    const full3 = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    expect(full3.value.status).toBe('in_review')
+    expect(full3.value.comments.length).toBe(1)
+
+    // Illegal source (done → todo is not in the state machine): 400.
+    await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: 9, status: 'done' })
+    const illegal = await post(`/dsh-taskboard/tasks/${id}/reject`, { ifVersion: 10 })
+    expect(illegal.status).toBe(400)
+    expect(illegal.json.error.code).toBe('invalid_transition')
+  })
+
   it('comments then soft-deletes then purges', async () => {
     const created = await post('/dsh-taskboard/tasks', { title: 'CDP', workspaceId: 'ws-a', urgency: 'normal' })
     const id = created.json.value.id as string

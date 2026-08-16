@@ -74,7 +74,7 @@ function json(res: ServerResponse, payload: ApiResult<unknown>, status = 200): v
 
 /** Domain failure → envelope + HTTP status. */
 function fail(code: ApiFail['error']['code'], message: string): { res: ApiFail; status: number } {
-  const status = code === 'invalid_input' ? 400
+  const status = code === 'invalid_input' || code === 'invalid_transition' ? 400
     : code === 'not_found' ? 404
       : code === 'version_conflict' ? 409
         : code === 'forbidden' ? 403
@@ -284,6 +284,31 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             if (task.status === 'todo' && to === 'in_progress') next.blocked = false
             // A user move records no holder; leaving in_progress releases any hold.
             syncClaim(next, to, options.now())
+            await store.mutate('task-moved', ledger => {
+              const i = ledger.tasks.findIndex(t => t.id === id)
+              ledger.tasks[i] = next
+              return [next]
+            })
+            json(res, { ok: true, value: summarize(next) })
+            return
+          }
+          if (action === 'reject') {
+            // Card quick-reject: back to todo + optional user comment in one
+            // atomic mutation (a failed move never strands an orphan comment).
+            const ifVersion = num(body, 'ifVersion')
+            if (ifVersion === undefined || ifVersion === null) throw new Error('Error: version_conflict: ifVersion required')
+            if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
+            if (!canTransition(task.status, 'todo')) throw new Error(`Error: invalid_transition: illegal transition ${task.status} → todo`)
+            const next = structuredClone(task)
+            next.status = 'todo'
+            next.version = task.version + 1
+            next.updatedAt = options.now()
+            next.updatedBy = { kind: 'user' }
+            syncClaim(next, 'todo', options.now())
+            const commentText = str(body, 'body') ?? ''
+            if (commentText.trim().length > 0) {
+              next.comments.push({ id: newCommentId(), body: normalizeBody(commentText), version: 1, createdAt: options.now() })
+            }
             await store.mutate('task-moved', ledger => {
               const i = ledger.tasks.findIndex(t => t.id === id)
               ledger.tasks[i] = next

@@ -148,6 +148,21 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-badge[data-kind="done"] { background: rgba(46,160,67,.16); color: #2ea043; }
 .dsh-atb-badge[data-kind="running"] { background: rgba(229,152,42,.16); color: #e69842; }
 
+/* ---------- card quick review (in_review column) ---------- */
+.dsh-atb-quick { display: flex; gap: 6px; margin-top: 7px; }
+.dsh-atb-quickbtn {
+  flex: 1; font-size: 11.5px; padding: 3px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--dsw-border, rgba(128,128,128,.3));
+  background: var(--dsw-bg-elevated, rgba(128,128,128,.12)); color: inherit;
+}
+.dsh-atb-quickbtn:hover { border-color: var(--dsw-border-strong, rgba(128,128,128,.6)); }
+.dsh-atb-quickbtn[data-act="done"] { background: rgba(46,160,67,.14); color: #2ea043; border-color: rgba(46,160,67,.4); }
+.dsh-atb-quickbtn[data-act="done"]:hover { background: rgba(46,160,67,.22); }
+.dsh-atb-quickbtn[data-act="reject"] { background: rgba(229,152,42,.12); color: #d9822b; border-color: rgba(229,152,42,.4); }
+.dsh-atb-quickbtn[data-act="reject"]:hover { background: rgba(229,152,42,.2); }
+.dsh-atb-quick-reject { display: flex; gap: 6px; margin-top: 7px; align-items: stretch; }
+.dsh-atb-quick-note { flex: 1; min-width: 0; font-size: 11.5px; padding: 3px 8px; }
+
 .dsh-atb-error { font-size: 12px; color: #e5484d; padding: 4px 8px; border-radius: 6px; background: rgba(229,72,77,.1); }
 .dsh-atb-empty { font-size: 12px; color: var(--dsw-text-secondary, gray); padding: 10px 4px; }
 

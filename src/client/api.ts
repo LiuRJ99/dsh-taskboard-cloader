@@ -11,6 +11,7 @@ import type {
   CreateTaskBody,
   DeleteTaskBody,
   MoveTaskBody,
+  RejectTaskBody,
   StateResponse,
   TaskRecord,
   UpdateTaskBody,
@@ -44,6 +45,8 @@ export interface TaskboardClient {
   get(id: string): Promise<TaskRecord>
   update(id: string, body: UpdateTaskBody): Promise<TaskSummary>
   move(id: string, body: MoveTaskBody): Promise<TaskSummary>
+  /** Quick-reject (card ✗): back to todo + optional comment, one mutation. */
+  reject(id: string, body: RejectTaskBody): Promise<TaskSummary>
   comment(id: string, bodyText: string): Promise<CommentRecord>
   remove(id: string, body: DeleteTaskBody): Promise<{ trashed?: boolean; purged?: boolean }>
   /** Trigger a manual run (fresh in-project session). */
@@ -63,6 +66,7 @@ export function createClient(): TaskboardClient {
     get: id => unwrap<TaskRecord>(fetch(`/dsh-taskboard/tasks/${encodeURIComponent(id)}`)),
     update: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/update`, body),
     move: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/move`, body),
+    reject: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/reject`, body),
     comment: (id, bodyText) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/comment`, { body: bodyText }),
     remove: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/delete`, body),
     run: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/run`, {}),

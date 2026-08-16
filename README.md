@@ -20,6 +20,7 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 - 列头状态色圆点：待规划灰 / 待办蓝 / 进行中橙 / 待验收紫 / 已完成绿 / 已删除红
 - 新建/编辑弹窗：项目、模型、紧急度、执行方式、cron 实时校验与下次运行预览
 - 详情面板：状态流转（done 仅限人工）、agent/用户评论流、执行记录（倒序，最新在最上；会话 ID 点击跳转打开该执行会话；已删除/已归档分开提示）、停止执行
+- 待验收列卡片快捷操作：「✓ 完成」一键验收、「✗ 退回」退回待办并可附退回原因（agent 开工前会读）
 
 **Agent 工具（taskboard_\*）**
 - 8 个工具：查板 / 建卡 / 改卡 / 移卡 / 评论 / 软删除，任何会话可用
@@ -43,11 +44,16 @@ dsh plugin --profile <name> add github:cloader/dsh-taskboard   # GitHub 源
 
 ```bash
 npm install && npm run build    # host ESM + client CJS 双构建
-npm test                        # vitest 64 项
+npm test                        # vitest 67 项
 node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 ```
 
 ## 升级日志
+
+### 0.2.2
+
+- **待验收快捷操作**：待验收列卡片上直接「✓ 完成 / ✗ 退回」，退回可附原因（可留空），退回与评语一次原子提交（移卡失败不会产生孤儿评论）
+- 非法状态流转的 HTTP 状态码由 500 修正为 400
 
 ### 0.2.1
 

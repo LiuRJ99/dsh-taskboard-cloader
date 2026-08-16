@@ -234,6 +234,119 @@ describe('client half', () => {
     controller.dispose()
   })
 
+  it('in_review cards carry quick ✓/✗ actions; other columns do not', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskBoard } = await import('../src/client/board/TaskBoard.tsx')
+
+    const mkTask = (id: string, status: string) => ({
+      id, title: id, description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: status as never, blocked: false,
+      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    })
+    const tasks = [mkTask('t-todo', 'todo'), mkTask('t-rev', 'in_review'), mkTask('t-done', 'done')]
+
+    const calls: Array<{ op: string; id: string; body: unknown }> = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks }),
+      workspaces: async () => [],
+      stream: () => () => {},
+      move: async (id: string, body: unknown) => { calls.push({ op: 'move', id, body }); return { id } },
+      reject: async (id: string, body: unknown) => { calls.push({ op: 'reject', id, body }); return { id } },
+    }
+    const controller = new BoardController(client as never)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskBoard, { controller }))
+    controller.start()
+    await new Promise(r => setTimeout(r, 20))
+
+    // Quick actions exist ONLY on the in_review card.
+    const acts = () => Array.from(host.querySelectorAll<HTMLElement>('.dsh-atb-quickbtn'))
+    expect(acts().length).toBe(2)
+    const card = (id: string) => Array.from(host.querySelectorAll<HTMLElement>('.dsh-atb-card'))
+      .find(el => el.querySelector('.dsh-atb-card-title')!.textContent === id)!
+    expect(card('t-todo').querySelector('.dsh-atb-quick')).toBeNull()
+    expect(card('t-done').querySelector('.dsh-atb-quick')).toBeNull()
+    const quick = card('t-rev').querySelector('.dsh-atb-quick')!
+    expect(quick.querySelector<HTMLElement>('[data-act="done"]')).not.toBeNull()
+    expect(quick.querySelector<HTMLElement>('[data-act="reject"]')).not.toBeNull()
+
+    // ✓ completes: one move call, ifVersion from the snapshot, target done.
+    const doneBtn = quick.querySelector<HTMLButtonElement>('[data-act="done"]')!
+    doneBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(calls).toEqual([{ op: 'move', id: 't-rev', body: { ifVersion: 1, status: 'done' } }])
+    // The click must NOT also open the detail pane (stopPropagation on the row).
+    expect(controller.getSnapshot().selectedId).toBeUndefined()
+
+    // ✗ opens the inline note form; submit with text → reject carries the note.
+    const rejectBtn = card('t-rev').querySelector<HTMLButtonElement>('[data-act="reject"]')!
+    rejectBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    const input = card('t-rev').querySelector<HTMLInputElement>('.dsh-atb-quick-note')!
+    expect(input).not.toBeNull()
+    // jsdom + React 18 onChange: use the native setter then dispatch.
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setter?.call(input, '按钮颜色不对')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    const confirmBtn = card('t-rev').querySelector<HTMLButtonElement>('[data-act="reject-confirm"]')!
+    confirmBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(calls[1]).toEqual({ op: 'reject', id: 't-rev', body: { ifVersion: 1, body: '按钮颜色不对' } })
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('controller.reject: empty note sends no body; failure surfaces the error', async () => {
+    localStorage.clear()
+    const { BoardController } = await import('../src/client/controller.ts')
+
+    const tasks = [{
+      id: 't-1', title: 'T', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'in_review' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 4, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    }]
+    const bodies: unknown[] = []
+    let failNext = false
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks }),
+      workspaces: async () => [],
+      stream: () => () => {},
+      reject: async (_id: string, body: unknown) => {
+        if (failNext) throw new Error('taskboard: version_conflict: stale version 4 (current 5)')
+        bodies.push(body)
+        return { id: 't-1' }
+      },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    // Whitespace-only note → plain reject, no body field.
+    expect(await controller.reject('t-1', 4, '   ')).toBe(true)
+    expect(bodies).toEqual([{ ifVersion: 4 }])
+
+    // Failure: reports false, error surface explains, nothing else thrown.
+    failNext = true
+    expect(await controller.reject('t-1', 4, 'x')).toBe(false)
+    expect(controller.getSnapshot().error).toContain('version_conflict')
+
+    controller.dispose()
+    localStorage.clear()
+  })
+
   it('session jump opens live sessions and guards deleted/archived ones', async () => {
     const { BoardController } = await import('../src/client/controller.ts')
     const { createSessionJumper } = await import('../src/client/session-jump.ts')

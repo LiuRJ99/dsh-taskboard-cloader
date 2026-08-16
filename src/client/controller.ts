@@ -286,6 +286,25 @@ export class BoardController {
     }
   }
 
+  /**
+   * Quick-reject (card ✗ button): move back to todo with an optional user
+   * comment, committed atomically host-side. Returns whether the task moved.
+   * @param id - task id.
+   * @param ifVersion - optimistic version (captured at click time).
+   * @param comment - optional comment text; blank = move only.
+   */
+  async reject(id: string, ifVersion: number, comment?: string): Promise<boolean> {
+    const body = comment !== undefined && comment.trim().length > 0 ? comment.trim() : undefined
+    try {
+      await this.client.reject(id, body === undefined ? { ifVersion } : { ifVersion, body })
+      await this.refresh()
+      return true
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+      return false
+    }
+  }
+
   /** Toggle the blocked marker. */
   async toggleBlocked(task: TaskRecord): Promise<void> {
     try {
