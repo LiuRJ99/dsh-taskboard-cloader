@@ -1,5 +1,5 @@
 /**
- * The eight `taskboard_*` agent tools. All writes require a calling agent
+ * The ten `taskboard_*` agent tools. All writes require a calling agent
  * session (ownership audit), carry optimistic-version checks, and enforce
  * the protocol gates in CODE, not in prompt text:
  *
@@ -8,6 +8,8 @@
  *   match the task's project (claim boundary)
  * - taking over a task held by another session is rejected
  * - `delete` for agent callers only sets the soft-delete marker
+ * - checklist items may be added/checked by agents, but checking never
+ *   completes the task (done stays user-only)
  *
  * OUTPUT CONTRACT (lesson: registry `createSuccessResult` renders
  * `output.render(args, value)` into `result.content`, and the loop feeds
@@ -21,23 +23,28 @@
 import type { WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import { defineTool } from './sdk.ts'
 import {
+  MAX_CHECKLIST_ITEMS,
   asIsolation,
   asStatus,
   asUrgency,
   canTransition,
+  checklistFromTexts,
   effectivePrompt,
   isClaim,
   isClaimedBy,
+  newChecklistItemId,
   newCommentId,
   newTaskId,
   normalizeBody,
   normalizeExecution,
+  normalizeExecutionReport,
   normalizeModel,
   normalizePrompt,
   normalizeTitle,
   summarize,
   syncClaim,
   type Actor,
+  type ChecklistItem,
   type TaskModel,
   type TaskRecord,
 } from '../shared/protocol.ts'
@@ -55,6 +62,7 @@ function taskLine(t: {
   executionMode: string
   commentCount?: number
   lastExecutionOutcome?: string
+  checklist?: { done: number; total: number }
   trashed?: boolean
 }): string {
   const parts = [
@@ -64,6 +72,7 @@ function taskLine(t: {
   if (t.blocked) parts.push('·受阻')
   if (t.executionMode === 'scheduled') parts.push('·定时')
   if (t.commentCount !== undefined && t.commentCount > 0) parts.push(`·评论${t.commentCount}`)
+  if (t.checklist !== undefined && t.checklist.total > 0) parts.push(`·清单${t.checklist.done}/${t.checklist.total}`)
   if (t.lastExecutionOutcome !== undefined) parts.push(`·上次执行${t.lastExecutionOutcome}`)
   if (t.trashed === true) parts.push('·已删')
   return parts.join(' ')
@@ -84,6 +93,16 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
   if (t.presetId !== undefined) lines.push(`执行模式: ${t.presetId}（未指定时为部署默认 preset）`)
   lines.push(`描述: ${t.description.length > 0 ? t.description : '（无）'}`)
   lines.push(`执行 Prompt: ${t.effectivePrompt ?? effectivePrompt(t)}`)
+  if (t.checklist !== undefined && t.checklist.length > 0) {
+    const done = t.checklist.filter(i => i.checked).length
+    lines.push(`验收清单 (${done}/${t.checklist.length}):`)
+    for (const item of t.checklist) {
+      const mark = item.checked ? '☑' : '☐'
+      const who = item.checkedBy === undefined ? '' : item.checkedBy === 'user' ? ' ·用户勾选' : ` ·agent ${String(item.checkedBy).slice(0, 24)}勾选`
+      const note = item.note !== undefined ? ` ·证据: ${item.note}` : ''
+      lines.push(`  ${mark} ${item.text}${who}${note}`)
+    }
+  }
   if (t.comments.length > 0) {
     lines.push(`评论 (${t.comments.length}):`)
     for (const c of t.comments) {
@@ -98,7 +117,8 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
     for (const e of t.executions) {
       const at = e.startedAt !== undefined ? new Date(e.startedAt).toISOString() : '?'
       const err = e.error !== undefined ? ` 错误: ${e.error}` : ''
-      lines.push(`  - [${e.trigger} ${at}] ${e.outcome}${err}`)
+      const report = e.report !== undefined ? ' [已交报告]' : ''
+      lines.push(`  - [${e.trigger} ${at}] ${e.outcome}${report}${err}`)
     }
   } else {
     lines.push('执行记录: 无')
@@ -359,6 +379,11 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         type: 'string',
         description: 'Agent preset the execution session is composed from (its tool set / persona); default = the deployment default preset. Optional.',
       },
+      checklist: {
+        type: 'array',
+        description: `Acceptance checklist (DoD) item texts (≤${MAX_CHECKLIST_ITEMS} × 200 chars); agents check them off at handoff, the user reviews.`,
+        items: { type: 'string' },
+      },
     },
     output: {
       schema: JSON_OUT,
@@ -379,6 +404,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       model?: { provider?: string; model?: string }
       isolation?: string
       presetId?: string
+      checklist?: string[]
     }, exec: unknown) {
       try {
         const { actor } = caller(exec as ToolRunContext)
@@ -395,6 +421,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
         const isolation = args.isolation === undefined ? undefined : asIsolation(args.isolation)
         const presetId = args.presetId?.trim() || undefined
+        const checklist = args.checklist !== undefined ? checklistFromTexts(args.checklist) : undefined
         const now = deps.now()
         const task: TaskRecord = {
           id: newTaskId(),
@@ -409,6 +436,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           model,
           ...(isolation !== undefined ? { isolation } : {}),
           ...(presetId !== undefined ? { presetId } : {}),
+          ...(checklist !== undefined ? { checklist } : {}),
           version: 1,
           createdAt: now,
           updatedAt: now,
@@ -662,6 +690,174 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           return [next]
         })
         return { trashed: true }
+      } catch (error) { fail(error) }
+    },
+  })) as () => void)
+
+  // -------------------------------------------------------------- checklist
+  disposers.push(register(defineTool({
+    name: 'taskboard_checklist',
+    description:
+      `Manage the task's acceptance checklist (DoD). Actions: "add" (append item texts, ≤10 per call), `
+      + '"check" (mark an item done, with an optional evidence note), "uncheck" (reopen an item). '
+      + 'Checking items NEVER completes the task — done stays a user-only action. Requires ifVersion.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Task id.' },
+      action: { type: 'string', required: true, description: 'add | check | uncheck.' },
+      ifVersion: { type: 'number', required: true, description: 'Task version you read; fails on mismatch.' },
+      items: {
+        type: 'array',
+        description: 'Item texts to append (action=add only; 1..10 per call, 200 chars each).',
+        items: { type: 'string' },
+      },
+      itemId: { type: 'string', description: 'The checklist item id (action=check/uncheck).' },
+      note: { type: 'string', description: 'Evidence note recorded with the check (≤400 chars).' },
+    },
+    output: {
+      schema: JSON_OUT,
+      render: (_args, value) => {
+        const v = value as { task?: { id?: string; version?: number }; checklist?: Array<Record<string, unknown>>; done?: number; total?: number }
+        if (v.task === undefined || v.checklist === undefined) return [{ type: 'text', text: '清单操作失败。' }]
+        const lines = v.checklist.map((i, index) => `${i.checked === true ? '☑' : '☐'} [${index + 1}] ${String(i.text)}${i.note !== undefined ? `（证据: ${String(i.note)}）` : ''} id=${String(i.id)}`)
+        return [{
+          type: 'text',
+          text: `任务 ${v.task.id} 验收清单 ${v.done ?? 0}/${v.total ?? 0} 已完成，当前 v${v.task.version}：\n${lines.join('\n')}`,
+        }]
+      },
+    },
+    async execute(args: {
+      id: string
+      action: string
+      ifVersion: number
+      items?: string[]
+      itemId?: string
+      note?: string
+    }, exec: unknown) {
+      try {
+        const { actor } = caller(exec as ToolRunContext)
+        const task = store.get(args.id)
+        if (task === undefined || task.trashedAt !== undefined) throw new ToolError(ERR.notFound, `no task ${args.id}`)
+        versionGuard(task, args.ifVersion)
+        if (task.status === 'archived') throw new ToolError(ERR.invalidTransition, 'archived tasks are immutable')
+        const next: TaskRecord = structuredClone(task)
+        const checklist: ChecklistItem[] = next.checklist === undefined ? [] : [...next.checklist]
+
+        if (args.action === 'add') {
+          const texts = args.items ?? []
+          if (texts.length === 0 || texts.length > 10) {
+            throw new ToolError(ERR.invalidInput, 'items must carry 1..10 texts per add call')
+          }
+          if (checklist.length + texts.length > MAX_CHECKLIST_ITEMS) {
+            throw new ToolError(ERR.invalidInput, `checklist may hold at most ${MAX_CHECKLIST_ITEMS} items (currently ${checklist.length})`)
+          }
+          checklist.push(...checklistFromTexts(texts))
+        } else if (args.action === 'check') {
+          if (args.itemId === undefined) throw new ToolError(ERR.invalidInput, 'itemId is required for check')
+          const item = checklist.find(i => i.id === args.itemId)
+          if (item === undefined) throw new ToolError(ERR.notFound, `no checklist item ${args.itemId} (task ${args.id})`)
+          const note = args.note !== undefined && args.note.trim().length > 0 ? args.note.trim().slice(0, 400) : undefined
+          item.checked = true
+          item.checkedBy = actor.sessionId
+          item.checkedAt = deps.now()
+          if (note !== undefined) item.note = note
+        } else if (args.action === 'uncheck') {
+          if (args.itemId === undefined) throw new ToolError(ERR.invalidInput, 'itemId is required for uncheck')
+          const item = checklist.find(i => i.id === args.itemId)
+          if (item === undefined) throw new ToolError(ERR.notFound, `no checklist item ${args.itemId} (task ${args.id})`)
+          item.checked = false
+          delete item.checkedBy
+          delete item.checkedAt
+          delete item.note
+        } else {
+          throw new ToolError(ERR.invalidInput, `action must be add | check | uncheck (got "${args.action}")`)
+        }
+
+        if (checklist.length > 0) next.checklist = checklist
+        else delete next.checklist
+        next.version = task.version + 1
+        next.updatedAt = deps.now()
+        next.updatedBy = actor
+        await store.mutate('task-updated', ledger => {
+          const i = ledger.tasks.findIndex(t => t.id === args.id)
+          ledger.tasks[i] = next
+          return [next]
+        })
+        const progress = next.checklist !== undefined
+          ? { done: next.checklist.filter(i => i.checked).length, total: next.checklist.length }
+          : { done: 0, total: 0 }
+        return json({ task: { id: next.id, version: next.version }, checklist: next.checklist ?? [], ...progress })
+      } catch (error) { fail(error) }
+    },
+  })) as () => void)
+
+  // ------------------------------------------------------- execution report
+  disposers.push(register(defineTool({
+    name: 'taskboard_execution_report',
+    description:
+      'Submit the structured execution report for the task you are currently executing (summary / changed '
+      + 'files / how you verified / artifacts / remaining risk). Submit BEFORE moving the task to in_review; '
+      + 'a later submission overwrites the previous report. Commits and diffs are host-collected — do not repeat them.',
+    parameters: {
+      summary: { type: 'string', required: true, description: 'What was done (1..2000 chars).' },
+      changedFiles: {
+        type: 'array',
+        description: 'Files you changed (paths, ≤50 × 300 chars).',
+        items: { type: 'string' },
+      },
+      checks: {
+        type: 'array',
+        description: 'How the work was verified (e.g. test commands + outcomes, ≤50 entries).',
+        items: { type: 'string' },
+      },
+      artifacts: {
+        type: 'array',
+        description: 'Artifacts worth reviewing (build outputs, screenshots, docs, ≤30 entries).',
+        items: { type: 'string' },
+      },
+      risk: { type: 'string', description: 'Known remaining risks or follow-ups (≤2000 chars, optional).' },
+    },
+    output: {
+      schema: JSON_OUT,
+      render: (_args, value) => {
+        const v = value as { taskId?: string; executionId?: string; report?: { summary?: string } }
+        if (v.taskId === undefined || v.report === undefined) return [{ type: 'text', text: '报告提交失败。' }]
+        return [{
+          type: 'text',
+          text: `执行报告已记录到任务 ${v.taskId}（执行 ${v.executionId}）：${v.report.summary?.slice(0, 120) ?? ''}\n`
+            + '接下来：taskboard_comment_add 留交接评论，然后 taskboard_move 移至待验收 in_review。',
+        }]
+      },
+    },
+    async execute(args: {
+      summary: string
+      changedFiles?: string[]
+      checks?: string[]
+      artifacts?: string[]
+      risk?: string
+    }, exec: unknown) {
+      try {
+        const { sessionId } = caller(exec as ToolRunContext)
+        const report = normalizeExecutionReport(args)
+        // Locate the RUNNING execution this session owns — reports attach to
+        // the live run, so the agent never needs to know execution ids.
+        let taskId: string | undefined
+        let executionId: string | undefined
+        await store.mutate('execution-recorded', ledger => {
+          for (const task of ledger.tasks) {
+            const execution = task.executions.find(e => e.sessionId === sessionId && e.outcome === 'running')
+            if (execution !== undefined) {
+              execution.report = report
+              taskId = task.id
+              executionId = execution.id
+              return [task]
+            }
+          }
+          return undefined
+        })
+        if (taskId === undefined || executionId === undefined) {
+          throw new ToolError(ERR.forbidden, 'no running execution belongs to this session — the report can only be submitted while the taskboard execution session is still running')
+        }
+        return json({ taskId, executionId, report })
       } catch (error) { fail(error) }
     },
   })) as () => void)

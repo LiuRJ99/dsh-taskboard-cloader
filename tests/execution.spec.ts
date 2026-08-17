@@ -166,6 +166,38 @@ describe('ExecutionService', () => {
     expect(t.executions[0]!.endedAt).toBe(1_000)
   })
 
+  it('framing carries the report handoff step and injects the DoD checklist (0.4.0)', async () => {
+    const store = await storeWith(task({
+      checklist: [
+        { id: 'k1', text: '已复现并定位根因', checked: true, checkedBy: 'user', checkedAt: 1 },
+        { id: 'k2', text: '回归测试通过', checked: false },
+      ],
+    }))
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    const result = await svc.run('t-run', 'manual')
+    if (!result.ok) throw new Error('run failed')
+
+    const inject = agents.injects[0] as { content: Array<{ type: string; text: string }> }
+    const text = inject.content[0]!.text
+    // The handoff protocol now leads with the structured report step.
+    expect(text).toContain('taskboard_execution_report')
+    expect(text.indexOf('taskboard_execution_report')).toBeLessThan(text.indexOf('taskboard_comment_add'))
+    // The DoD checklist rides along with per-item state and the discipline.
+    expect(text).toContain('验收清单（DoD，1/2 已完成）')
+    expect(text).toContain('☑ 1. 已复现并定位根因')
+    expect(text).toContain('☐ 2. 回归测试通过')
+    expect(text).toContain('taskboard_checklist')
+
+    // Without a checklist the section is absent entirely.
+    const plain = await storeWith(task())
+    const plainAgents = fakeAgents()
+    await new ExecutionService({ store: plain, agents: plainAgents, workspaces, events: fakeEvents(), now: () => 1_000 }).run('t-run', 'manual')
+    const plainText = (plainAgents.injects[0] as { content: Array<{ type: string; text: string }> }).content[0]!.text
+    expect(plainText).not.toContain('验收清单')
+    expect(plainText).toContain('taskboard_execution_report')
+  })
+
   it('fails the execution and reverts progress when creation fails', async () => {
     fakeAgentsState.failNext = true
     const store = await storeWith(task())
@@ -423,6 +455,8 @@ function fakeGit(behavior: {
     merge: async () => {},
     removeWorktree: async () => {},
     deleteBranch: async () => {},
+    showCommit: async () => undefined,
+    showPathDiff: async () => undefined,
   }
 }
 

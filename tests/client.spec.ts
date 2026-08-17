@@ -731,4 +731,389 @@ describe('client half', () => {
     second.dispose()
     localStorage.clear()
   })
+
+  it('checklist editor: template prefill, add/remove rows, create submits texts, edit submits items', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskFormModal } = await import('../src/client/board/TaskFormModal.tsx')
+
+    const creates: unknown[] = []
+    const updates: unknown[] = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
+      update: async (_id: string, body: unknown) => { updates.push(body); return { id: 't' } },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    // Template prefill: open the create form from a template with a checklist.
+    controller.newFromTemplate({ title: '模板任务', urgency: 'urgent', checklist: ['复现', '修复'] })
+    let host = document.createElement('div')
+    document.body.append(host)
+    let root = createRoot(host)
+    root.render(React.createElement(TaskFormModal, { controller }))
+    await new Promise(r => setTimeout(r, 20))
+
+    const titleInput = host.querySelector<HTMLInputElement>('input[maxlength="200"]')!
+    expect(titleInput.value).toBe('模板任务')
+    let rows = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-cke-text'))
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.value).toBe('复现')
+
+    // Add one blank row, fill it, then submit → texts ride along.
+    const addBtn = host.querySelector<HTMLButtonElement>('.dsh-atb-cke-add')!
+    addBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    rows = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-cke-text'))
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setter?.call(rows[2]!, '回归通过')
+    rows[2]!.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '创建任务'))!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(creates[0]).toMatchObject({ title: '模板任务', urgency: 'urgent', checklist: ['复现', '修复', '回归通过'] })
+
+    root.unmount()
+    host.remove()
+
+    // Edit mode: existing items render with checkboxes; a toggle is submitted
+    // as a full-list replace preserving ids and the checked state.
+    const task = {
+      id: 't-cl', title: '编辑我', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'todo' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 4, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      checklist: [
+        { id: 'k1', text: '复现', checked: false },
+        { id: 'k2', text: '修复', checked: false },
+      ],
+      comments: [], executions: [],
+    }
+    controller.openEditor('t-cl')
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    root.render(React.createElement(TaskFormModal, { controller, task: task as never }))
+    await new Promise(r => setTimeout(r, 20))
+
+    const boxes = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-cke-box'))
+    expect(boxes).toHaveLength(2)
+    boxes[0]!.click()
+    await new Promise(r => setTimeout(r, 10))
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '保存修改'))!.click()
+    await new Promise(r => setTimeout(r, 10))
+    const body = updates[0] as { checklist: Array<{ id?: string; text: string; checked: boolean }> }
+    expect(body.checklist).toHaveLength(2)
+    expect(body.checklist[0]).toMatchObject({ id: 'k1', text: '复现', checked: true })
+    expect(body.checklist[1]).toMatchObject({ id: 'k2', text: '修复', checked: false })
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('detail: checklist block toggles as user; report block renders; done confirm counts unchecked', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
+
+    const task = {
+      id: 't-cl2', title: '验收中', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'in_review' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 7, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      checklist: [
+        { id: 'k1', text: '已复现', checked: true, checkedBy: 'agent', checkedAt: 1, note: '证据在评论' },
+        { id: 'k2', text: '回归通过', checked: false },
+      ],
+      comments: [], executions: [{
+        id: 'e-1', trigger: 'manual' as const, startedAt: 0, endedAt: 9, outcome: 'succeeded' as const,
+        report: { summary: '修复了崩溃', changedFiles: ['src/a.ts'], checks: ['npm test 145 passed'], artifacts: [], risk: '低' },
+      }],
+    }
+    const updates: Array<Record<string, unknown>> = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [task] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      update: async (_id: string, body: Record<string, unknown>) => { updates.push(body); return { id: 't' } },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskDetail, { task: task as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+
+    // Checklist block: progress label, alert highlight on the unchecked item,
+    // the checked item shows checker + evidence note.
+    const clBlock = host.querySelector<HTMLElement>('.dsh-atb-fieldcard[data-kind="checklist"]')!
+    expect(clBlock).not.toBeNull()
+    expect(clBlock.textContent).toContain('1/2')
+    expect(clBlock.textContent).toContain('1 项未完成')
+    expect(clBlock.querySelector('.dsh-atb-cl-item[data-alert="true"]')).not.toBeNull()
+    expect(clBlock.textContent).toContain('证据：证据在评论')
+
+    // Report block renders all sections.
+    const rptBlock = host.querySelector<HTMLElement>('.dsh-atb-fieldcard[data-kind="report"]')!
+    expect(rptBlock.textContent).toContain('修复了崩溃')
+    expect(rptBlock.textContent).toContain('src/a.ts')
+    expect(rptBlock.textContent).toContain('npm test 145 passed')
+    expect(rptBlock.textContent).toContain('低')
+
+    // Toggling the unchecked item as the USER → full-list update with
+    // checkedBy 'user' on the flipped item.
+    const item = clBlock.querySelectorAll<HTMLInputElement>('.dsh-atb-cl-item input')[1]!
+    item.click()
+    await new Promise(r => setTimeout(r, 10))
+    const sent = updates[0]!.checklist as Array<{ id: string; checked: boolean; checkedBy?: string }>
+    expect(sent[0]).toMatchObject({ id: 'k1', checked: true, checkedBy: 'agent' })
+    expect(sent[1]).toMatchObject({ id: 'k2', checked: true, checkedBy: 'user' })
+
+    // Done confirm warns about the unchecked item count.
+    const doneBtn = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-movebtn')).find(b => b.textContent!.includes('完成'))!
+    doneBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(host.querySelector('.dsh-atb-confirm-label')!.textContent).toContain('仍有 1 项清单未勾选')
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('new-task menu lists templates and manages them; 存为模板 carries task fields', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskBoard } = await import('../src/client/board/TaskBoard.tsx')
+
+    const templateList = [
+      { id: 'tpl-1', name: 'Bug 修复', task: { urgency: 'urgent', checklist: ['复现'] }, builtin: true, createdAt: 0, updatedAt: 0 },
+      { id: 'tpl-2', name: '我的模板', task: { title: '自定义' }, createdAt: 0, updatedAt: 0 },
+    ]
+    const upserts: unknown[] = []
+    const deletes: string[] = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      templates: async () => ({ templates: templateList }),
+      templateUpsert: async (body: unknown) => { upserts.push(body); return body as never },
+      templateDelete: async (id: string) => { deletes.push(id); return { deleted: true } },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+    controller.openBoard()
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskBoard, { controller }))
+    await new Promise(r => setTimeout(r, 10))
+
+    // Open the + 新建任务 ▼ dropdown: templates listed.
+    const menuBtn = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-newmenu > .dsh-atb-btn')).find(b => b.textContent!.includes('新建任务'))!
+    menuBtn.click()
+    await new Promise(r => setTimeout(r, 20))
+    const options = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-newmenu-opt')).map(b => b.textContent)
+    expect(options).toContain('空白任务')
+    expect(options).toContain('Bug 修复')
+    expect(options).toContain('我的模板')
+    expect(options.some(o => o!.includes('管理模板'))).toBe(true)
+
+    // Picking a template opens the composer prefilled from it.
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-newmenu-opt')).find(b => b.textContent === '我的模板'))!.click()
+    await new Promise(r => setTimeout(r, 10))
+    const snap = controller.getSnapshot()
+    expect(snap.composerOpen).toBe(true)
+    expect(snap.templatePrefill).toMatchObject({ title: '自定义' })
+    controller.closeForm()
+
+    // Manager modal: rename save + delete flow reach the client.
+    controller.openTemplateManager()
+    await new Promise(r => setTimeout(r, 20))
+    const nameInput = host.querySelector<HTMLInputElement>('.dsh-atb-tplm-name')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setter?.call(nameInput, '改名模板')
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-tplm-btns .dsh-atb-btn')).find(b => b.textContent === '改名'))!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(upserts[0]).toMatchObject({ id: 'tpl-1', name: '改名模板' })
+    controller.closeTemplateManager()
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('import modal: file → preview plan → merge commit; replace demands double confirmation', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { ImportModal } = await import('../src/client/board/ImportModal.tsx')
+
+    const file = {
+      schemaVersion: 1,
+      tasks: [
+        { id: 't-new1', title: '导入新', workspaceId: 'ws-a', urgency: 'normal', comments: [], executions: [] },
+        { id: 't-live', title: '覆盖', workspaceId: 'ws-a', urgency: 'normal', comments: [], executions: [] },
+      ],
+    }
+    const previews: unknown[] = []
+    const commits: Array<{ mode: string }> = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      importPreview: async (f: unknown) => {
+        previews.push(f)
+        return { plan: {
+          create: [{ id: 't-new1', title: '导入新', status: 'todo' }],
+          overwrite: [{ id: 't-live', title: '覆盖', status: 'todo' }],
+          invalid: [],
+        } }
+      },
+      importCommit: async (mode: 'merge' | 'replace') => {
+        commits.push({ mode })
+        return mode === 'replace'
+          ? { mode, created: 1, overwritten: 0, replacedTotal: 5, backupFile: '/x/backup.json' }
+          : { mode, created: 1, overwritten: 1 }
+      },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+    controller.openImport()
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(ImportModal, { controller }))
+    await new Promise(r => setTimeout(r, 10))
+
+    // Pick the file through the input: jsdom lacks DataTransfer/FileList
+    // constructors, so the FileList-shaped property is defined directly.
+    const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+    // jsdom's File lacks .text() in this version — patch it on the instance.
+    const chosen = new File([JSON.stringify(file)], 'backup.json', { type: 'application/json' })
+    Object.defineProperty(chosen, 'text', { value: async () => JSON.stringify(file) })
+    Object.defineProperty(input, 'files', { value: [chosen], configurable: true })
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 20))
+
+    // The preview stats render.
+    expect(host.querySelector('.dsh-atb-imp-stats')!.textContent).toContain('1')
+    expect(host.querySelector('.dsh-atb-imp-sec h4')!.textContent).toContain('新增任务')
+
+    // Merge: one click commits.
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '执行导入'))!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(commits).toEqual([{ mode: 'merge' }])
+    expect(host.querySelector('.dsh-atb-imp-result')!.textContent).toContain('合并完成')
+
+    // Replace mode: first click arms the double confirmation, second commits.
+    const replaceOpt = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt')).find(b => b.textContent!.includes('整册替换'))!
+    replaceOpt.click()
+    await new Promise(r => setTimeout(r, 10))
+    const commitBtn = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn'))
+      .find(b => b.textContent === '执行导入' || b.textContent === '确认整册替换')!
+    commitBtn()!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(commits).toHaveLength(1) // armed, not committed yet
+    expect(host.querySelector('.dsh-atb-modal-hint')!.textContent).toContain('再次点击确认')
+    commitBtn()!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(commits[1]).toEqual({ mode: 'replace' })
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('detail diff viewer: commit click lazy-loads the patch; dirty file click too', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
+
+    const task = {
+      id: 't-diff', title: 'Diff', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'in_review' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 2, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      branch: 'task/Diff+t-diff',
+      comments: [], executions: [{
+        id: 'e-1', trigger: 'manual' as const, startedAt: 0, endedAt: 9, outcome: 'succeeded' as const,
+        isolation: 'worktree' as const, branch: 'task/Diff+t-diff',
+        worktreePath: '/p/a/.dsh-worktrees/t-diff', baseCommit: 'aaaa0000', headCommit: 'bbbb1111',
+        commits: [{ hash: 'bbbb1111', subject: 'feat: change' }],
+        dirtyFiles: [' M src/a.ts'],
+      }],
+    }
+    const diffCalls: Array<{ execution: string; commit?: string; path?: string }> = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [task] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      diff: async (_id: string, query: { execution: string; commit?: string; path?: string }) => {
+        diffCalls.push(query)
+        return { diff: `+patch for ${query.commit ?? query.path}`, truncated: false }
+      },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskDetail, { task: task as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+
+    // Click the commit row → the diff loads inline.
+    const commitBtn = host.querySelector<HTMLButtonElement>('.dsh-atb-iso-commit-btn')!
+    commitBtn.click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(diffCalls[0]).toEqual({ execution: 'e-1', commit: 'bbbb1111' })
+    expect(host.querySelector('.dsh-atb-diffview-pre')!.textContent).toContain('+patch for bbbb1111')
+
+    // Dirty files: expand the list, click the file → path diff.
+    const dirtyToggle = host.querySelector<HTMLButtonElement>('.dsh-atb-iso-dirty-toggle')!
+    dirtyToggle.click()
+    await new Promise(r => setTimeout(r, 10))
+    const fileBtn = host.querySelector<HTMLButtonElement>('.dsh-atb-iso-dirty-file')!
+    expect(fileBtn.textContent).toContain('src/a.ts')
+    fileBtn.click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(diffCalls[1]).toEqual({ execution: 'e-1', path: 'src/a.ts' })
+    // The commit diff collapses; the path diff renders in its place.
+    const pres = Array.from(host.querySelectorAll<HTMLElement>('.dsh-atb-diffview-pre'))
+    expect(pres).toHaveLength(1)
+    expect(pres[0]!.textContent).toContain('+patch for src/a.ts')
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
 })
