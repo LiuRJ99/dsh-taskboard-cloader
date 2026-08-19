@@ -1116,4 +1116,96 @@ describe('client half', () => {
     controller.dispose()
     localStorage.clear()
   })
+
+  it('0.4.1 竞态回归：入口嵌在 newSession 容器内时点击自己仍正常 toggle，点真 newSession 仍让位', async () => {
+    localStorage.clear()
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { mountSidebarEntry } = await import('../src/client/sidebar-entry.ts')
+    const { mountBoard } = await import('../src/client/board-mount.tsx')
+    const { createClient } = await import('../src/client/api.ts')
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      templates: async () => ({ templates: [] }),
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    // The race-report shell shape: the sidebar root nests a NEW SESSION
+    // button inside a [class*="newSession"] container row, and our entry
+    // gets inserted as a SIBLING of that button — i.e. INSIDE the
+    // newSession-classed container (closest() from the entry hits it).
+    const column = document.createElement('div')
+    column.className = 'pI_x6G_sidebarCol'
+    column.dataset.pane = 'sidebar'
+    const root = document.createElement('div')
+    root.className = 'hHd-Xa_root'
+    const newSessionRow = document.createElement('div')
+    newSessionRow.className = 'hHd-Xa_newSession'
+    const newSession = document.createElement('button')
+    newSession.className = 'hHd-Xa_button'
+    newSession.textContent = '新会话'
+    newSessionRow.append(newSession)
+    root.append(newSessionRow)
+    const wrapper = document.createElement('div')
+    wrapper.append(root)
+    column.append(wrapper)
+    // Center column the board mounts into.
+    const conversation = document.createElement('div')
+    conversation.dataset.pane = 'conversation'
+    document.body.append(column, conversation)
+
+    const disposeEntry = mountSidebarEntry(controller)
+    const disposeBoard = mountBoard(controller)
+    await new Promise(r => setTimeout(r, 20))
+
+    // The entry landed next to the newSession row; force the exact racy
+    // shape some shells produce: a sibling INSIDE the classed container
+    // (closest() from the entry then matches [class*="newSession"]).
+    const entry = document.querySelector<HTMLElement>('[data-dsh-atb-entry]')!
+    expect(entry).not.toBeNull()
+    if (entry.closest('[class*="newSession"]') === null) {
+      newSessionRow.append(entry)
+    }
+    expect(entry.closest('[class*="newSession"]')).not.toBeNull()
+    // Detach the entry's self-heal observers AFTER the move: they would
+    // otherwise re-place the entry (fighting the racy position we forced)
+    // on every mutation burst below.
+    disposeEntry()
+
+    // mountBoard already renders the board React tree into its container;
+    // nothing extra to mount here.
+
+    // 1) Clicking OUR entry while open must NOT close the board (the capture
+    //    listener exempts the entry subtree) — toggle handles it: open→close.
+    controller.openBoard()
+    await new Promise(r => setTimeout(r, 10))
+    entry.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(controller.getSnapshot().boardOpen).toBe(false)
+
+    // open again; a second click on the entry closes it via toggle — no race.
+    entry.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(controller.getSnapshot().boardOpen).toBe(true)
+    entry.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(controller.getSnapshot().boardOpen).toBe(false)
+
+    // 2) Clicking the REAL new-session button while open still closes the
+    //    board (the yield-to-sidebar semantics survive the fix).
+    controller.openBoard()
+    await new Promise(r => setTimeout(r, 10))
+    newSession.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(controller.getSnapshot().boardOpen).toBe(false)
+
+    disposeBoard()
+    column.remove()
+    conversation.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
 })
