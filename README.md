@@ -60,6 +60,11 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 
 ## 升级日志
 
+### 0.4.2
+
+- **修复 DSH Desktop 上看板不出现（用户反馈：入口能点、后端正常，但中间看板无变化）**：当前 DSH Desktop 的 Web shell（`dsh-client-ui-layout`）已完全移除 `data-pane` 属性，中间列改用 CSS Module 哈希类名（`pI_x6G_centerCol`）——而看板挂载选择器写死 `[data-pane="conversation"]`，`querySelector` 永远落空，看板容器从未创建（侧栏入口正常，是因为它一直有 `[class*="sidebarCol"]` 兜底）。修复：挂载选择器与隐藏规则双兼容 `'[data-pane="conversation"], [class*="centerCol"]'`（新旧 shell 通吃，与侧栏入口同款兜底策略）；`.dsh-atb-view` 以 `height:100%` 撑满列容器，不依赖列内部结构
+- 回归测试：构造无 `data-pane`、哈希类名 `centerCol` 的 Desktop shell DOM——看板容器正确创建于列内、隐藏规则双选择器齐备
+
 ### 0.4.1
 
 - **修复侧栏入口点击竞态（用户反馈）**：部分 shell 的 DOM 里，任务看板侧栏入口被插在 class 含 `newSession` 的容器内部——点击入口时，看板的全局捕获监听器（「点侧栏会话/新会话让位」语义）先 `closeBoard`，入口自身的 `toggleBoard` 再翻回来，表现为**看板一开就闪关、或入口按钮关不掉**。修复：捕获监听器先按 `closest('[data-dsh-atb-entry]')` 整体豁免入口子树（比给选择器加 `:not()` 更稳——`:not()` 只排除元素自身匹配，挡不住入口嵌在带类祖先容器内的形态）；真会话行/新会话按钮的让位语义不变。顺带加固 `newSessionButton()` 锚点扫描排除自身入口，杜绝自愈重插时锚点自引用

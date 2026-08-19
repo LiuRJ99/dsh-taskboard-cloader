@@ -1,9 +1,14 @@
 /**
- * Board view mounting: a container appended inside the `[data-pane=
- * "conversation"]` grid item (a trailing child React never manages), with a
- * stylesheet rule hiding the conversation content while the board is active.
- * Toggling rides a data attribute on <html> — no React involvement in the
- * shell.
+ * Board view mounting: a container appended inside the center column (a
+ * trailing child React never manages), with a stylesheet rule hiding the
+ * conversation content while the board is active. Toggling rides a data
+ * attribute on <html> — no React involvement in the shell.
+ *
+ * Column matching is DUAL (0.4.2): the dev shell marks the column with
+ * `data-pane="conversation"`; the DSH Desktop shell (dsh-client-ui-layout)
+ * dropped data-pane entirely and uses CSS-Module hashed class names
+ * (`pI_x6G_centerCol`) — the class-substring fallback keeps both mounting,
+ * exactly like sidebar-entry's `[class*="sidebarCol"]` fallback.
  *
  * @module dsh-taskboard/client/board-mount
  */
@@ -15,7 +20,7 @@ import { ENTRY_SELECTOR } from './sidebar-entry.ts'
 /** The injected board container. */
 export const BOARD_VIEW_SELECTOR = '[data-dsh-atb-view]'
 
-const CONVERSATION_COLUMN_SELECTOR = '[data-pane="conversation"]'
+const CONVERSATION_COLUMN_SELECTOR = '[data-pane="conversation"], [class*="centerCol"]'
 const ACTIVE_ATTR = 'data-dsh-atb-active'
 /** Sibling panels' activation attributes, evicted when this board opens. */
 const OTHER_ACTIVE_ATTRS = ['data-dsh-taskboard-active', 'data-dsh-ssh-active']

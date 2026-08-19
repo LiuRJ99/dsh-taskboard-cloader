@@ -1208,4 +1208,60 @@ describe('client half', () => {
     controller.dispose()
     localStorage.clear()
   })
+
+  it('0.4.2 回归：无 data-pane 的 Desktop shell（哈希类名 centerCol）也能挂载看板；隐藏规则双选择器', async () => {
+    localStorage.clear()
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { mountBoard, BOARD_VIEW_SELECTOR } = await import('../src/client/board-mount.tsx')
+    const { createClient } = await import('../src/client/api.ts')
+    const { injectStyles } = await import('../src/client/styles.ts')
+    injectStyles()
+
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      templates: async () => ({ templates: [] }),
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    // The DSH Desktop shell shape: NO data-pane anywhere; the center column
+    // carries the CSS-Module hashed class (verified against
+    // dsh-client-ui-layout: "centerCol": "pI_x6G_centerCol").
+    const center = document.createElement('div')
+    center.className = 'pI_x6G_centerCol'
+    const conversationContent = document.createElement('div')
+    conversationContent.textContent = '会话内容'
+    center.append(conversationContent)
+    document.body.append(center)
+
+    const dispose = mountBoard(controller)
+    await new Promise(r => setTimeout(r, 20))
+
+    // The board container was created INSIDE the hashed-class column — on
+    // 0.4.1 this stayed null forever (the board never rendered).
+    const view = document.querySelector<HTMLElement>(BOARD_VIEW_SELECTOR)
+    expect(view).not.toBeNull()
+    expect(view!.parentElement).toBe(center)
+
+    // Opening the board flips the html attribute the dual hide rule keys on.
+    controller.openBoard()
+    await new Promise(r => setTimeout(r, 10))
+    expect(document.documentElement.hasAttribute('data-dsh-atb-active')).toBe(true)
+
+    // The injected stylesheet carries BOTH hide selectors (old data-pane
+    // pane + hashed centerCol), so conversation content hides on either shell.
+    const styleEl = document.getElementById('dsh-taskboard-styles')!
+    expect(styleEl).not.toBeNull()
+    expect(styleEl.textContent).toContain('html[data-dsh-atb-active] [data-pane="conversation"] > *:not([data-dsh-atb-view])')
+    expect(styleEl.textContent).toContain('html[data-dsh-atb-active] [class*="centerCol"] > *:not([data-dsh-atb-view])')
+
+    dispose()
+    controller.closeBoard()
+    center.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
 })
