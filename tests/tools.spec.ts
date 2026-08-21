@@ -173,9 +173,24 @@ describe('taskboard tool outputs', () => {
     )).rejects.toThrow('no registered route')
     // registered provider passes and is trimmed
     const ok = await tool('taskboard_create').execute(
-      { title: 'M3', workspaceId: 'ws-a', urgency: 'normal', model: { provider: ' deepseek ', model: ' reasoner ' } }, exec,
-    ) as { task: { model?: { provider: string; model: string } } }
-    expect(ok.task.model).toEqual({ provider: 'deepseek', model: 'reasoner' })
+      {
+        title: 'M3',
+        workspaceId: 'ws-a',
+        urgency: 'normal',
+        model: { provider: ' deepseek ', model: ' reasoner ', reasoningEffort: ' high ' },
+        speed: 'fast',
+        permissionMode: 'danger-full-access',
+      }, exec,
+    ) as { task: { model?: { provider: string; model: string; reasoningEffort?: string }; speed?: string; permissionMode?: string } }
+    expect(ok.task.model).toEqual({ provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+    expect(ok.task.speed).toBe('fast')
+    expect(ok.task.permissionMode).toBe('danger-full-access')
+    await expect(tool('taskboard_create').execute(
+      { title: 'M4', workspaceId: 'ws-a', urgency: 'normal', speed: 'turbo' }, exec,
+    )).rejects.toThrow('speed')
+    await expect(tool('taskboard_create').execute(
+      { title: 'M5', workspaceId: 'ws-a', urgency: 'normal', permissionMode: 'full-access' }, exec,
+    )).rejects.toThrow('permissionMode')
     for (const dispose of disposers) dispose()
   })
 })

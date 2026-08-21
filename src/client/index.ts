@@ -28,7 +28,7 @@ export const inject = ['connection']
 interface ConnectionFace {
   api: {
     llm: {
-      models(payload: Record<string, never>): Promise<{ result: { ok: true; value: { groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string }> }> } } | { ok: false } }>
+      models(payload: Record<string, never>): Promise<{ result: { ok: true; value: { groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string; description?: string; reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string } }> }> } } | { ok: false } }>
     }
     agentPresets?: {
       list(payload: Record<string, never>): Promise<{ result: { ok: true; value: { presets: Array<{ id: string; name?: string; isDefault: boolean }> } } | { ok: false } }>
@@ -55,14 +55,26 @@ export function apply(ctx: ClientContextFace): void {
     // Model catalog for the composer: llm.models over the connection RPC.
     const connection = ctx.get?.('connection') as ConnectionFace | undefined
     if (connection !== undefined) {
-      type CatalogRow = { provider: string; model: string; name?: string }
+      type CatalogRow = {
+        provider: string
+        model: string
+        name?: string
+        description?: string
+        reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string }
+      }
       ;(controller as unknown as { modelCatalog?: () => Promise<CatalogRow[]> }).modelCatalog = async (): Promise<CatalogRow[]> => {
         const response = await connection.api.llm.models({})
         if (!response.result.ok) return []
         const out: CatalogRow[] = []
         for (const group of response.result.value.groups) {
           for (const model of group.models) {
-            out.push({ provider: group.id, model: model.id, name: model.name })
+            out.push({
+              provider: group.id,
+              model: model.id,
+              ...(model.name !== undefined ? { name: model.name } : {}),
+              ...(model.description !== undefined ? { description: model.description } : {}),
+              ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+            })
           }
         }
         return out

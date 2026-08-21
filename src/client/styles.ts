@@ -383,6 +383,8 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
   color: var(--dsw-alias-label-secondary, gray);
 }
 .dsh-atb-req { color: var(--dsw-alias-state-error-primary, #e5484d); font-style: normal; }
+.dsh-atb-field-note { font-size: 10.5px; line-height: 1.4; color: var(--dsw-alias-label-tertiary, gray); }
+.dsh-atb-field-note-warn { color: var(--dsw-alias-state-warning-primary, #b56b00); }
 .dsh-atb-modal-body input, .dsh-atb-modal-body textarea, .dsh-atb-modal-body select {
   font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px;
   width: 100%; box-sizing: border-box;

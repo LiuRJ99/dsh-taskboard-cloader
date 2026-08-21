@@ -13,12 +13,12 @@
  * @module dsh-taskboard
  */
 import type { Context } from '@deepseek-ai/cordis'
-// Type-only module imports: they load the cordis Context augmentations
-// (ctx.tools / ctx.systemPrompt / ctx.agents) and vanish at compile time —
-// the built host half keeps ZERO runtime @deepseek-ai imports.
+// Type-only module imports load the cordis Context augmentations. The one
+// runtime helper below is the DSH-owned model-selection waterfall; it keeps
+// task execution aligned with the built-in session selector.
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
-import type {} from '@deepseek-ai/dsh-agent'
+import { installModelSelection, type ModelSelection } from '@deepseek-ai/dsh-agent'
 import { PROTOCOL_SECTION_NAME, PROTOCOL_SECTION_ORDER, TASKBOARD_PROTOCOL } from './host/protocol-text.ts'
 import { DEFAULT_MAX_CONCURRENT, ExecutionService, type EventsFace } from './host/execution.ts'
 import { createGitFace } from './host/git.ts'
@@ -28,6 +28,7 @@ import { dshHomePath } from './host/sdk.ts'
 import { TaskStore } from './host/store.ts'
 import { TemplateStore } from './host/templates.ts'
 import { registerTaskboardTools, workspaceFace } from './host/tools.ts'
+import type { PermissionMode, TaskModel, TaskSpeed } from './shared/protocol.ts'
 
 /** Ledger file name under the DSH home. */
 export const LEDGER_FILE = 'dsh-taskboard.json'
@@ -40,6 +41,19 @@ export const name = 'dsh-taskboard'
 
 /** Required host services (tool registry + prompt assembly). */
 export const inject = ['tools', 'systemPrompt']
+
+/** Install the DSH model selector plus the taskboard's adapter-facing speed hint. */
+function installTaskModelOptions(agentCtx: unknown, selection: TaskModel | undefined, speed?: TaskSpeed): void {
+  if (selection !== undefined) {
+    installModelSelection(agentCtx as Context, { current: selection as ModelSelection, assembled: undefined })
+  }
+  if (speed !== 'fast') return
+  const scoped = agentCtx as Context
+  scoped.on('agent/request' as never, (async (_payload: unknown, next: () => Promise<Record<string, unknown>>) => ({
+    ...(await next()),
+    speed: 'fast',
+  })) as never)
+}
 
 /**
  * Mount the host half.
@@ -109,6 +123,21 @@ export function apply(ctx: Context): void {
           },
         },
         events,
+        installModelSelection: installTaskModelOptions,
+        applyPermissionMode: (session: unknown, mode: PermissionMode): void => {
+          const presets = agentCtx.get('permissionPresets') as {
+            names?: readonly string[]
+            set?: (session: unknown, name: string) => void
+          } | undefined
+          if (presets?.set !== undefined && presets.names?.includes(mode) === true) {
+            presets.set(session, mode)
+            return
+          }
+          const target = session as { append?: (type: string, data: unknown) => unknown }
+          if (typeof target.append !== 'function') throw new Error('permission mode unavailable: no session append face')
+          target.append('sandbox/mode', { mode })
+          target.append('approval/policy', { policy: mode === 'danger-full-access' ? 'never' : 'ask' })
+        },
         now,
         git,
         // Preset composition (0.3.3): mirror apiproxy's composeAgent — resolve
@@ -139,7 +168,7 @@ export function apply(ctx: Context): void {
         },
         defaultModel: () => {
           try {
-            const selection = agentCtx.get('agentDefaultModel') as { currentSelection?: () => { provider: string; model: string } | undefined } | undefined
+            const selection = agentCtx.get('agentDefaultModel') as { currentSelection?: () => TaskModel | undefined } | undefined
             const read = selection?.currentSelection
             return read === undefined ? undefined : read.call(selection)
           } catch { return undefined }

@@ -377,6 +377,19 @@ describe('client half', () => {
     root.render(React.createElement(TaskFormModal, { controller }))
     await new Promise(r => setTimeout(r, 10))
 
+    const selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
+    const speedSelect = selects.find(select => select.value === 'standard')!
+    const permissionSelect = selects.find(select => select.value === 'workspace-write')!
+    expect(speedSelect).toBeDefined()
+    expect(permissionSelect).toBeDefined()
+    expect(Array.from(permissionSelect.options).map(option => option.value)).toEqual(['read-only', 'workspace-write', 'danger-full-access'])
+    speedSelect.value = 'fast'
+    speedSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    permissionSelect.value = 'danger-full-access'
+    permissionSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    expect(host.textContent).toContain('Full access 将关闭审批')
+
     const opts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
     expect(opts().length).toBeGreaterThanOrEqual(2)
     // The isolation pair is the second mode-picker in the modal.
@@ -395,7 +408,12 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '创建任务'))!.click()
     await new Promise(r => setTimeout(r, 10))
-    expect(creates[0]).toMatchObject({ title: 'Iso task', isolation: 'worktree' })
+    expect(creates[0]).toMatchObject({
+      title: 'Iso task',
+      isolation: 'worktree',
+      speed: 'fast',
+      permissionMode: 'danger-full-access',
+    })
     expect(loadDefaultIsolation()).toBe('worktree')
 
     // Non-git workspace: both options disabled, hint shown, isolation omitted.

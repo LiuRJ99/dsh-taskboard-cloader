@@ -11,14 +11,19 @@
  * @module dsh-taskboard/host/execution
  */
 import {
+  approvalPolicyForPermissionMode,
   effectiveIsolation,
   effectivePrompt,
+  effectiveTaskSpeed,
   newCommentId,
   newExecutionId,
   normalizeBody,
   type ExecutionRecord,
   type IsolationMode,
+  type PermissionMode,
+  type TaskModel,
   type TaskRecord,
+  type TaskSpeed,
 } from '../shared/protocol.ts'
 import { sanitizeBranchName, worktreePathOf, type GitFace, type SettlementFacts } from './git.ts'
 import { MessageId } from './sdk.ts'
@@ -37,6 +42,7 @@ export interface AgentsFace {
     setup?: (agentCtx: unknown) => Promise<void> | void
   }): Promise<{
     agent: {
+      session: unknown
       id: string
       followup(message: unknown): void
       inject(message: unknown): void
@@ -76,8 +82,12 @@ export interface ExecutionDeps {
   workspaces: ExecutionWorkspaceFace
   events: EventsFace
   now: () => number
-  /** The deployment default model (fills sessions of unpinned tasks). */
-  defaultModel?: () => { provider: string; model: string } | undefined
+  /** The deployment default model selection (fills sessions of unpinned tasks). */
+  defaultModel?: () => TaskModel | undefined
+  /** Install the DSH model-selection waterfall for the fresh task agent. */
+  installModelSelection?: (agentCtx: unknown, selection: TaskModel | undefined, speed?: TaskSpeed) => void
+  /** Apply one of the three file-permission modes before the first prompt. */
+  applyPermissionMode?: (session: unknown, mode: PermissionMode) => void | Promise<void>
   /** Mint session ids (injectable for tests). */
   mintSessionId?: () => string
   /** Mint message ids (injectable for tests). */
@@ -124,6 +134,16 @@ function isErrorTurnEnd(data: unknown): { message: string } | undefined {
   console.error('[dsh-taskboard] turn error detail:', detail.slice(0, 2000))
   void detail
   return { message }
+}
+
+/** Append the canonical permission events when no optional runtime face was supplied. */
+function appendPermissionMode(session: unknown, mode: PermissionMode): void {
+  if (typeof session !== 'object' || session === null || typeof (session as { append?: unknown }).append !== 'function') {
+    throw new Error('permission mode unavailable: execution session has no append face')
+  }
+  const append = (session as { append: (type: string, data: unknown) => unknown }).append.bind(session)
+  append('sandbox/mode', { mode })
+  append('approval/policy', { policy: approvalPolicyForPermissionMode(mode) })
 }
 
 /** Prepared worktree facts threaded through a live run (settlement evidence). */
@@ -347,6 +367,8 @@ export class ExecutionService {
     //    snapshots `agentPreset` and the setup callback mounts the preset's
     //    tools/persona into the agent's scope. undefined composeAgent (or an
     //    absent preset roster) keeps the bare host composition.
+    const model = task.model ?? this.deps.defaultModel?.()
+    const speed = effectiveTaskSpeed(task)
     let composition: AgentComposition | undefined
     try {
       composition = this.deps.composeAgent === undefined ? undefined : await this.deps.composeAgent(task.presetId)
@@ -358,7 +380,13 @@ export class ExecutionService {
     }
     let handle: Awaited<ReturnType<AgentsFace['create']>>
     try {
-      const model = task.model ?? this.deps.defaultModel?.()
+      const needsModelOptions = model !== undefined || speed === 'fast'
+      const setup = !needsModelOptions && composition === undefined
+        ? undefined
+        : async (agentCtx: unknown): Promise<void> => {
+            if (needsModelOptions) this.deps.installModelSelection?.(agentCtx, model, speed)
+            await composition?.setup(agentCtx)
+          }
       handle = await this.deps.agents.create({
         sessionId,
         meta: {
@@ -366,10 +394,25 @@ export class ExecutionService {
           ...(composition !== undefined ? { agentPreset: composition.agentPreset } : {}),
         },
         ...(model !== undefined ? { agentOptions: { provider: model.provider, model: model.model } } : {}),
-        ...(composition !== undefined ? { setup: composition.setup } : {}),
+        ...(setup !== undefined ? { setup } : {}),
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      await this.patchExecution(executionId, { outcome: 'failed', error: message.slice(0, 500), endedAt: this.deps.now() })
+      await this.revertProgress(taskId)
+      return { ok: false, error: message }
+    }
+
+    // 2b. Apply task-owned execution options while the fresh session is still idle.
+    //     They must land before the opening followup so the first request sees them.
+    try {
+      if (task.permissionMode !== undefined) {
+        const apply = this.deps.applyPermissionMode ?? appendPermissionMode
+        await apply(handle.agent.session, task.permissionMode)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      try { await handle.dispose() } catch { /* best effort */ }
       await this.patchExecution(executionId, { outcome: 'failed', error: message.slice(0, 500), endedAt: this.deps.now() })
       await this.revertProgress(taskId)
       return { ok: false, error: message }
@@ -620,6 +663,9 @@ export class ExecutionService {
   private pluginFraming(task: TaskRecord, prepared?: PreparedWorktree, degradeNote?: string): string {
     let text = `【任务看板】${task.title}（ID: ${task.id}）\n`
       + `本会话由任务看板执行服务启动，任务已置为进行中——无需认领；「已完成」仅限用户在界面操作（代码已限制，移了会被拒）。\n`
+      + (task.model !== undefined ? `执行模型：${task.model.provider}/${task.model.model}${task.model.reasoningEffort !== undefined ? ` · 推理等级 ${task.model.reasoningEffort}` : ''}\n` : '')
+      + (task.speed !== undefined ? `速度模式：${task.speed === 'fast' ? '快速' : '标准'}\n` : '')
+      + (task.permissionMode !== undefined ? `权限模式：${task.permissionMode}\n` : '')
       + `完成后按序交接：\n`
       + `1. taskboard_get 读取本任务，取得最新 version\n`
       + `2. taskboard_execution_report 提交结构化执行报告（做了什么/改了哪些文件/如何验证/剩余风险；提交与评论不冲突，都会展示给验收人）\n`

@@ -10,15 +10,20 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   ALL_STATUSES,
   MAIN_STATUSES,
+  approvalPolicyForPermissionMode,
+  asPermissionMode,
+  asTaskSpeed,
   canTransition,
   checklistFromTexts,
   checklistProgress,
   emptyLedger,
+  effectiveTaskSpeed,
   isClaim,
   nextCronTime,
   normalizeChecklist,
   normalizeExecution,
   normalizeExecutionReport,
+  normalizeModel,
   parseCron,
   summarize,
   validateLedgerImport,
@@ -105,6 +110,25 @@ describe('cron', () => {
     expect(scheduled.nextRunAt).toBeGreaterThan(0)
     expect(() => normalizeExecution({ mode: 'scheduled' }, 0)).toThrow()
     expect(() => normalizeExecution({ mode: 'bogus' }, 0)).toThrow()
+  })
+
+  it('normalizes model reasoning and validates speed/permission options', () => {
+    expect(normalizeModel({ provider: ' deepseek ', model: ' reasoner ', reasoningEffort: ' high ' })).toEqual({
+      provider: 'deepseek',
+      model: 'reasoner',
+      reasoningEffort: 'high',
+    })
+    expect(normalizeModel({ provider: 'deepseek', model: 'chat', reasoningEffort: '  ' })).toEqual({ provider: 'deepseek', model: 'chat' })
+    expect(() => normalizeModel({ provider: 'deepseek', model: 'chat', reasoningEffort: 3 })).toThrow('reasoningEffort')
+
+    expect(asTaskSpeed('fast')).toBe('fast')
+    expect(asPermissionMode('danger-full-access')).toBe('danger-full-access')
+    expect(effectiveTaskSpeed({})).toBe('standard')
+    expect(approvalPolicyForPermissionMode('read-only')).toBe('ask')
+    expect(approvalPolicyForPermissionMode('workspace-write')).toBe('ask')
+    expect(approvalPolicyForPermissionMode('danger-full-access')).toBe('never')
+    expect(() => asTaskSpeed('turbo')).toThrow('standard, fast')
+    expect(() => asPermissionMode('full-access')).toThrow('read-only')
   })
 })
 
@@ -256,6 +280,9 @@ describe('ledger import validation', () => {
       executions: [{ trigger: 'manual', outcome: 'running', sessionId: 'sess-x' }],
       checklist: [{ text: '验收项', checked: true, checkedBy: 'user' }],
       presetId: ' standard ',
+      model: { provider: ' deepseek ', model: ' reasoner ', reasoningEffort: ' high ' },
+      speed: 'fast',
+      permissionMode: 'read-only',
     }] }, new Set(), NOW)
     expect(plan.create).toHaveLength(1)
     const task = plan.create[0]!
@@ -265,6 +292,9 @@ describe('ledger import validation', () => {
     expect(task.executions[0]!.error).toContain('running')
     expect(task.checklist![0]).toMatchObject({ text: '验收项', checked: true, checkedBy: 'user' })
     expect(task.presetId).toBe('standard')
+    expect(task.model).toEqual({ provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+    expect(task.speed).toBe('fast')
+    expect(task.permissionMode).toBe('read-only')
     expect(task.claimedBy).toBe('sess-x')
     expect(task.createdBy).toEqual({ kind: 'user' })
   })

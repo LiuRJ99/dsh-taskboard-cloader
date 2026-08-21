@@ -296,6 +296,38 @@ describe('taskboard routes', () => {
     expect(updBad.status).toBe(400)
   })
 
+  it('persists reasoning effort, speed, and permission mode across create/update', async () => {
+    const created = await post('/dsh-taskboard/tasks', {
+      title: 'Execution options',
+      workspaceId: 'ws-a',
+      urgency: 'normal',
+      model: { provider: 'prov-a', model: 'm-1', reasoningEffort: ' high ' },
+      speed: 'fast',
+      permissionMode: 'danger-full-access',
+    })
+    expect(created.status).toBe(201)
+    const id = created.json.value.id as string
+    expect(created.json.value.model).toEqual({ provider: 'prov-a', model: 'm-1', reasoningEffort: 'high' })
+    expect(created.json.value.speed).toBe('fast')
+    expect(created.json.value.permissionMode).toBe('danger-full-access')
+
+    const updated = await post(`/dsh-taskboard/tasks/${id}/update`, {
+      ifVersion: 1,
+      model: { provider: 'prov-a', model: 'm-2', reasoningEffort: 'low' },
+      speed: 'standard',
+      permissionMode: 'read-only',
+    })
+    expect(updated.status).toBe(200)
+    expect(updated.json.value.model).toEqual({ provider: 'prov-a', model: 'm-2', reasoningEffort: 'low' })
+    expect(updated.json.value.speed).toBe('standard')
+    expect(updated.json.value.permissionMode).toBe('read-only')
+
+    const badSpeed = await post('/dsh-taskboard/tasks', { title: 'Bad speed', workspaceId: 'ws-a', urgency: 'normal', speed: 'turbo' })
+    expect(badSpeed.status).toBe(400)
+    const badPermission = await post('/dsh-taskboard/tasks', { title: 'Bad permission', workspaceId: 'ws-a', urgency: 'normal', permissionMode: 'full-access' })
+    expect(badPermission.status).toBe(400)
+  })
+
   it('cancels a running execution via the cancel action', async () => {
     const created = await post('/dsh-taskboard/tasks', { title: 'Cancel me', workspaceId: 'ws-a', urgency: 'normal' })
     const id = created.json.value.id as string
@@ -618,14 +650,27 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
     expect(names).toContain('Bug 修复')
     expect(names).toContain('发布检查')
     expect(names).toContain('例行巡检')
+    const builtins = list.value.templates as Array<{ name: string; task: { speed?: string; permissionMode?: string } }>
+    expect(builtins.find(t => t.name === 'Bug 修复')?.task).toMatchObject({ speed: 'standard', permissionMode: 'workspace-write' })
+    expect(builtins.find(t => t.name === '发布检查')?.task).toMatchObject({ speed: 'standard', permissionMode: 'workspace-write' })
+    expect(builtins.find(t => t.name === '例行巡检')?.task).toMatchObject({ speed: 'standard', permissionMode: 'read-only' })
 
     const created = await post('/dsh-taskboard/templates', {
       name: '我的模板',
-      task: { title: '从模板开始', urgency: 'urgent', checklist: ['a', 'b'], execution: { mode: 'scheduled', cron: '0 9 * * 1' } },
+      task: {
+        title: '从模板开始',
+        urgency: 'urgent',
+        checklist: ['a', 'b'],
+        execution: { mode: 'scheduled', cron: '0 9 * * 1' },
+        speed: 'fast',
+        permissionMode: 'workspace-write',
+      },
     })
     expect(created.status).toBe(201)
     const id = created.json.value.id as string
     expect(created.json.value.task.checklist).toEqual(['a', 'b'])
+    expect(created.json.value.task.speed).toBe('fast')
+    expect(created.json.value.task.permissionMode).toBe('workspace-write')
 
     const renamed = await post('/dsh-taskboard/templates', { id, name: '改名后', task: { urgency: 'relaxed' } })
     expect(renamed.status).toBe(201)

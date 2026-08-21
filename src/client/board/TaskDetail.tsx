@@ -402,7 +402,9 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
           <div className="dsh-atb-detail-chips">
             <Chip tone={task.urgency}>● {URGENCY_LABEL[task.urgency] ?? task.urgency}</Chip>
             <Chip icon="📁">{ws?.title ?? shortId(task.workspaceId)}</Chip>
-            {task.model !== undefined && <Chip icon="✦">{task.model.model}</Chip>}
+            {task.model !== undefined && <Chip icon="✦">{task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}</Chip>}
+            {task.speed === 'fast' && <Chip icon="⚡">快速</Chip>}
+            {task.permissionMode !== undefined && <Chip icon="🛡">{task.permissionMode === 'danger-full-access' ? 'Full access' : task.permissionMode === 'workspace-write' ? 'Workspace Write' : 'Read Only'}</Chip>}
             {task.presetId !== undefined && <Chip icon="🎛" >{task.presetId}</Chip>}
             {task.execution.mode === 'scheduled' && (
               <Chip icon="⏰">{task.execution.cron} · 下次 {fmtTime(task.execution.nextRunAt)}</Chip>

@@ -68,6 +68,8 @@ export function TemplateManager({ controller }: { controller: BoardController })
                         {t.builtin === true ? '内置' : '自建'}
                         {t.task.checklist !== undefined && t.task.checklist.length > 0 ? ` · 清单 ${t.task.checklist.length} 项` : ''}
                         {t.task.urgency !== undefined ? ` · ${t.task.urgency}` : ''}
+                        {t.task.speed === 'fast' ? ' · 快速' : ''}
+                        {t.task.permissionMode !== undefined ? ` · ${t.task.permissionMode}` : ''}
                       </span>
                       <span className="dsh-atb-tplm-btns">
                         <button

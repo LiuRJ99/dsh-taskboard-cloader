@@ -51,7 +51,11 @@ export type CreateTaskBody = {
   description?: string
   prompt?: string
   execution?: { mode?: string; cron?: string }
-  model?: { provider: string; model: string }
+  model?: { provider: string; model: string; reasoningEffort?: string }
+  /** Taskboard-owned speed preference ('standard' | 'fast'); omitted = standard. */
+  speed?: string
+  /** Three Harness file-permission modes; omitted = deployment default. */
+  permissionMode?: string
   /** Code isolation for executions ('worktree' | 'none'); omitted = default. */
   isolation?: string
   /** Agent preset for execution sessions; omitted = deployment default. */
@@ -71,7 +75,11 @@ export type UpdateTaskBody = {
   /** Rebind the task to another project (GUI owner surface only). */
   workspaceId?: string
   execution?: { mode?: string; cron?: string }
-  model?: { provider: string; model: string } | null
+  model?: { provider: string; model: string; reasoningEffort?: string } | null
+  /** Change the taskboard-owned speed preference. */
+  speed?: string | null
+  /** Change the three-value Harness file-permission mode. */
+  permissionMode?: string | null
   /** Change isolation; locked once the task has execution history. */
   isolation?: string
   /** Change the execution preset (takes effect on the next run). */
@@ -130,7 +138,9 @@ export type TaskTemplateSpec = {
   prompt?: string
   urgency?: string
   execution?: { mode?: string; cron?: string }
-  model?: { provider: string; model: string }
+  model?: { provider: string; model: string; reasoningEffort?: string }
+  speed?: string
+  permissionMode?: string
   isolation?: string
   presetId?: string
   /** Checklist item texts (host mints ids at create time). */
