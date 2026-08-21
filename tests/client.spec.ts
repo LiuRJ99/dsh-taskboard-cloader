@@ -366,6 +366,9 @@ describe('client half', () => {
       create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
     }
     const controller = new BoardController(client as never)
+    ;(controller as unknown as { modelCatalog: () => Promise<unknown[]> }).modelCatalog = async () => [{
+      provider: 'test-provider', model: 'test-model', name: 'Test model',
+    }]
     controller.start()
     await new Promise(r => setTimeout(r, 10))
 
@@ -377,7 +380,15 @@ describe('client half', () => {
     root.render(React.createElement(TaskFormModal, { controller }))
     await new Promise(r => setTimeout(r, 10))
 
-    const selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
+    let selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
+    expect(selects.find(select => select.value === 'standard')).toBeUndefined()
+    const modelSelect = selects.find(select => Array.from(select.options).some(option => option.textContent?.includes('Test model')))
+    expect(modelSelect).toBeDefined()
+    modelSelect!.value = JSON.stringify({ provider: 'test-provider', model: 'test-model' })
+    modelSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+
+    selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
     const speedSelect = selects.find(select => select.value === 'standard')!
     const permissionSelect = selects.find(select => select.value === 'workspace-write')!
     expect(speedSelect).toBeDefined()

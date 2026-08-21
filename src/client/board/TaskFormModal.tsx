@@ -29,6 +29,16 @@ export interface CatalogModel {
   }
 }
 
+/** A reasoning selector is useful only when the model exposes actual choices. */
+export function hasReasoningOptions(reasoning: CatalogModel['reasoning'] | undefined): boolean {
+  return reasoning !== undefined && reasoning.efforts.length > 0
+}
+
+/** Fast is a taskboard-owned adapter hint, but it requires an explicit model. */
+export function speedForModel(hasModel: boolean, speed: TaskSpeed): TaskSpeed {
+  return hasModel ? speed : 'standard'
+}
+
 /** Urgency segmented options with a one-line hint each. */
 const URGENCY_OPTIONS: ReadonlyArray<{ value: Urgency; label: string; hint: string }> = [
   { value: 'urgent', label: '紧急', hint: '优先处理' },
@@ -150,8 +160,11 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const [mode, setMode] = useState<'claim' | 'scheduled'>(task?.execution.mode === 'scheduled' || prefill?.execution?.mode === 'scheduled' ? 'scheduled' : 'claim')
   const [cron, setCron] = useState(task?.execution.cron ?? prefill?.execution?.cron ?? '0 9 * * *')
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
-  const [model, setModel] = useState(task?.model !== undefined || prefill?.model !== undefined ? JSON.stringify(task?.model ?? prefill?.model) : '')
-  const [speed, setSpeed] = useState<TaskSpeed>(task?.speed ?? (prefill?.speed === 'fast' ? 'fast' : 'standard'))
+  const initialModel = task?.model ?? prefill?.model
+  const [model, setModel] = useState(initialModel === undefined ? '' : JSON.stringify(initialModel))
+  const [speed, setSpeed] = useState<TaskSpeed>(
+    initialModel !== undefined && (task?.speed === 'fast' || prefill?.speed === 'fast') ? 'fast' : 'standard',
+  )
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     task?.permissionMode ?? (prefill?.permissionMode === 'read-only' || prefill?.permissionMode === 'danger-full-access' ? prefill.permissionMode : 'workspace-write'),
   )
@@ -246,16 +259,19 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
       return undefined
     }
   })()
+  const hasSelectedModel = selectedModel !== undefined
   const selectedCatalog = selectedModel === undefined
     ? undefined
     : catalog.find(entry => entry.provider === selectedModel.provider && entry.model === selectedModel.model)
-  const reasoning = selectedCatalog?.reasoning
+  const reasoning = hasReasoningOptions(selectedCatalog?.reasoning) ? selectedCatalog?.reasoning : undefined
   const effectiveEffort = selectedModel?.reasoningEffort ?? reasoning?.defaultEffort
+  const effectiveSpeed = speedForModel(hasSelectedModel, speed)
 
   /** Pick a model and seed its adapter-configured default reasoning level. */
   const chooseModel = (value: string): void => {
     if (value === '') {
       setModel('')
+      setSpeed('standard')
       return
     }
     const picked = JSON.parse(value) as { provider: string; model: string }
@@ -297,7 +313,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         // '' in edit mode clears the pinned model back to the default.
         model: picked ?? null,
-        speed,
+        speed: effectiveSpeed,
         permissionMode,
         ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
         presetId: presetOut ?? null,
@@ -313,7 +329,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         prompt: prompt.length > 0 ? prompt : undefined,
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         model: picked,
-        speed,
+        speed: effectiveSpeed,
         permissionMode,
         ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
         ...(presetOut !== undefined ? { presetId: presetOut } : {}),
@@ -339,7 +355,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           workspaceId,
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked ?? null,
-          speed,
+          speed: effectiveSpeed,
           permissionMode,
           ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
           presetId: presetOut ?? null,
@@ -357,7 +373,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           prompt: prompt.length > 0 ? prompt : undefined,
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked,
-          speed,
+          speed: effectiveSpeed,
           permissionMode,
           ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
           ...(presetOut !== undefined ? { presetId: presetOut } : {}),
@@ -422,11 +438,13 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
             </Field>
           )}
 
-          <Field label="速度模式">
-            <select value={speed} onChange={e => setSpeed(e.target.value === 'fast' ? 'fast' : 'standard')}>
-              {SPEED_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}（{option.hint}）</option>)}
-            </select>
-          </Field>
+          {hasSelectedModel && (
+            <Field label="速度模式">
+              <select value={effectiveSpeed} onChange={e => setSpeed(e.target.value === 'fast' ? 'fast' : 'standard')}>
+                {SPEED_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}（{option.hint}）</option>)}
+              </select>
+            </Field>
+          )}
 
           <Field label="权限模式">
             <select value={permissionMode} onChange={e => setPermissionMode(e.target.value as PermissionMode)}>
