@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { hasReasoningOptions, speedForModel } from '../src/client/board/TaskFormModal.tsx'
+import { hasReasoningOptions, speedForModel, supportsTaskFastSpeed } from '../src/client/board/TaskFormModal.tsx'
 
 describe('task form model-dependent options', () => {
-  it('requires an explicit model before preserving fast speed', () => {
-    expect(speedForModel(false, 'fast')).toBe('standard')
-    expect(speedForModel(false, 'standard')).toBe('standard')
-    expect(speedForModel(true, 'fast')).toBe('fast')
+  it('only preserves fast speed for the current gpt-5.6 capability set', () => {
+    expect(supportsTaskFastSpeed(undefined)).toBe(false)
+    expect(supportsTaskFastSpeed('gemini-3.1-flash-lite')).toBe(false)
+    expect(supportsTaskFastSpeed('gpt-5.6-luna')).toBe(true)
+    expect(speedForModel(undefined, 'fast')).toBe('standard')
+    expect(speedForModel('gemini-3.1-flash-lite', 'fast')).toBe('standard')
+    expect(speedForModel('gpt-5.6-luna', 'fast')).toBe('fast')
   })
 
   it('only exposes reasoning when the selected model has efforts', () => {

@@ -367,7 +367,7 @@ describe('client half', () => {
     }
     const controller = new BoardController(client as never)
     ;(controller as unknown as { modelCatalog: () => Promise<unknown[]> }).modelCatalog = async () => [{
-      provider: 'test-provider', model: 'test-model', name: 'Test model',
+      provider: 'test-provider', model: 'gpt-5.6-luna', name: 'Fast test model',
     }]
     controller.start()
     await new Promise(r => setTimeout(r, 10))
@@ -382,9 +382,9 @@ describe('client half', () => {
 
     let selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
     expect(selects.find(select => select.value === 'standard')).toBeUndefined()
-    const modelSelect = selects.find(select => Array.from(select.options).some(option => option.textContent?.includes('Test model')))
+    const modelSelect = selects.find(select => Array.from(select.options).some(option => option.textContent?.includes('Fast test model')))
     expect(modelSelect).toBeDefined()
-    modelSelect!.value = JSON.stringify({ provider: 'test-provider', model: 'test-model' })
+    modelSelect!.value = JSON.stringify({ provider: 'test-provider', model: 'gpt-5.6-luna' })
     modelSelect!.dispatchEvent(new Event('change', { bubbles: true }))
     await new Promise(r => setTimeout(r, 10))
 
