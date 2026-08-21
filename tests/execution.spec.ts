@@ -311,7 +311,7 @@ describe('ExecutionService', () => {
       type: 'turn/end',
       data: { turn: 1, reason: { kind: 'error', error: { message: 'boom: quota exceeded' } } },
     })
-    await new Promise(r => setTimeout(r, 10))
+    await new Promise(r => setTimeout(r, 25))
     const t = store.get('t-run')!
     expect(t.executions[0]!.outcome).toBe('failed')
     expect(t.executions[0]!.error).toContain('quota exceeded')
@@ -334,7 +334,7 @@ describe('ExecutionService', () => {
       type: 'turn/end',
       data: { reason: { kind: 'error', error: { message: 'quota exceeded' } } },
     })
-    await new Promise(r => setTimeout(r, 10))
+    await new Promise(r => setTimeout(r, 25))
     // Failure no longer strands the card in in_progress.
     t = store.get('t-run')!
     expect(t.status).toBe('todo')
