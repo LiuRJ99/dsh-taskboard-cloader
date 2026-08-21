@@ -367,7 +367,7 @@ describe('client half', () => {
     }
     const controller = new BoardController(client as never)
     ;(controller as unknown as { modelCatalog: () => Promise<unknown[]> }).modelCatalog = async () => [{
-      provider: 'test-provider', model: 'gpt-5.6-luna', name: 'Fast test model',
+      provider: 'test-provider', model: 'gpt-5.6-luna', name: 'Fast test model', serviceTiers: [{ id: 'priority' }],
     }]
     controller.start()
     await new Promise(r => setTimeout(r, 10))

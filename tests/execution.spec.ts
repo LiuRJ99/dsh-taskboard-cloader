@@ -192,14 +192,15 @@ describe('ExecutionService', () => {
       permissionMode,
     }))
     const agents = fakeAgents()
-    const installed: Array<{ selection: TaskRecord['model']; speed?: string }> = []
+    const installed: Array<{ selection: TaskRecord['model']; speed?: string; serviceTier?: string }> = []
     const svc = new ExecutionService({
       store,
       agents,
       workspaces,
       events: fakeEvents(),
       now: () => 1_000,
-      installModelSelection: (_ctx, selection, speed) => { installed.push({ selection, speed }) },
+      modelCapabilities: async () => [{ provider: 'deepseek', model: 'reasoner', serviceTiers: [{ id: 'priority' }] }],
+      installModelSelection: (_ctx, selection, speed, serviceTier) => { installed.push({ selection, speed, serviceTier }) },
     })
 
     const result = await svc.run(`t-${permissionMode}`, 'manual')
@@ -210,6 +211,7 @@ describe('ExecutionService', () => {
     expect(installed).toEqual([{
       selection: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' },
       speed: 'fast',
+      serviceTier: 'priority',
     }])
     expect(agents.sessionEvents).toEqual([
       { sessionId: result.sessionId, type: 'sandbox/mode', data: { mode: permissionMode } },
@@ -223,22 +225,23 @@ describe('ExecutionService', () => {
     expect(framing).toContain(`权限模式：${permissionMode}`)
   })
 
-  it('installs the fast hint even when no pinned or deployment model is available', async () => {
+  it('does not guess a fast tier when no pinned or deployment model is available', async () => {
     const store = await storeWith(task({ id: 't-fast-default', speed: 'fast' }))
     const agents = fakeAgents()
-    const installed: Array<{ selection: TaskRecord['model']; speed?: string }> = []
+    const installed: Array<{ selection: TaskRecord['model']; speed?: string; serviceTier?: string }> = []
     const svc = new ExecutionService({
       store,
       agents,
       workspaces,
       events: fakeEvents(),
       now: () => 1_000,
-      installModelSelection: (_ctx, selection, speed) => { installed.push({ selection, speed }) },
+      modelCapabilities: async () => [{ provider: 'deepseek', model: 'reasoner', serviceTiers: [{ id: 'priority' }] }],
+      installModelSelection: (_ctx, selection, speed, serviceTier) => { installed.push({ selection, speed, serviceTier }) },
     })
 
     const result = await svc.run('t-fast-default', 'manual')
     expect(result.ok).toBe(true)
-    expect(installed).toEqual([{ selection: undefined, speed: 'fast' }])
+    expect(installed).toEqual([])
   })
 
   it('framing carries the report handoff step and injects the DoD checklist (0.4.0)', async () => {

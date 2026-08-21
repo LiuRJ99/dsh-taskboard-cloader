@@ -18,6 +18,7 @@ import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
 import { createSessionJumper, type SessionsServiceFace, type WorkspacesServiceFace } from './session-jump.ts'
 import { isTaskModelSupported } from './model-catalog.ts'
+import { MODEL_CAPABILITY_SERVICE, type ModelCapability, type ModelCapabilityProvider } from '../shared/model-capabilities.ts'
 
 /** Client plugin name. */
 export const name = 'dsh-taskboard/client'
@@ -29,7 +30,7 @@ export const inject = ['connection']
 interface ConnectionFace {
   api: {
     llm: {
-      models(payload: Record<string, never>): Promise<{ result: { ok: true; value: { groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string; description?: string; reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string } }> }> } } | { ok: false } }>
+      models(payload: Record<string, never>): Promise<{ result: { ok: true; value: { groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string; description?: string; reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string }; serviceTiers?: readonly { id: string; name?: string; description?: string }[] }> }> } } | { ok: false } }>
     }
     agentPresets?: {
       list(payload: Record<string, never>): Promise<{ result: { ok: true; value: { presets: Array<{ id: string; name?: string; isDefault: boolean }> } } | { ok: false } }>
@@ -62,19 +63,27 @@ export function apply(ctx: ClientContextFace): void {
         name?: string
         description?: string
         reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string }
+        serviceTiers?: readonly { id: string; name?: string; description?: string }[]
       }
       ;(controller as unknown as { modelCatalog?: () => Promise<CatalogRow[]> }).modelCatalog = async (): Promise<CatalogRow[]> => {
-        const response = await connection.api.llm.models({})
+        const capabilityProvider = ctx.get?.(MODEL_CAPABILITY_SERVICE) as ModelCapabilityProvider | undefined
+        const [response, capabilities] = await Promise.all([
+          connection.api.llm.models({}),
+          capabilityProvider?.listModelCapabilities().catch(() => []) ?? Promise.resolve<readonly ModelCapability[]>([]),
+        ])
         if (!response.result.ok) return []
+        const capabilityMap = new Map(capabilities.map(capability => [`${capability.provider}\u0000${capability.model}`, capability]))
         const out: CatalogRow[] = []
         for (const group of response.result.value.groups) {
           for (const model of group.models) {
+            const capability = capabilityMap.get(`${group.id}\u0000${model.id}`)
             const row = {
               provider: group.id,
               model: model.id,
               ...(model.name !== undefined ? { name: model.name } : {}),
               ...(model.description !== undefined ? { description: model.description } : {}),
               ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+              ...(model.serviceTiers !== undefined ? { serviceTiers: model.serviceTiers } : capability !== undefined ? { serviceTiers: capability.serviceTiers } : {}),
             }
             if (isTaskModelSupported(row)) out.push(row)
           }

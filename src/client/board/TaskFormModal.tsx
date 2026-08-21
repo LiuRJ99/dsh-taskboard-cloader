@@ -14,6 +14,7 @@ import { loadDefaultIsolation, saveDefaultIsolation } from '../controller.ts'
 import type { TaskTemplateSpec } from '../../shared/api.ts'
 import type { ChecklistItem, IsolationMode, PermissionMode, TaskSpeed, Urgency } from '../../shared/protocol.ts'
 import { MAX_CHECKLIST_ITEMS, nextCronTime, parseCron } from '../../shared/protocol.ts'
+import { supportsTaskFastSpeed } from '../../shared/model-capabilities.ts'
 import { fmtTime } from './TaskBoard.tsx'
 import { isTaskModelSupported } from '../model-catalog.ts'
 
@@ -27,6 +28,7 @@ export interface CatalogModel {
     efforts: Array<{ id: string; name: string; description?: string }>
     defaultEffort?: string
   }
+  serviceTiers?: readonly { id: string; name?: string; description?: string }[]
 }
 
 /** A reasoning selector is useful only when the model exposes actual choices. */
@@ -34,13 +36,8 @@ export function hasReasoningOptions(reasoning: CatalogModel['reasoning'] | undef
   return reasoning !== undefined && reasoning.efforts.length > 0
 }
 
-/** Temporary taskboard-owned fast capability until Harness exposes a generic one. */
-export function supportsTaskFastSpeed(model: string | undefined): boolean {
-  return model !== undefined && /^gpt-5\.6(?:-|$)/i.test(model.trim())
-}
-
-/** Fast is usable only for a model in the current taskboard capability set. */
-export function speedForModel(model: string | undefined, speed: TaskSpeed): TaskSpeed {
+/** Fast is usable only when the selected catalog row advertises priority. */
+export function speedForModel(model: CatalogModel | undefined, speed: TaskSpeed): TaskSpeed {
   return supportsTaskFastSpeed(model) ? speed : 'standard'
 }
 
@@ -168,7 +165,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const initialModel = task?.model ?? prefill?.model
   const [model, setModel] = useState(initialModel === undefined ? '' : JSON.stringify(initialModel))
   const [speed, setSpeed] = useState<TaskSpeed>(
-    supportsTaskFastSpeed(initialModel?.model) && (task?.speed === 'fast' || prefill?.speed === 'fast') ? 'fast' : 'standard',
+    task?.speed === 'fast' || prefill?.speed === 'fast' ? 'fast' : 'standard',
   )
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     task?.permissionMode ?? (prefill?.permissionMode === 'read-only' || prefill?.permissionMode === 'danger-full-access' ? prefill.permissionMode : 'workspace-write'),
@@ -207,6 +204,21 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     if (face === undefined) return
     void face().then(rows => setCatalog(rows.filter(isTaskModelSupported))).catch(() => setCatalog([]))
   }, [controller])
+
+  // Fast is preserved while the catalog is loading, then normalized against
+  // the provider-advertised capability instead of a model-name heuristic.
+  useEffect(() => {
+    if (catalog.length === 0) return
+    let selected: { provider: string; model: string } | undefined
+    try {
+      const value = JSON.parse(model) as { provider?: unknown; model?: unknown }
+      if (typeof value.provider === 'string' && typeof value.model === 'string') selected = { provider: value.provider, model: value.model }
+    } catch { /* malformed form state is handled by submit validation */ }
+    const entry = selected === undefined
+      ? undefined
+      : catalog.find(row => row.provider === selected?.provider && row.model === selected?.model)
+    if (!supportsTaskFastSpeed(entry)) setSpeed('standard')
+  }, [catalog, model])
 
   // Preset roster: same lazy face; pre-select the deployment default in
   // create mode (unless a template pinned one) so executions run with a
@@ -269,8 +281,8 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     : catalog.find(entry => entry.provider === selectedModel.provider && entry.model === selectedModel.model)
   const reasoning = hasReasoningOptions(selectedCatalog?.reasoning) ? selectedCatalog?.reasoning : undefined
   const effectiveEffort = selectedModel?.reasoningEffort ?? reasoning?.defaultEffort
-  const speedAvailable = supportsTaskFastSpeed(selectedModel?.model)
-  const effectiveSpeed = speedForModel(selectedModel?.model, speed)
+  const speedAvailable = supportsTaskFastSpeed(selectedCatalog)
+  const effectiveSpeed = speedForModel(selectedCatalog, speed)
 
   /** Pick a model and seed its adapter-configured default reasoning level. */
   const chooseModel = (value: string): void => {
@@ -285,7 +297,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
       ...picked,
       ...(metadata?.reasoning?.defaultEffort !== undefined ? { reasoningEffort: metadata.reasoning.defaultEffort } : {}),
     }
-    setSpeed(current => supportsTaskFastSpeed(picked.model) ? current : 'standard')
+    setSpeed(current => supportsTaskFastSpeed(metadata) ? current : 'standard')
     setModel(JSON.stringify(next))
   }
 

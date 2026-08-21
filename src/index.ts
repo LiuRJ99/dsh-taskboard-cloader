@@ -29,6 +29,7 @@ import { TaskStore } from './host/store.ts'
 import { TemplateStore } from './host/templates.ts'
 import { registerTaskboardTools, workspaceFace } from './host/tools.ts'
 import type { PermissionMode, TaskModel, TaskSpeed } from './shared/protocol.ts'
+import { MODEL_CAPABILITY_SERVICE, PRIORITY_SERVICE_TIER, type ModelCapabilityProvider } from './shared/model-capabilities.ts'
 
 /** Ledger file name under the DSH home. */
 export const LEDGER_FILE = 'dsh-taskboard.json'
@@ -42,16 +43,17 @@ export const name = 'dsh-taskboard'
 /** Required host services (tool registry + prompt assembly). */
 export const inject = ['tools', 'systemPrompt']
 
-/** Install the DSH model selector plus the taskboard's adapter-facing speed hint. */
-function installTaskModelOptions(agentCtx: unknown, selection: TaskModel | undefined, speed?: TaskSpeed): void {
+/** Install the DSH model selector plus the provider-neutral service-tier hint. */
+function installTaskModelOptions(agentCtx: unknown, selection: TaskModel | undefined, speed?: TaskSpeed, serviceTier?: string): void {
   if (selection !== undefined) {
     installModelSelection(agentCtx as Context, { current: selection as ModelSelection, assembled: undefined })
   }
-  if (speed !== 'fast') return
+  if (speed !== 'fast' || serviceTier !== PRIORITY_SERVICE_TIER) return
   const scoped = agentCtx as Context
   scoped.on('agent/request' as never, (async (_payload: unknown, next: () => Promise<Record<string, unknown>>) => ({
     ...(await next()),
-    speed: 'fast',
+    // `serviceTier` is the provider-neutral adapter-facing request field.
+    serviceTier: PRIORITY_SERVICE_TIER,
   })) as never)
 }
 
@@ -110,6 +112,10 @@ export function apply(ctx: Context): void {
     const git = createGitFace()
 
     wsCtx.inject(['agents'], (agentCtx: Context) => {
+      const modelCapabilities = (): Promise<readonly import('./shared/model-capabilities.ts').ModelCapability[]> => {
+        const provider = agentCtx.get(MODEL_CAPABILITY_SERVICE) as ModelCapabilityProvider | undefined
+        return provider?.listModelCapabilities() ?? Promise.resolve([])
+      }
       const execution = new ExecutionService({
         store,
         agents: {
@@ -124,6 +130,7 @@ export function apply(ctx: Context): void {
         },
         events,
         installModelSelection: installTaskModelOptions,
+        modelCapabilities,
         applyPermissionMode: (session: unknown, mode: PermissionMode): void => {
           const presets = agentCtx.get('permissionPresets') as {
             names?: readonly string[]
