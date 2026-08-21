@@ -369,7 +369,19 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
  * @param controller - the controller.
  * @param now - current epoch ms (stale-claim highlight).
  */
-export function TaskDetail({ task, controller, now }: { task: TaskRecord; controller: BoardController; now?: number }) {
+export function TaskDetail({
+  task,
+  controller,
+  now,
+  fullScreen = false,
+  onToggleFullScreen,
+}: {
+  task: TaskRecord
+  controller: BoardController
+  now?: number
+  fullScreen?: boolean
+  onToggleFullScreen?: () => void
+}) {
   const [comment, setComment] = useState('')
   const [confirmDone, setConfirmDone] = useState(false)
   const [confirmPurge, setConfirmPurge] = useState(false)
@@ -402,7 +414,9 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
           <div className="dsh-atb-detail-chips">
             <Chip tone={task.urgency}>● {URGENCY_LABEL[task.urgency] ?? task.urgency}</Chip>
             <Chip icon="📁">{ws?.title ?? shortId(task.workspaceId)}</Chip>
-            {task.model !== undefined && <Chip icon="✦">{task.model.model}</Chip>}
+            {task.model !== undefined && <Chip icon="✦">{task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}</Chip>}
+            {task.speed === 'fast' && <Chip icon="⚡">快速</Chip>}
+            {task.permissionMode !== undefined && <Chip icon="🛡">{task.permissionMode === 'danger-full-access' ? 'Full access' : task.permissionMode === 'workspace-write' ? 'Workspace Write' : 'Read Only'}</Chip>}
             {task.presetId !== undefined && <Chip icon="🎛" >{task.presetId}</Chip>}
             {task.execution.mode === 'scheduled' && (
               <Chip icon="⏰">{task.execution.cron} · 下次 {fmtTime(task.execution.nextRunAt)}</Chip>
@@ -451,6 +465,17 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
           >
             ⌗ 存为模板
           </button>
+          {onToggleFullScreen !== undefined && (
+            <button
+              type="button"
+              className="dsh-atb-detail-edit"
+              aria-pressed={fullScreen}
+              title={fullScreen ? '退出详情全屏（Esc）' : '让详情占满当前看板区域'}
+              onClick={onToggleFullScreen}
+            >
+              {fullScreen ? '⛶ 退出全屏' : '⛶ 全屏'}
+            </button>
+          )}
           {canRun && task.branch !== undefined && (
             <button
               type="button"

@@ -234,6 +234,53 @@ describe('client half', () => {
     controller.dispose()
   })
 
+  it('detail panel toggles board-local fullscreen and Esc exits', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskBoard } = await import('../src/client/board/TaskBoard.tsx')
+
+    const task = {
+      id: 't-fullscreen', title: 'Fullscreen detail', description: 'Details', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'todo' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    }
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [task] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskBoard, { controller }))
+    controller.start()
+    await new Promise(r => setTimeout(r, 20))
+
+    controller.select(task.id)
+    await new Promise(r => setTimeout(r, 10))
+    const panel = () => host.querySelector<HTMLElement>('.dsh-atb-detailpanel')
+    expect(panel()).not.toBeNull()
+    expect(panel()!.dataset.fullscreen).toBeUndefined()
+
+    const fullscreen = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-detail-topbtns .dsh-atb-detail-edit')).find(b => b.textContent?.includes('全屏'))!
+    fullscreen().click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(panel()!.dataset.fullscreen).toBe('true')
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    expect(panel()!.dataset.fullscreen).toBeUndefined()
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+  })
+
   it('in_review cards carry quick ✓/✗ actions; other columns do not', async () => {
     localStorage.clear()
     const React = await import('react')
@@ -366,6 +413,9 @@ describe('client half', () => {
       create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
     }
     const controller = new BoardController(client as never)
+    ;(controller as unknown as { modelCatalog: () => Promise<unknown[]> }).modelCatalog = async () => [{
+      provider: 'test-provider', model: 'gpt-5.6-luna', name: 'Fast test model', serviceTiers: [{ id: 'priority' }],
+    }]
     controller.start()
     await new Promise(r => setTimeout(r, 10))
 
@@ -376,6 +426,27 @@ describe('client half', () => {
     const root = createRoot(host)
     root.render(React.createElement(TaskFormModal, { controller }))
     await new Promise(r => setTimeout(r, 10))
+
+    let selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
+    expect(selects.find(select => select.value === 'standard')).toBeUndefined()
+    const modelSelect = selects.find(select => Array.from(select.options).some(option => option.textContent?.includes('Fast test model')))
+    expect(modelSelect).toBeDefined()
+    modelSelect!.value = JSON.stringify({ provider: 'test-provider', model: 'gpt-5.6-luna' })
+    modelSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+
+    selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
+    const speedSelect = selects.find(select => select.value === 'standard')!
+    const permissionSelect = selects.find(select => select.value === 'workspace-write')!
+    expect(speedSelect).toBeDefined()
+    expect(permissionSelect).toBeDefined()
+    expect(Array.from(permissionSelect.options).map(option => option.value)).toEqual(['read-only', 'workspace-write', 'danger-full-access'])
+    speedSelect.value = 'fast'
+    speedSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    permissionSelect.value = 'danger-full-access'
+    permissionSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    expect(host.textContent).toContain('Full access 将关闭审批')
 
     const opts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
     expect(opts().length).toBeGreaterThanOrEqual(2)
@@ -395,7 +466,12 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '创建任务'))!.click()
     await new Promise(r => setTimeout(r, 10))
-    expect(creates[0]).toMatchObject({ title: 'Iso task', isolation: 'worktree' })
+    expect(creates[0]).toMatchObject({
+      title: 'Iso task',
+      isolation: 'worktree',
+      speed: 'fast',
+      permissionMode: 'danger-full-access',
+    })
     expect(loadDefaultIsolation()).toBe('worktree')
 
     // Non-git workspace: both options disabled, hint shown, isolation omitted.
@@ -503,6 +579,7 @@ describe('client half', () => {
     })
 
     const runCalls: Array<[string, boolean]> = []
+    const fullScreenToggle = vi.fn()
     let noopNext = false
     const client = {
       state: async () => ({ schemaVersion: 1, revision: 1, tasks: [mkTask('task/R+t-r')] }),
@@ -521,8 +598,28 @@ describe('client half', () => {
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
-    root.render(React.createElement(TaskDetail, { task: mkTask('task/R+t-r') as never, controller, now: 1_000 }))
+    root.render(React.createElement(TaskDetail, {
+      task: mkTask('task/R+t-r') as never,
+      controller,
+      now: 1_000,
+      fullScreen: false,
+      onToggleFullScreen: fullScreenToggle,
+    }))
     await new Promise(r => setTimeout(r, 10))
+    const fullscreen = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-detail-topbtns .dsh-atb-detail-edit')).find(b => b.textContent?.includes('全屏'))
+    expect(fullscreen()?.getAttribute('aria-pressed')).toBe('false')
+    fullscreen()!.click()
+    expect(fullScreenToggle).toHaveBeenCalledTimes(1)
+    root.render(React.createElement(TaskDetail, {
+      task: mkTask('task/R+t-r') as never,
+      controller,
+      now: 1_000,
+      fullScreen: true,
+      onToggleFullScreen: fullScreenToggle,
+    }))
+    await new Promise(r => setTimeout(r, 10))
+    expect(fullscreen()?.textContent).toContain('退出全屏')
+    expect(fullscreen()?.getAttribute('aria-pressed')).toBe('true')
     const btns = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-detail-topbtns .dsh-atb-detail-run'))
     const resume = btns().find(b => b.textContent!.includes('续跑'))!
     const fresh = btns().find(b => b.textContent!.includes('立即执行'))!

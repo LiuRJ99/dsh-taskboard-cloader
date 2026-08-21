@@ -85,7 +85,9 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
         {task.execution.mode === 'scheduled' && (
           <span className="dsh-atb-badge" data-kind="scheduled">⏰ {fmtTime(task.execution.nextRunAt)}</span>
         )}
-        {task.model !== undefined && <span className="dsh-atb-badge">{task.model.model}</span>}
+        {task.model !== undefined && <span className="dsh-atb-badge" title={task.model.reasoningEffort !== undefined ? `推理等级：${task.model.reasoningEffort}` : undefined}>{task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}</span>}
+        {task.speed === 'fast' && <span className="dsh-atb-badge">⚡ 快速</span>}
+        {task.permissionMode !== undefined && <span className="dsh-atb-badge" title="执行会话权限模式">{task.permissionMode === 'danger-full-access' ? 'Full access' : task.permissionMode === 'workspace-write' ? 'Workspace Write' : 'Read Only'}</span>}
         {task.checklist !== undefined && task.checklist.length > 0 && (
           <span
             className="dsh-atb-badge"

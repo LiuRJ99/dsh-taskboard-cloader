@@ -2,7 +2,7 @@
  * Template store (0.4.0): side-file persistence, built-in seeding, upsert /
  * rename / delete, and the ledger store's import-backup method.
  */
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -28,6 +28,24 @@ describe('TemplateStore', () => {
     // Seeded on disk: a second store over the same file reads the same list.
     const again = await new TemplateStore(join(dir, 'a-templates.json')).list()
     expect(again.map(t => t.id)).toEqual(list.map(t => t.id))
+  })
+
+  it('migrates legacy built-ins with the new execution defaults and preserves custom fields', async () => {
+    const file = join(dir, 'legacy-templates.json')
+    const legacy = BUILTIN_TEMPLATES.map((template, index) => {
+      const task = { ...template.task }
+      delete task.speed
+      delete task.permissionMode
+      return { ...template, task, builtin: true, createdAt: index, updatedAt: index }
+    })
+    await writeFile(file, JSON.stringify({ templates: legacy }), 'utf8')
+
+    const list = await new TemplateStore(file).list()
+    expect(list.find(t => t.id === 'tpl-bugfix')?.task).toMatchObject({ speed: 'standard', permissionMode: 'workspace-write' })
+    expect(list.find(t => t.id === 'tpl-patrol')?.task).toMatchObject({ speed: 'standard', permissionMode: 'read-only' })
+
+    const persisted = JSON.parse(await readFile(file, 'utf8')) as { templates: Array<{ id: string; task: { speed?: string; permissionMode?: string } }> }
+    expect(persisted.templates.find(t => t.id === 'tpl-release')?.task).toMatchObject({ speed: 'standard', permissionMode: 'workspace-write' })
   })
 
   it('upserts: create without id, rename with id, validates the name', async () => {

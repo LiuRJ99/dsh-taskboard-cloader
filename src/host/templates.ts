@@ -26,6 +26,8 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: 
         '4. 运行相关测试套件确认无回归',
       ].join('\n'),
       urgency: 'urgent',
+      speed: 'standard',
+      permissionMode: 'workspace-write',
       checklist: ['已复现并定位根因', '修复已提交到任务分支', '回归测试通过'],
     },
   },
@@ -36,6 +38,8 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: 
       title: '发布：',
       prompt: '执行发布流程：版本号更新、构建、测试、变更记录，完成后按序交接（不要实际推送/发布，等用户确认）。',
       urgency: 'normal',
+      speed: 'standard',
+      permissionMode: 'workspace-write',
       checklist: ['版本号已更新（package.json 与版本常量同步）', '构建通过', '全部测试通过', '变更记录已写'],
     },
   },
@@ -50,6 +54,8 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: 
         '输出巡检摘要（用 {{lastComments}} 可回看上次巡检结论）。',
       ].join('\n'),
       urgency: 'relaxed',
+      speed: 'standard',
+      permissionMode: 'read-only',
       execution: { mode: 'scheduled', cron: '0 9 * * 1' },
     },
   },
@@ -88,6 +94,23 @@ export class TemplateStore {
       const now = Date.now()
       parsed = BUILTIN_TEMPLATES.map((t, i) => ({ ...t, task: { ...t.task }, builtin: true, createdAt: now, updatedAt: now + i }))
       try { await this.persist(parsed) } catch { /* best effort — the seed returns in-memory */ }
+    } else {
+      // Existing installations may have the pre-option built-ins. Add only
+      // newly introduced defaults while preserving any user-edited fields.
+      const seeds = new Map(BUILTIN_TEMPLATES.map(template => [template.id, template]))
+      let changed = false
+      parsed = parsed.map(template => {
+        const seed = template.builtin === true ? seeds.get(template.id) : undefined
+        if (seed === undefined) return template
+        const missingSpeed = template.task.speed === undefined && seed.task.speed !== undefined
+        const missingPermissionMode = template.task.permissionMode === undefined && seed.task.permissionMode !== undefined
+        if (!missingSpeed && !missingPermissionMode) return template
+        changed = true
+        return { ...template, task: { ...seed.task, ...template.task }, updatedAt: Date.now() }
+      })
+      if (changed) {
+        try { await this.persist(parsed) } catch { /* best effort — memory still carries the migration */ }
+      }
     }
     this.templates = parsed
     this.loaded = true

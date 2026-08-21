@@ -112,6 +112,23 @@ export const URGENCY_COLOR: Readonly<Record<Urgency, string>> = {
  */
 export type IsolationMode = 'worktree' | 'none'
 
+/** The task execution speed preference. `fast` is an adapter-facing hint; the
+ * standard route remains unchanged when no adapter honors it. */
+export type TaskSpeed = 'standard' | 'fast'
+
+/** The three file-permission modes shown by the Harness access selector. */
+export type PermissionMode = 'read-only' | 'workspace-write' | 'danger-full-access'
+
+/** Every valid task speed. */
+export const TASK_SPEEDS: readonly TaskSpeed[] = ['standard', 'fast']
+
+/** Every valid permission mode, in the product's display order. */
+export const PERMISSION_MODES: readonly PermissionMode[] = [
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+]
+
 /** Validate an isolation value. */
 export function asIsolation(raw: string): IsolationMode {
   if (raw !== 'worktree' && raw !== 'none') {
@@ -120,9 +137,35 @@ export function asIsolation(raw: string): IsolationMode {
   return raw
 }
 
+/** Validate a task speed value. */
+export function asTaskSpeed(raw: string): TaskSpeed {
+  if (!TASK_SPEEDS.includes(raw as TaskSpeed)) {
+    throw new Error(`speed must be one of: ${TASK_SPEEDS.join(', ')}`)
+  }
+  return raw as TaskSpeed
+}
+
+/** Validate a Harness permission mode value. */
+export function asPermissionMode(raw: string): PermissionMode {
+  if (!PERMISSION_MODES.includes(raw as PermissionMode)) {
+    throw new Error(`permissionMode must be one of: ${PERMISSION_MODES.join(', ')}`)
+  }
+  return raw as PermissionMode
+}
+
 /** Resolve a task's effective isolation (omitted → the worktree default). */
 export function effectiveIsolation(task: Pick<TaskRecord, 'isolation'>): IsolationMode {
   return task.isolation === undefined ? 'worktree' : task.isolation
+}
+
+/** Resolve a task's effective speed (omitted → standard). */
+export function effectiveTaskSpeed(task: Pick<TaskRecord, 'speed'>): TaskSpeed {
+  return task.speed ?? 'standard'
+}
+
+/** Resolve the approval policy paired with the three file-permission modes. */
+export function approvalPolicyForPermissionMode(mode: PermissionMode): 'ask' | 'never' {
+  return mode === 'danger-full-access' ? 'never' : 'ask'
 }
 
 /** How a task may run. */
@@ -338,6 +381,8 @@ export type ExecutionRecord = {
 export type TaskModel = {
   provider: string
   model: string
+  /** Adapter-owned reasoning level; absent = model/provider default. */
+  reasoningEffort?: string
 }
 
 /** One task on the board. */
@@ -355,6 +400,10 @@ export type TaskRecord = {
   blocked: boolean
   execution: ExecutionConfig
   model?: TaskModel
+  /** Taskboard-owned speed preference; omitted = standard. */
+  speed?: TaskSpeed
+  /** File-permission mode for the fresh execution session; omitted = deployment default. */
+  permissionMode?: PermissionMode
   /** Code isolation for executions (omitted = the worktree default; see {@link IsolationMode}). */
   isolation?: IsolationMode
   /**
@@ -593,17 +642,22 @@ export function syncClaim(task: TaskRecord, to: TaskStatus, now: number, holder?
  */
 export function normalizeModel(raw: unknown): TaskModel {
   if (typeof raw !== 'object' || raw === null) {
-    throw new Error('model must be { provider: string, model: string }')
+    throw new Error('model must be { provider: string, model: string, reasoningEffort?: string }')
   }
-  const { provider, model } = raw as { provider?: unknown; model?: unknown }
+  const { provider, model, reasoningEffort } = raw as { provider?: unknown; model?: unknown; reasoningEffort?: unknown }
   if (typeof provider !== 'string' || typeof model !== 'string') {
-    throw new Error('model must be { provider: string, model: string }')
+    throw new Error('model must be { provider: string, model: string, reasoningEffort?: string }')
+  }
+  if (reasoningEffort !== undefined && typeof reasoningEffort !== 'string') {
+    throw new Error('model.reasoningEffort must be a string when provided')
   }
   const p = provider.trim()
   const m = model.trim()
+  const effort = typeof reasoningEffort === 'string' ? reasoningEffort.trim() : ''
   if (p.length === 0 || m.length === 0) {
     throw new Error('model.provider and model.model must be non-empty strings')
   }
+  if (effort.length > 0) return { provider: p, model: m, reasoningEffort: effort }
   return { provider: p, model: m }
 }
 
@@ -843,6 +897,8 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
       blocked: e.blocked === true,
       execution,
       ...(typeof e.model === 'object' && e.model !== null ? { model: normalizeModel(e.model) } : {}),
+      ...(typeof e.speed === 'string' ? { speed: asTaskSpeed(e.speed) } : {}),
+      ...(typeof e.permissionMode === 'string' ? { permissionMode: asPermissionMode(e.permissionMode) } : {}),
       ...(typeof e.isolation === 'string' && (e.isolation === 'worktree' || e.isolation === 'none') ? { isolation: e.isolation } : {}),
       ...(typeof e.presetId === 'string' && e.presetId.trim().length > 0 ? { presetId: e.presetId.trim() } : {}),
       ...(Array.isArray(e.checklist) ? { checklist: normalizeChecklist(e.checklist) } : {}),
@@ -916,6 +972,8 @@ export type TaskSummary = {
   executionMode: ExecutionMode
   nextRunAt?: number
   model?: TaskModel
+  speed?: TaskSpeed
+  permissionMode?: PermissionMode
   version: number
   claimOwner?: string
   commentCount: number
@@ -942,6 +1000,8 @@ export function summarize(task: TaskRecord): TaskSummary {
     executionMode: task.execution.mode,
     nextRunAt: task.execution.nextRunAt,
     model: task.model,
+    ...(task.speed !== undefined ? { speed: task.speed } : {}),
+    ...(task.permissionMode !== undefined ? { permissionMode: task.permissionMode } : {}),
     version: task.version,
     claimOwner: isClaimedBy(task),
     commentCount: task.comments.length,

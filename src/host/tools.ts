@@ -25,7 +25,9 @@ import { defineTool } from './sdk.ts'
 import {
   MAX_CHECKLIST_ITEMS,
   asIsolation,
+  asPermissionMode,
   asStatus,
+  asTaskSpeed,
   asUrgency,
   canTransition,
   checklistFromTexts,
@@ -60,6 +62,8 @@ function taskLine(t: {
   workspaceId: string
   blocked: boolean
   executionMode: string
+  speed?: string
+  permissionMode?: string
   commentCount?: number
   lastExecutionOutcome?: string
   checklist?: { done: number; total: number }
@@ -71,6 +75,8 @@ function taskLine(t: {
   ]
   if (t.blocked) parts.push('·受阻')
   if (t.executionMode === 'scheduled') parts.push('·定时')
+  if (t.speed === 'fast') parts.push('·快速')
+  if (t.permissionMode !== undefined) parts.push(`·权限 ${t.permissionMode}`)
   if (t.commentCount !== undefined && t.commentCount > 0) parts.push(`·评论${t.commentCount}`)
   if (t.checklist !== undefined && t.checklist.total > 0) parts.push(`·清单${t.checklist.done}/${t.checklist.total}`)
   if (t.lastExecutionOutcome !== undefined) parts.push(`·上次执行${t.lastExecutionOutcome}`)
@@ -89,7 +95,9 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
   const holder = isClaimedBy(t)
   if (holder !== undefined) lines.push(`认领: agent ${String(holder).slice(0, 24)}（持有期间其他会话不可移动）`)
   if (t.execution.nextRunAt !== undefined) lines.push(`下次触发: ${new Date(t.execution.nextRunAt).toISOString()}`)
-  if (t.model !== undefined) lines.push(`固定模型: ${t.model.provider}/${t.model.model}`)
+  if (t.model !== undefined) lines.push(`固定模型: ${t.model.provider}/${t.model.model}${t.model.reasoningEffort !== undefined ? ` · 推理等级 ${t.model.reasoningEffort}` : ''}`)
+  if (t.speed !== undefined) lines.push(`速度: ${t.speed === 'fast' ? '快速' : '标准'}`)
+  if (t.permissionMode !== undefined) lines.push(`权限模式: ${t.permissionMode}`)
   if (t.presetId !== undefined) lines.push(`执行模式: ${t.presetId}（未指定时为部署默认 preset）`)
   lines.push(`描述: ${t.description.length > 0 ? t.description : '（无）'}`)
   lines.push(`执行 Prompt: ${t.effectivePrompt ?? effectivePrompt(t)}`)
@@ -344,7 +352,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     description:
       'Create a task on the board. Required: title, workspaceId (project), urgency (urgent/normal/relaxed). '
       + 'Optional: description, prompt (sent to a fresh session on execution), status (default todo), '
-      + 'execution mode (claim|scheduled + cron), model {provider, model} to pin executions to a model. '
+      + 'execution mode (claim|scheduled + cron), model {provider, model, reasoningEffort?} to pin executions to a model, '
+      + 'speed (standard|fast), and permissionMode (read-only|workspace-write|danger-full-access). '
       + 'Do not track trivial requests as tasks.',
     parameters: {
       title: { type: 'string', required: true, description: 'Short imperative line (1..200 chars).' },
@@ -365,11 +374,20 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       model: {
         type: 'object',
         additionalProperties: false,
-        description: 'Pin executions to one configured model: { provider, model }. Omit to use the default model.',
+        description: 'Pin executions to one configured model: { provider, model, reasoningEffort? }. Omit to use the default model.',
         properties: {
           provider: { type: 'string', description: 'Provider route id.' },
+          reasoningEffort: { type: 'string', description: 'Adapter-owned reasoning effort id; omit for the model/provider default.' },
           model: { type: 'string', description: 'Provider-owned model id.' },
         },
+      },
+      speed: {
+        type: 'string',
+        description: 'Taskboard speed preference: standard | fast. It is preserved as an adapter-facing execution hint.',
+      },
+      permissionMode: {
+        type: 'string',
+        description: 'Harness file-permission mode: read-only | workspace-write | danger-full-access.',
       },
       isolation: {
         type: 'string',
@@ -401,7 +419,9 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       description?: string
       prompt?: string
       execution?: { mode?: string; cron?: string }
-      model?: { provider?: string; model?: string }
+      model?: { provider?: string; model?: string; reasoningEffort?: string }
+      speed?: string
+      permissionMode?: string
       isolation?: string
       presetId?: string
       checklist?: string[]
@@ -419,6 +439,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         }
         const execution = normalizeExecution(args.execution ?? {}, deps.now())
         const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
+        const speed = args.speed === undefined ? undefined : asTaskSpeed(args.speed)
+        const permissionMode = args.permissionMode === undefined ? undefined : asPermissionMode(args.permissionMode)
         const isolation = args.isolation === undefined ? undefined : asIsolation(args.isolation)
         const presetId = args.presetId?.trim() || undefined
         const checklist = args.checklist !== undefined ? checklistFromTexts(args.checklist) : undefined
@@ -434,6 +456,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           blocked: false,
           execution,
           model,
+          ...(speed !== undefined ? { speed } : {}),
+          ...(permissionMode !== undefined ? { permissionMode } : {}),
           ...(isolation !== undefined ? { isolation } : {}),
           ...(presetId !== undefined ? { presetId } : {}),
           ...(checklist !== undefined ? { checklist } : {}),

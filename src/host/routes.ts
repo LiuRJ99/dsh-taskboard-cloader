@@ -17,7 +17,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
   asIsolation,
+  asPermissionMode,
   asStatus,
+  asTaskSpeed,
   asUrgency,
   canTransition,
   checklistFromTexts,
@@ -86,12 +88,16 @@ function normalizeTemplateSpec(raw: unknown): TaskTemplate['task'] {
   const description = str('description')
   const prompt = str('prompt')
   const urgency = str('urgency')
+  const speed = str('speed')
+  const permissionMode = str('permissionMode')
   const isolation = str('isolation')
   const presetId = str('presetId')
   if (title !== undefined) spec.title = normalizeTitle(title)
   if (description !== undefined) spec.description = description
   if (prompt !== undefined) spec.prompt = normalizePrompt(prompt)
   if (urgency !== undefined) spec.urgency = asUrgency(urgency)
+  if (speed !== undefined) spec.speed = asTaskSpeed(speed)
+  if (permissionMode !== undefined) spec.permissionMode = asPermissionMode(permissionMode)
   if (isolation !== undefined) spec.isolation = asIsolation(isolation)
   if (presetId !== undefined && presetId.trim().length > 0) spec.presetId = presetId.trim()
   if (e.execution !== undefined) {
@@ -396,6 +402,8 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const status = str(body, 'status') === null ? 'todo' as const : asStatus(str(body, 'status')!)
           const execution = normalizeExecution((body.execution as { mode?: string; cron?: string } | undefined) ?? {}, options.now())
           const model = body.model === undefined ? undefined : checkModel(body.model, options.modelProviders)
+          const speed = body.speed === undefined ? undefined : asTaskSpeed(str(body, 'speed') ?? '')
+          const permissionMode = body.permissionMode === undefined ? undefined : asPermissionMode(str(body, 'permissionMode') ?? '')
           const isolationRaw = str(body, 'isolation')
           const isolation = isolationRaw === null ? undefined : asIsolation(isolationRaw)
           const presetId = normalizePresetId(str(body, 'presetId'))
@@ -419,6 +427,8 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             blocked: false,
             execution,
             model,
+            ...(speed !== undefined ? { speed } : {}),
+            ...(permissionMode !== undefined ? { permissionMode } : {}),
             ...(isolation !== undefined ? { isolation } : {}),
             ...(presetId !== undefined ? { presetId } : {}),
             ...(checklist !== undefined ? { checklist } : {}),
@@ -476,6 +486,10 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             if (body.execution !== undefined) next.execution = normalizeExecution(body.execution as { mode?: string; cron?: string }, options.now())
             if (body.model === null) next.model = undefined
             else if (body.model !== undefined) next.model = checkModel(body.model, options.modelProviders)
+            if (body.speed === null) delete next.speed
+            else if (body.speed !== undefined) next.speed = asTaskSpeed(str(body, 'speed') ?? '')
+            if (body.permissionMode === null) delete next.permissionMode
+            else if (body.permissionMode !== undefined) next.permissionMode = asPermissionMode(str(body, 'permissionMode') ?? '')
             // Isolation may change only before the first execution (分支与基线
             // 取决于该选择 — plan §3.1: 执行开始后锁定).
             const isolationRaw = str(body, 'isolation')

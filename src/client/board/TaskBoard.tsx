@@ -80,12 +80,28 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
   )
   // Minute ticker: re-renders stale-claim highlights even without ledger changes.
   const [now, setNow] = useState(() => Date.now())
+  const [detailFullScreen, setDetailFullScreen] = useState(false)
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000)
     return () => clearInterval(timer)
   }, [])
   const live = filterTasks(state, state.ledger.tasks.filter(t => t.trashedAt === undefined))
   const selected = state.selectedId === undefined ? undefined : state.ledger.tasks.find(t => t.id === state.selectedId)
+  useEffect(() => {
+    if (selected === undefined) setDetailFullScreen(false)
+  }, [selected?.id])
+  useEffect(() => {
+    if (!detailFullScreen) return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      const target = event.target
+      if (target instanceof HTMLElement && target.closest('.dsh-atb-modal') !== null) return
+      event.preventDefault()
+      setDetailFullScreen(false)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => { document.removeEventListener('keydown', onKeyDown) }
+  }, [detailFullScreen])
   const { alert: showAlert, el: alertEl } = useAlert()
   // + 新建任务 ▼ dropdown (0.4.0): blank / templates / manage / import.
   const [newMenuOpen, setNewMenuOpen] = useState(false)
@@ -247,8 +263,14 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
         )}
 
       {selected !== undefined && (
-        <div className="dsh-atb-detailpanel">
-          <TaskDetail task={selected} controller={controller} now={now} />
+        <div className="dsh-atb-detailpanel" data-fullscreen={detailFullScreen ? 'true' : undefined}>
+          <TaskDetail
+            task={selected}
+            controller={controller}
+            now={now}
+            fullScreen={detailFullScreen}
+            onToggleFullScreen={() => setDetailFullScreen(value => !value)}
+          />
         </div>
       )}
 

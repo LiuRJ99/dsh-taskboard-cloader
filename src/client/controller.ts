@@ -494,6 +494,8 @@ export class BoardController {
           ? { mode: 'scheduled', cron: task.execution.cron }
           : { mode: 'claim' },
         model: task.model,
+        speed: task.speed,
+        permissionMode: task.permissionMode,
         isolation: task.isolation,
         ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
         ...(task.checklist !== undefined && task.checklist.length > 0 ? { checklist: task.checklist.map(i => i.text) } : {}),
@@ -566,6 +568,8 @@ export class BoardController {
           ? { mode: 'scheduled', cron: task.execution.cron }
           : { mode: 'claim' },
         model: task.model,
+        speed: task.speed,
+        permissionMode: task.permissionMode,
         isolation: task.isolation,
         ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
         ...(task.checklist !== undefined && task.checklist.length > 0 ? { checklist: task.checklist.map(i => i.text) } : {}),
@@ -618,12 +622,13 @@ export class BoardController {
       const s = String(v ?? '')
       return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
-    const header = ['id', 'title', 'status', 'urgency', 'blocked', 'project', 'claimedBy', 'mode', 'cron', 'nextRunAt', 'model', 'createdAt', 'updatedAt', 'comments', 'executions']
+    const header = ['id', 'title', 'status', 'urgency', 'blocked', 'project', 'claimedBy', 'mode', 'cron', 'nextRunAt', 'model', 'reasoningEffort', 'speed', 'permissionMode', 'createdAt', 'updatedAt', 'comments', 'executions']
     const rows = this.state.ledger.tasks.map(t => [
       t.id, t.title, t.status, t.urgency, t.blocked ? 'yes' : 'no', t.workspaceId,
       t.claimedBy ?? '', t.execution.mode, t.execution.cron ?? '',
       t.execution.nextRunAt !== undefined ? new Date(t.execution.nextRunAt).toISOString() : '',
       t.model !== undefined ? `${t.model.provider}/${t.model.model}` : '',
+      t.model?.reasoningEffort ?? '', t.speed ?? '', t.permissionMode ?? '',
       new Date(t.createdAt).toISOString(), new Date(t.updatedAt).toISOString(),
       t.comments.length, t.executions.length,
     ].map(esc).join(','))
