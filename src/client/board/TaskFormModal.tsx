@@ -15,6 +15,7 @@ import type { TaskTemplateSpec } from '../../shared/api.ts'
 import type { ChecklistItem, IsolationMode, PermissionMode, TaskSpeed, Urgency } from '../../shared/protocol.ts'
 import { MAX_CHECKLIST_ITEMS, nextCronTime, parseCron } from '../../shared/protocol.ts'
 import { fmtTime } from './TaskBoard.tsx'
+import { isTaskModelSupported } from '../model-catalog.ts'
 
 /** One row of the configured model catalog (from llm.models). */
 export interface CatalogModel {
@@ -186,7 +187,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   useEffect(() => {
     const face = (controller as unknown as { modelCatalog?: () => Promise<CatalogModel[]> }).modelCatalog
     if (face === undefined) return
-    void face().then(setCatalog).catch(() => setCatalog([]))
+    void face().then(rows => setCatalog(rows.filter(isTaskModelSupported))).catch(() => setCatalog([]))
   }, [controller])
 
   // Preset roster: same lazy face; pre-select the deployment default in

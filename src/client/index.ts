@@ -17,6 +17,7 @@ import { injectStyles } from './styles.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
 import { createSessionJumper, type SessionsServiceFace, type WorkspacesServiceFace } from './session-jump.ts'
+import { isTaskModelSupported } from './model-catalog.ts'
 
 /** Client plugin name. */
 export const name = 'dsh-taskboard/client'
@@ -68,13 +69,14 @@ export function apply(ctx: ClientContextFace): void {
         const out: CatalogRow[] = []
         for (const group of response.result.value.groups) {
           for (const model of group.models) {
-            out.push({
+            const row = {
               provider: group.id,
               model: model.id,
               ...(model.name !== undefined ? { name: model.name } : {}),
               ...(model.description !== undefined ? { description: model.description } : {}),
               ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
-            })
+            }
+            if (isTaskModelSupported(row)) out.push(row)
           }
         }
         return out
