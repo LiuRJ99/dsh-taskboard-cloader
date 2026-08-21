@@ -19,8 +19,8 @@ import type { BoardController } from './controller.ts'
 /** Stable data attribute identifying this entry row. */
 export const ENTRY_SELECTOR = '[data-dsh-atb-entry]'
 
-/** Inline icon (16px nav-icon look). */
-const ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 6.5h12M6.5 6.5v7"/></svg>'
+/** Inline icon sized like the shell's collapsed-rail navigation icons. */
+const ICON = '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 6.5h12M6.5 6.5v7"/></svg>'
 
 /**
  * Find the sidebar shell root element, or undefined while not yet mounted.
