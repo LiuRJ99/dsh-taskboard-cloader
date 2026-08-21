@@ -37,6 +37,18 @@ export const STYLES = `
 [data-sidebar-collapsed] .dsh-atb-entry-stats { display: none; }
 .hHd-Xa_collapsed .dsh-atb-entry-icon,
 [data-sidebar-collapsed] .dsh-atb-entry-icon { display: inline-flex; }
+/* A manually resized sidebar can be narrow without entering the shell's collapsed state. */
+html[data-dsh-atb-active] [data-pane="sidebar"],
+html[data-dsh-atb-active] [class*="sidebarCol"] {
+  container: dsh-atb-sidebar / inline-size;
+}
+@container dsh-atb-sidebar (max-width: 160px) {
+  .dsh-atb-entry {
+    width: 36px; height: 36px; margin: 2px auto; padding: 0; justify-content: center; gap: 0;
+  }
+  .dsh-atb-entry-label, .dsh-atb-entry-stats { display: none; }
+  .dsh-atb-entry-icon { display: inline-flex; }
+}
 /* Each rolling count wears its status color (todo blue | in_progress orange |
    in_review purple); the separators stay in the strip's neutral gray. */
 .dsh-atb-roll[data-stat="todo"] { color: #3e63dd; }
