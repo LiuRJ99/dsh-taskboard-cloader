@@ -193,6 +193,7 @@ describe('ExecutionService', () => {
     }))
     const agents = fakeAgents()
     const installed: Array<{ selection: TaskRecord['model']; speed?: string; serviceTier?: string }> = []
+    const mirrored: Array<{ sessionId: string; model: TaskRecord['model']; speed: string }> = []
     const svc = new ExecutionService({
       store,
       agents,
@@ -200,6 +201,7 @@ describe('ExecutionService', () => {
       events: fakeEvents(),
       now: () => 1_000,
       modelCapabilities: async () => [{ provider: 'deepseek', model: 'reasoner', serviceTiers: [{ id: 'priority' }] }],
+      modelExecution: (sessionId, model, speed) => { mirrored.push({ sessionId, model, speed }) },
       installModelSelection: (_ctx, selection, speed, serviceTier) => { installed.push({ selection, speed, serviceTier }) },
     })
 
@@ -212,6 +214,11 @@ describe('ExecutionService', () => {
       selection: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' },
       speed: 'fast',
       serviceTier: 'priority',
+    }])
+    expect(mirrored).toEqual([{
+      sessionId: result.sessionId,
+      model: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' },
+      speed: 'fast',
     }])
     expect(agents.sessionEvents).toEqual([
       { sessionId: result.sessionId, type: 'sandbox/mode', data: { mode: permissionMode } },
@@ -229,6 +236,7 @@ describe('ExecutionService', () => {
     const store = await storeWith(task({ id: 't-fast-default', speed: 'fast' }))
     const agents = fakeAgents()
     const installed: Array<{ selection: TaskRecord['model']; speed?: string; serviceTier?: string }> = []
+    const mirrored: Array<{ sessionId: string; model: TaskRecord['model']; speed: string }> = []
     const svc = new ExecutionService({
       store,
       agents,
@@ -236,12 +244,14 @@ describe('ExecutionService', () => {
       events: fakeEvents(),
       now: () => 1_000,
       modelCapabilities: async () => [{ provider: 'deepseek', model: 'reasoner', serviceTiers: [{ id: 'priority' }] }],
+      modelExecution: (sessionId, model, speed) => { mirrored.push({ sessionId, model, speed }) },
       installModelSelection: (_ctx, selection, speed, serviceTier) => { installed.push({ selection, speed, serviceTier }) },
     })
 
     const result = await svc.run('t-fast-default', 'manual')
     expect(result.ok).toBe(true)
     expect(installed).toEqual([])
+    expect(mirrored).toEqual([])
   })
 
   it('framing carries the report handoff step and injects the DoD checklist (0.4.0)', async () => {

@@ -30,6 +30,7 @@ import { TemplateStore } from './host/templates.ts'
 import { registerTaskboardTools, workspaceFace } from './host/tools.ts'
 import type { PermissionMode, TaskModel, TaskSpeed } from './shared/protocol.ts'
 import { MODEL_CAPABILITY_SERVICE, PRIORITY_SERVICE_TIER, type ModelCapabilityProvider } from './shared/model-capabilities.ts'
+import { MODEL_EXECUTION_SERVICE, type ModelExecutionProvider } from './shared/model-execution.ts'
 
 /** Ledger file name under the DSH home. */
 export const LEDGER_FILE = 'dsh-taskboard.json'
@@ -116,6 +117,11 @@ export function apply(ctx: Context): void {
         const provider = agentCtx.get(MODEL_CAPABILITY_SERVICE) as ModelCapabilityProvider | undefined
         return provider?.listModelCapabilities() ?? Promise.resolve([])
       }
+      const modelExecution = (sessionId: string, model: TaskModel | undefined, speed: TaskSpeed): void | Promise<void> => {
+        if (model === undefined) return
+        const provider = agentCtx.get(MODEL_EXECUTION_SERVICE) as ModelExecutionProvider | undefined
+        return provider?.setSessionSpeed(sessionId, model.provider, model.model, speed)
+      }
       const execution = new ExecutionService({
         store,
         agents: {
@@ -131,6 +137,7 @@ export function apply(ctx: Context): void {
         events,
         installModelSelection: installTaskModelOptions,
         modelCapabilities,
+        modelExecution,
         applyPermissionMode: (session: unknown, mode: PermissionMode): void => {
           const presets = agentCtx.get('permissionPresets') as {
             names?: readonly string[]

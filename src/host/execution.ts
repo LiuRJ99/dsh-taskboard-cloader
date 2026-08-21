@@ -28,6 +28,7 @@ import {
 import { sanitizeBranchName, worktreePathOf, type GitFace, type SettlementFacts } from './git.ts'
 import { MessageId } from './sdk.ts'
 import { PRIORITY_SERVICE_TIER, serviceTierForTaskSpeed, type ModelCapability } from '../shared/model-capabilities.ts'
+import type { ModelExecutionSpeed } from '../shared/model-execution.ts'
 import type { TaskStore } from './store.ts'
 
 /** Default cap on concurrently running executions (env-overridable). */
@@ -89,6 +90,8 @@ export interface ExecutionDeps {
   installModelSelection?: (agentCtx: unknown, selection: TaskModel | undefined, speed?: TaskSpeed, serviceTier?: string) => void
   /** Lazily read provider-advertised model capabilities; absence is safe. */
   modelCapabilities?: () => Promise<readonly ModelCapability[]>
+  /** Mirror effective session speed through an optional provider bridge. */
+  modelExecution?: (sessionId: string, model: TaskModel | undefined, speed: ModelExecutionSpeed) => void | Promise<void>
   /** Apply one of the three file-permission modes before the first prompt. */
   applyPermissionMode?: (session: unknown, mode: PermissionMode) => void | Promise<void>
   /** Mint session ids (injectable for tests). */
@@ -420,7 +423,17 @@ export class ExecutionService {
       return { ok: false, error: message }
     }
 
-    // 2b. Apply task-owned execution options while the fresh session is still idle.
+    // 2b. Mirror the effective speed before the first request. This optional
+    //     bridge keeps older DSH runtimes (which do not persist serviceTier in
+    //     request headers) compatible without making taskboard depend on CPA.
+    try {
+      if (model !== undefined) await this.deps.modelExecution?.(sessionId, model, speed)
+    } catch {
+      // A provider-side state mirror is advisory; request execution remains
+      // governed by the first-class serviceTier when the runtime supports it.
+    }
+
+    // 2c. Apply task-owned execution options while the fresh session is still idle.
     //     They must land before the opening followup so the first request sees them.
     try {
       if (task.permissionMode !== undefined) {
