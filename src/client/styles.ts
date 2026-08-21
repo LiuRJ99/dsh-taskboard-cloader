@@ -79,7 +79,7 @@ html[data-dsh-atb-active] [class*="centerCol"] > *:not([data-dsh-atb-view]) { di
 .dsh-atb-view { display: none; }
 html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 
-.dsh-atb-board { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 12px 16px; gap: 10px; box-sizing: border-box; }
+.dsh-atb-board { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 12px 16px; gap: 10px; box-sizing: border-box; }
 .dsh-atb-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .dsh-atb-title { font-size: 15px; font-weight: 600; margin: 0; }
 .dsh-atb-count { font-size: 12px; color: var(--dsw-text-secondary, gray); }
@@ -144,6 +144,16 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
   padding: 10px 12px; box-shadow: 0 -4px 18px rgba(0,0,0,.12);
 }
 .dsh-atb-detailpanel .dsh-atb-detail { flex: 1; min-height: 0; }
+.dsh-atb-detailpanel[data-fullscreen="true"] {
+  position: absolute; inset: 0; z-index: 30; max-height: none; min-height: 0;
+  box-sizing: border-box; border-radius: 12px;
+  /* Fullscreen must hide the board underneath. The generic panel token can be
+     translucent in host themes; use DSH's opaque layer token here. */
+  background: var(--dsw-alias-bg-layer-1, Canvas);
+  color: var(--dsw-alias-label-primary, CanvasText);
+  box-shadow: 0 8px 28px rgba(0,0,0,.18);
+}
+.dsh-atb-detailpanel[data-fullscreen="true"] .dsh-atb-detail-topbtns { flex-wrap: wrap; }
 .dsh-atb-column { display: flex; flex-direction: column; min-width: 200px; min-height: 0; border-radius: 10px; background: var(--dsw-bg-inset, rgba(128,128,128,.07)); padding: 8px; gap: 8px; }
 .dsh-atb-colhead { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; padding: 2px 4px; }
 .dsh-atb-colcount { font-size: 11px; font-weight: 400; color: var(--dsw-text-secondary, gray); }
@@ -198,13 +208,18 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
   padding: 2px; position: relative;
 }
 .dsh-atb-detail::before {
-  content: ""; position: sticky; top: 0; height: 3px; border-radius: 3px; flex: none;
+  content: ""; position: sticky; top: 0; z-index: 6; height: 3px; border-radius: 3px; flex: none;
 }
 .dsh-atb-detail[data-urgency="urgent"]::before { background: linear-gradient(90deg, #e5484d, rgba(229,72,77,.15)); }
 .dsh-atb-detail[data-urgency="normal"]::before { background: linear-gradient(90deg, #8e4ec6, rgba(142,78,198,.15)); }
 .dsh-atb-detail[data-urgency="relaxed"]::before { background: linear-gradient(90deg, #3e63dd, rgba(62,99,221,.15)); }
 
-.dsh-atb-detail-head { display: flex; align-items: flex-start; gap: 10px; }
+.dsh-atb-detail-head {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 6px 0 8px;
+  background: var(--dsw-alias-bg-layer-1, Canvas);
+}
 .dsh-atb-detail-titlewrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .dsh-atb-detail-titlebar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .dsh-atb-detail-titlebar h3 { margin: 0; font-size: 15.5px; line-height: 1.35; word-break: break-word; }
