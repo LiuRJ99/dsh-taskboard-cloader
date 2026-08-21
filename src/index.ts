@@ -51,6 +51,12 @@ function installTaskModelOptions(agentCtx: unknown, selection: TaskModel | undef
   }
   if (speed !== 'fast' || serviceTier !== PRIORITY_SERVICE_TIER) return
   const scoped = agentCtx as Context
+  const llm = scoped.get('llm') as { supportsServiceTier?: boolean } | undefined
+  // Older DSH releases preserve unknown enumerable fields at runtime but do
+  // not include serviceTier in request/header equality or replay. The optional
+  // execution bridge handles those releases; only the first-class contract
+  // marker may opt into request-field injection.
+  if (llm?.supportsServiceTier !== true) return
   scoped.on('agent/request' as never, (async (_payload: unknown, next: () => Promise<Record<string, unknown>>) => ({
     ...(await next()),
     // `serviceTier` is the provider-neutral adapter-facing request field.
