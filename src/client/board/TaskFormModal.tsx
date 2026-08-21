@@ -111,7 +111,11 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
   return (
     <div className="dsh-atb-cke">
       {rows.map((row, index) => (
-        <div key={row.id ?? `new-${index}`} className="dsh-atb-cke-row">
+        <div
+          key={row.id ?? `new-${index}`}
+          className="dsh-atb-cke-row"
+          data-editing={editing ? 'true' : undefined}
+        >
           {editing && (
             <input
               type="checkbox"

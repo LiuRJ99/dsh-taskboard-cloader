@@ -899,6 +899,11 @@ describe('client half', () => {
     root.render(React.createElement(TaskFormModal, { controller, task: task as never }))
     await new Promise(r => setTimeout(r, 20))
 
+    const editRows = Array.from(host.querySelectorAll<HTMLElement>('.dsh-atb-cke-row'))
+    expect(editRows).toHaveLength(2)
+    expect(editRows.every(row => row.dataset.editing === 'true')).toBe(true)
+    const editTexts = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-cke-text'))
+    expect(editTexts.map(input => input.value)).toEqual(['复现', '修复'])
     const boxes = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-cke-box'))
     expect(boxes).toHaveLength(2)
     boxes[0]!.click()

@@ -559,10 +559,20 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 
 /* ---------- 0.4.0 checklist ---------- */
 .dsh-atb-cke { display: flex; flex-direction: column; gap: 6px; }
-.dsh-atb-cke-row { display: flex; align-items: center; gap: 8px; }
-.dsh-atb-cke-box { flex-shrink: 0; width: 15px; height: 15px; cursor: pointer; }
-.dsh-atb-cke-text {
-  flex: 1; min-width: 0; font-size: 12.5px; padding: 6px 9px;
+.dsh-atb-cke-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center; gap: 8px;
+}
+.dsh-atb-cke-row[data-editing="true"] { grid-template-columns: 15px minmax(0, 1fr) auto; }
+/* The modal's generic input rule sets width: 100%; these more-specific
+   selectors keep the checkbox and text field inside the three-column row. */
+.dsh-atb-modal-body .dsh-atb-cke-box {
+  width: 15px; min-width: 15px; height: 15px; margin: 0; padding: 0;
+  box-sizing: border-box; cursor: pointer;
+}
+.dsh-atb-modal-body .dsh-atb-cke-text {
+  width: auto; min-width: 0; flex: none; box-sizing: border-box;
+  font-size: 12.5px; padding: 6px 9px;
   border-radius: 8px; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3));
   background: var(--dsw-alias-bg-layer-1, transparent); color: inherit;
 }
