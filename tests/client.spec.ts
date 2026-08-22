@@ -1264,4 +1264,34 @@ describe('client half', () => {
     controller.dispose()
     localStorage.clear()
   })
+
+  it('0.4.3 回归：折叠侧边栏时入口收成纯图标轨道（双信号选择器都在样式表里）', async () => {
+    localStorage.clear()
+    const { injectStyles } = await import('../src/client/styles.ts')
+    injectStyles()
+
+    // The collapse signals verified against the live shell packages:
+    // dsh-client-ui-layout sets data-sidebar-collapsed on the frame;
+    // dsh-client-ui-sidebar's root toggles its CSS-Module *_collapsed class
+    // (e.g. hHd-Xa_collapsed). The rail rules must key on BOTH (0.4.2
+    // dual-selector doctrine) and hide label + stats, with the native 36×36
+    // rail geometry the shell gives its own collapsed buttons.
+    const css = document.getElementById('dsh-taskboard-styles')!.textContent ?? ''
+    for (const signal of ['[data-sidebar-collapsed]', '[class*="_collapsed"]']) {
+      expect(css).toContain(`${signal} [data-dsh-atb-entry] .dsh-atb-entry-label,\n${signal} [data-dsh-atb-entry] .dsh-atb-entry-stats`)
+    }
+    expect(css).toContain('width: 36px; height: 36px; min-width: 36px;')
+    expect(css).toContain('margin: 0 0 12px; padding: 0;')
+
+    // DOM level: the entry markup keeps its label/stats spans (only the
+    // stylesheet hides them in the rail), and the collapse class on the
+    // sidebar root is exactly what the CSS keys on — verify the selector
+    // string the shell really produces matches our pattern.
+    const root = document.createElement('div')
+    root.className = 'hHd-Xa_root hHd-Xa_collapsed'
+    expect(root.matches('[class*="_collapsed"]')).toBe(true)
+    const expanded = document.createElement('div')
+    expanded.className = 'hHd-Xa_root'
+    expect(expanded.matches('[class*="_collapsed"]')).toBe(false)
+  })
 })

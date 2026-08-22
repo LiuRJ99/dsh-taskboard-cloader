@@ -3,7 +3,16 @@
 
 # dsh-taskboard
 
-DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、人验收。任务挂项目（workspace）、可指定模型、支持手动与定时执行，全流程双向协作。
+DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、人验收。任务挂项目（workspace）、可指定模型与 preset、支持手动与定时执行，全流程双向协作。
+
+- **闭环协作**：人建卡 → agent 认领执行 → 结构化报告 → 人验收（✓ 完成 / ✗ 退回附原因）
+- **10 个 `taskboard_*` agent 工具** + 代码级协议闸：agent 永远移不到 done、任务被持有时不可抢、跨项目不可认领
+- **执行**：手动或 cron 定时（host 侧调度，浏览器关了照跑）；每次执行在任务项目内开全新会话，可指定模型与 preset
+- **Git Worktree 隔离**：每次执行独立 worktree + 任务分支，验收时一键合并；非 git 项目自动降级
+- **验收效率**：DoD 验收清单（agent 勾选附证据）、结构化执行报告（摘要/改动文件/自验/产物/风险）、看板内 diff 查看器
+- **实时看板**：SSE 实时刷新、五列流转、筛选排序持久化、JSON 导入导出、任务模板
+
+**零配置**：安装即用——无需 Token、无需 API Key、无需额外服务或数据库。
 
 ## 界面
 
@@ -11,7 +20,108 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 
 <p align="center"><img src="https://raw.githubusercontent.com/cloader/dsh-taskboard/main/img/modal.png" alt="新建任务" width="440"></p>
 
-## 核心功能
+## 目录
+
+- [环境要求](#环境要求)
+- [安装](#安装)
+- [快速开始](#快速开始)
+- [Agent 工具参考](#agent-工具参考)
+- [功能特性](#功能特性)
+- [安全](#安全)
+- [配置与数据](#配置与数据)
+- [常见问题](#常见问题)
+- [开发](#开发)
+- [升级日志](#升级日志)
+
+## 环境要求
+
+| 依赖 | 要求 | 说明 |
+| --- | --- | --- |
+| DeepSeek Harness | ≥ 0.1.1 | 需要 `dsh plugin` 子命令与 web profile |
+| Node.js | ≥ 20 | 仅 GitHub 源安装构建时需要 |
+| git | 可选 | Worktree 隔离需要；缺失时自动降级原目录执行 |
+
+## 安装
+
+```bash
+# 一键安装（npm，预构建、免构建授权 —— 推荐）
+dsh plugin --profile web add dsh-taskboard
+
+# 或从 GitHub 源安装
+dsh plugin --profile web add github:cloader/dsh-taskboard
+```
+
+安装后**重启 `dsh web` 并刷新页面**：侧边栏出现「任务看板」入口即成功。无需任何后续配置。
+
+<details>
+<summary>GitHub 源安装卡在 prepare / allowBuilds？</summary>
+
+git 源插件安装时经 prepare 脚本构建，pnpm 会先阻止——按报错提示把精确 key 加进 profile 目录 `pnpm-workspace.yaml` 的 `allowBuilds` 后重跑即可。npm 源是预构建产物，无此步骤。
+</details>
+
+<details>
+<summary>开发模式安装（改代码即生效）</summary>
+
+```bash
+git clone https://github.com/cloader/dsh-taskboard.git
+cd dsh-taskboard
+npm install && npm run build
+dsh plugin --profile web add "link:/path/to/dsh-taskboard"
+```
+
+link 安装后，仓库里 `npm run build` 重建、刷新页面即生效；改完宿主侧代码需重启 `dsh web`。
+</details>
+
+卸载：`dsh plugin --profile web remove dsh-taskboard`（台账数据保留在 DSH 主目录，见[配置与数据](#配置与数据)）。
+
+> 官方 `@deepseek-ai/dsh-*` 包只写进 profile 的 `bundles` 列表，不要 `plugin add` 进 dependencies（避免 SDK 双实例遮蔽）。
+
+## 快速开始
+
+**第 1 步 · 建卡**：看板右上「+ 新建任务」——选项目、紧急度、执行方式（认领/定时+cron）、模型与 preset、Git 隔离开关、验收清单；可勾「⚡ 立即执行」。
+
+**第 2 步 · agent 执行**：三种触发方式任选——
+
+1. GUI「立即执行」/「↻ 续跑」（详情页或表单）
+2. cron 定时（host 侧调度，无需开浏览器）
+3. 任意会话里让 agent 用 `taskboard_*` 工具认领：`按看板上的任务 t-xxxxx 执行`
+
+**第 3 步 · 人验收**：待验收列「✓ 完成」一键验收；「✗ 退回」退回待办并附原因（agent 下轮开工前会读）。
+
+一次完整的 agent 工作流（协议由插件在执行开场自动下达）：
+
+```text
+你：执行看板任务 t-ab12cd
+agent：
+  taskboard_list                # 查板：项目内 todo 任务
+  taskboard_get t-ab12cd        # 读需求、评论、验收清单
+  taskboard_move → in_progress  # 认领（代码闸：被持有/跨项目会被拒绝）
+  ……编码 / 测试……
+  taskboard_checklist check     # 逐项勾验收清单，附证据 note
+  taskboard_execution_report    # 结构化报告：摘要/改动文件/自验/产物/风险
+  taskboard_comment_add         # 交接说明
+  taskboard_move → in_review    # 移待验收
+你：看板待验收列 ✓ 完成   # done 永远只属于人——agent 调用会被代码闸拒绝
+```
+
+## Agent 工具参考
+
+任何会话可用；项目边界：只有属于任务所在项目的会话才能认领或执行。
+
+| 工具 | 作用 |
+| --- | --- |
+| `taskboard_list` | 查板（按项目/状态/紧急度过滤，紧凑摘要） |
+| `taskboard_get` | 读单卡全文：描述、prompt、评论流、清单、执行记录 |
+| `taskboard_comments` | 列出任务评论（视为最新需求，先读后动） |
+| `taskboard_create` | 建卡（workspaceId、紧急度、清单、preset、隔离、定时） |
+| `taskboard_update` | 改标题/描述/prompt/紧急度/清单（model/execution 只读） |
+| `taskboard_move` | 移卡：todo→in_progress→in_review（**到不了 done**） |
+| `taskboard_comment_add` | 追加评论（交接、风险、进展） |
+| `taskboard_delete` | 软删除（可 purge；执行中不可删） |
+| `taskboard_checklist` | 验收清单 add / check（附证据）/ uncheck |
+| `taskboard_execution_report` | 提交结构化执行报告，自动挂到当前执行 |
+
+## 功能特性
 
 **看板协作**
 - 五列看板（待规划 / 待办 / 进行中 / 待验收 / 已完成）+ 受阻标记，SSE 实时刷新
@@ -33,32 +143,81 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 
 **执行**
 - 手动执行或 cron 定时：每次执行在任务项目内新建全新会话（干净上下文、可指定模型、可指定 preset）；开场两条消息同一回合送达——插件上下文行携带任务框架与交接协议（含失败回退路径），卡片内容（提示词或标题+描述）以正常用户消息呈现
-- **任务级 preset（0.3.3）**：新建/编辑表单「执行模式（preset）」下拉——执行会话按该 preset 组合（工具集与人设由此而来，对齐 GUI 新会话的组合方式）；默认预选部署默认 preset（本部署即标准模式），也可选「跟随部署默认」；preset 损坏时执行直接失败并把原因写进执行记录（不产出半组合会话）；随时可改，下轮执行生效
+- **任务级 preset（0.3.3）**：新建/编辑表单「执行模式（preset）」下拉——执行会话按该 preset 组合（工具集与人设由此而来，对齐 GUI 新会话的组合方式）；默认预选部署默认 preset，也可选「跟随部署默认」；preset 损坏时执行直接失败并把原因写进执行记录（不产出半组合会话）；随时可改，下轮执行生效
 - **Git Worktree 隔离执行（0.3.0）**：任务级开关（默认开、记住上次选择），每次执行在 `<项目>/.dsh-worktrees/<任务ID>` 独立 worktree 上进行，分支 `task/<标题>+<任务ID>`（首次创建后定死，改名不改）；执行会话归属项目根目录（分组、工具与文件沙箱完整可用——DSH 要求会话 cwd 即工作区根，0.3.2 修正），worktree 路径与边界纪律在开场指令中明确下达；结算自动采集提交列表 / 未提交修改警告 / 改动统计；非 git 项目或 git 不可用时自动降级原目录执行（执行记录注明降级原因，台账与执行主流程永不因 git 失败而失败）；验收时详情页一键 `--no-ff` 合并到主工作区（主区脏或冲突原样报告，不自动解决）、删除 worktree（有未提交修改时拒绝）、可选删分支；支持「↻ 续跑」在现有 worktree/分支上继续执行（保留上次改动与提交）
   > Worktree 隔离是协作约定而非沙箱：执行会话拥有完整工具权限，隔离依赖分支约定，不适用于运行不可信代码的场景。
 - host 侧调度：关掉浏览器照常触发；错过窗口跳过不补跑
 - 乐观并发（ifVersion）+ 完整归因（谁改的、哪个会话执行的）
 - ⚙ 健康诊断：台账基本项 + 遗留 worktree（台账无主但目录存在）一键清理
 
-## 安装
+## 安全
 
-```bash
-dsh plugin --profile <name> add dsh-taskboard          # npm（推荐，预构建免授权）
-dsh plugin --profile <name> add github:cloader/dsh-taskboard   # GitHub 源
-```
+- **验收权只属于人**：agent 把任务移到 done 的调用被代码级协议闸直接拒绝（不是提示词约定）；任务被持有时不可抢占，跨项目不可认领。
+- **Worktree 隔离是协作约定而非沙箱**：执行会话拥有完整工具权限，隔离依赖分支约定，不适用于运行不可信代码的场景。
+- **数据本地**：台账、模板全部存本机 DSH 主目录；不外发任何数据，无需 Token / API Key。
 
-> 官方 `@deepseek-ai/dsh-*` 包只写进 profile 的 `bundles` 列表，不要 `plugin add` 进 dependencies（避免 SDK 双实例遮蔽）。
+## 配置与数据
+
+开箱即用，全部配置项如下（均为可选）：
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `DSH_TASKBOARD_MAX_CONCURRENT` | `3` | 全局同时执行的会话数上限 |
+| `DSH_HOME` | `~/.dsh` | DSH 主目录（跟随部署，插件数据随之） |
+| `ATB_TRACE` | 未设置 | `=1` 时 host 打印工具调用跟踪（调试用） |
+
+数据文件（均在 DSH 主目录，卸载插件不删除）：
+
+| 文件 | 内容 |
+| --- | --- |
+| `dsh-taskboard.json` | 任务台账（全部任务/执行/评论） |
+| `dsh-taskboard-templates.json` | 任务模板 |
+| `dsh-taskboard.json.backup-<时间戳>` | 整册导入替换前的自动备份 |
+| `<项目>/.dsh-worktrees/<任务ID>/` | 任务执行 worktree |
+
+随时可顶栏「⬇ JSON」全量备份、「⬇ CSV」导出任务清单（带 BOM，Excel 直接打开）。
+
+## 常见问题
+
+**侧边栏没有「任务看板」入口？**
+刷新页面；仍没有则确认插件已装进当前 profile 并重启 `dsh web`（宿主半区在进程启动时加载）。0.4.2 起旧 `data-pane` shell 与新哈希类名 shell（DSH Desktop）都支持。
+
+**任务数据存在哪？怎么备份？**
+见[配置与数据](#配置与数据)。GUI「⬇ JSON」随时全量导出；「⬆ 导入」可恢复。
+
+**浏览器关了，定时任务还跑吗？**
+跑。调度在 host 进程侧，与浏览器无关；错过的时间窗口跳过不补跑。
+
+**项目不是 git 仓库，能用吗？**
+能。Worktree 隔离自动降级为原目录执行，执行记录注明降级原因；其余功能不受影响。
+
+**多个项目怎么协作？**
+任务挂项目（= DSH workspace）。认领校验会话归属：只有任务所在项目内的会话能认领/执行，跨项目不可抢。
+
+**agent 会把任务直接标成「已完成」吗？**
+不会。这是代码级协议闸（不是提示词约定）：`taskboard_move` 到 done 的调用被直接拒绝，验收永远由人在看板完成。
+
+**GitHub 源安装报 prepare 被阻止？**
+pnpm 的构建授权——按报错把 key 加进 profile 的 `pnpm-workspace.yaml` `allowBuilds` 后重跑；或改用 npm 源（预构建，无此步骤）。
 
 ## 开发
 
 ```bash
+git clone https://github.com/cloader/dsh-taskboard.git
+cd dsh-taskboard
 npm install && npm run build    # host ESM + client CJS 双构建
-npm test                        # vitest 全量
+npm test                        # vitest 全量（150 项）
 node tests/manual-git-e2e.mjs   # 真 git 端到端手测（worktree 全链路 + 续跑 + diff 查看器）
 node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 ```
 
 ## 升级日志
+
+### 0.4.3
+
+- **修复折叠侧边栏时入口不收成纯图标（用户反馈）**：收起侧边栏后，shell 把侧栏收成 36×36 图标轨道（layout frame 出现 `data-sidebar-collapsed` 属性、侧栏根节点切换 CSS-Module `*_collapsed` 哈希类），而看板入口仍保持全宽——图标、「任务看板」文字、右侧计数角标挤在窄轨里。修复：折叠信号下入口镜像原生轨道几何（36×36、居中、与原生 newSession 折叠态同款间距），隐藏文字与角标，图标 14→16px 保证可读；双信号选择器（`[data-sidebar-collapsed]` 与 `[class*="_collapsed"]`）沿用 0.4.2 双选择器原则，新旧 shell 通吃；展开态完全不受影响，`aria-label` 保留无障碍提示
+- 回归测试：断言两组折叠选择器与 36px 轨道几何都注入样式表、shell 真实产生的 `hHd-Xa_collapsed` 类名命中选择器模式（150 项）
+- README 按 dsh.market 五维评分体系重构：新增目录 / 环境要求 / 快速开始（含完整 agent 工作流示例）/ Agent 工具参考表 / 安全 / 配置与数据 / 常见问题；仓库元数据补 homepage 与 topics
 
 ### 0.4.2
 
@@ -87,6 +246,7 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 - **任务级 preset 字段**：创建任务时可选「执行模式（preset）」，默认预选部署默认 preset（本部署即标准模式）——即按你的决定「默认标准模式」；可切任意 preset（如梁神模式）或选「跟随部署默认」（不落字段，随部署默认变）；编辑随时可改（每轮执行现组合，无锁定）；复制任务携带；`taskboard_create` 增 `presetId` 参数；详情页显示 preset chip
 - **坏 preset 防护**：preset 解析失败（不存在/损坏）→ 执行直接失败、原因写入执行记录、任务退回待办——不产出半组合会话（与 apiproxy 回滚语义一致）
 - preset 目录用来自 `agentPreset.list` 连接 RPC（无 roster 或离线时下拉隐藏，行为回落到裸组合）；测试 111 → 116 项
+
 ### 0.3.2
 
 - **修复 worktree 执行会话脱离项目组、工具不可用**：0.3.0–0.3.1 把执行会话 cwd 指向 worktree 子目录，而 DSH 的会话模型要求 cwd === 工作区根目录（全等）——子目录导致会话无法挂入项目组（显示「未分组」），且文件沙箱边界与相对路径解析全部失效（agent 无法创建文件）。现改回：会话 cwd = 项目根（分组、工具、沙箱完整可用），worktree 绝对路径与边界纪律（命令 workdir 指向 worktree、文件读写用绝对路径、禁改主工作区其它文件、提交到任务分支）在开场框架行中明确下达。git 隔离与证据采集不受影响

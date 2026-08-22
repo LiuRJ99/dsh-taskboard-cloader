@@ -46,6 +46,26 @@ export const STYLES = `
 @media (prefers-reduced-motion: reduce) {
   .dsh-atb-roll .dsh-atb-rn { transition: none; }
 }
+
+/* 0.4.3: collapsed rail. Collapsing the sidebar narrows it to an icon rail
+ * (layout frame carries data-sidebar-collapsed; the sidebar root toggles its
+ * CSS-Module *_collapsed class — dual signals, per the 0.4.2 shell doctrine).
+ * The entry then mirrors the native rail geometry (36×36 icon button, no
+ * label/stats) — matches .hHd-Xa_collapsed .hHd-Xa_newSession. */
+[data-sidebar-collapsed] [data-dsh-atb-entry],
+[class*="_collapsed"] [data-dsh-atb-entry] {
+  width: 36px; height: 36px; min-width: 36px;
+  margin: 0 0 12px; padding: 0;
+  justify-content: center; gap: 0; text-align: center;
+}
+[data-sidebar-collapsed] [data-dsh-atb-entry] .dsh-atb-entry-label,
+[data-sidebar-collapsed] [data-dsh-atb-entry] .dsh-atb-entry-stats,
+[class*="_collapsed"] [data-dsh-atb-entry] .dsh-atb-entry-label,
+[class*="_collapsed"] [data-dsh-atb-entry] .dsh-atb-entry-stats { display: none; }
+/* Native rail icons render ~16-20px; scale ours up from 14px to read at parity. */
+[data-sidebar-collapsed] [data-dsh-atb-entry] svg,
+[class*="_collapsed"] [data-dsh-atb-entry] svg { width: 16px; height: 16px; }
+
 .dsh-atb-search { width: 130px; }
 .dsh-atb-badge[data-kind="stale"] { background: rgba(217,130,43,.15); color: #d9822b; }
 
