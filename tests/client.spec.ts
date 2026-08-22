@@ -54,8 +54,14 @@ describe('client half', () => {
     const ctx = { get: () => undefined, effect: (fn: () => unknown) => { disposers.push(fn()) } }
     expect(() => apply(ctx as never)).not.toThrow()
 
-    // Styles injected exactly once.
-    expect(document.getElementById('dsh-taskboard-styles')).not.toBeNull()
+    // Styles injected exactly once, and ownership-tagged: the shell's
+    // client-module system claims UN-tagged styles for whichever sibling
+    // plugin materializes next, and HMR deletes them by this attribute on
+    // that sibling's rebuild — the 0.4.3 random CSS-drop field report.
+    const styleEl = document.getElementById('dsh-taskboard-styles')!
+    expect(styleEl).not.toBeNull()
+    expect(styleEl.getAttribute('data-plugin')).toBe('dsh-taskboard')
+    expect(styleEl.getAttribute('data-plugin-css')).toBe('dsh-taskboard/styles')
 
     // No panes exist: mounts wait via observers without throwing. Give the
     // controller's initial refresh a tick.
@@ -68,8 +74,49 @@ describe('client half', () => {
     expect(EventSourceMock.instances[0]!.url).toBe('/dsh-taskboard/events')
     expect(disposers.every(d => typeof d === 'function')).toBe(true)
 
+    // 0.4.4 watchdog: a stylesheet removed mid-session heals within one
+    // 2s tick — no page refresh needed (the random CSS-drop regression).
+    styleEl.remove()
+    await new Promise(r => setTimeout(r, 2_150))
+    expect(document.getElementById('dsh-taskboard-styles')).not.toBeNull()
+    document.getElementById('dsh-taskboard-styles')!.remove()
+
     // Explicit dispose through the captured disposers.
     for (const fn of disposers) (fn as () => void)()
+  })
+
+  it('stylesheet is ownership-tagged, idempotent, and re-attaches after removal', async () => {
+    const { injectStyles } = await import('../src/client/styles.ts')
+    document.getElementById('dsh-taskboard-styles')?.remove()
+
+    injectStyles()
+    const style = document.getElementById('dsh-taskboard-styles')!
+    expect(style).not.toBeNull()
+    // Ownership tag: untagged styles get claimed by whichever sibling plugin
+    // materializes next and deleted on THAT plugin's HMR rebuild (observed
+    // with lazily-materializing profile bundles) — data-plugin pins the
+    // stylesheet to this plugin.
+    expect(style.getAttribute('data-plugin')).toBe('dsh-taskboard')
+    expect(style.getAttribute('data-plugin-css')).toBe('dsh-taskboard/styles')
+
+    // DOM-idempotent: a second call neither duplicates nor recreates.
+    injectStyles()
+    expect(document.querySelectorAll('#dsh-taskboard-styles')).toHaveLength(1)
+
+    // Self-healing: removal (e.g. a rebuilt sibling's cleanup) is undone by
+    // the next call — the old module-level flag once blocked this until a
+    // full page refresh.
+    style.remove()
+    injectStyles()
+    expect(document.getElementById('dsh-taskboard-styles')).not.toBeNull()
+
+    // A leftover element mistagged by a pre-0.4.4 claim is adopted AND
+    // re-tagged with correct ownership.
+    const leftover = document.getElementById('dsh-taskboard-styles')!
+    leftover.setAttribute('data-plugin', 'other-plugin')
+    injectStyles()
+    expect(leftover.getAttribute('data-plugin')).toBe('dsh-taskboard')
+    leftover.remove()
   })
 
   it('sidebar entry places itself once a sidebar pane exists', async () => {

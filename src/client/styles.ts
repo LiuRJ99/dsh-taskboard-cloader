@@ -691,14 +691,47 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-badge[data-kind="checklist"] { color: var(--dsw-alias-label-secondary, inherit); }
 `
 
-let injected = false
+/** Style element id (stable since 0.1.x: hook for tests and debugging). */
+const STYLE_ID = 'dsh-taskboard-styles'
 
-/** Inject the stylesheet once (idempotent). */
+/**
+ * Ownership tag for the shell's client-module bookkeeping. The web shell
+ * claims every UNTAGGED `<style>` for whichever plugin module materializes
+ * next (claimStyles in dsh-client-modules), and the client HMR driver
+ * deletes `<style>` tags by this attribute on every rebuilt entry
+ * (removeOwnedStyles in dsh-client-hmr).
+ */
+const PLUGIN_ID = 'dsh-taskboard'
+
+/** Per-stylesheet identity, mirroring the shell's own data-plugin-css. */
+const CSS_TAG = 'dsh-taskboard/styles'
+
+/**
+ * Ensure the stylesheet lives in <head>: create when absent, re-attach when
+ * removed, always carry the ownership tags.
+ *
+ * 0.4.4 fix (field report: CSS randomly dropped, board renders as unstyled
+ * HTML until refresh): injection runs from cordis apply(), which resolves
+ * AFTER this module's materialization, so the old untagged <style> could be
+ * claimed by ANY sibling plugin module that materialized later (observed
+ * with lazily-materializing profile bundles). That sibling's next HMR
+ * rebuild then deleted OUR stylesheet, and the old module-level `injected`
+ * flag blocked re-injection until a full page refresh. Pre-tagging pins
+ * ownership to this plugin: sibling claims skip tagged styles, and only
+ * THIS plugin's rebuild removes it — the fresh apply re-injects. Idempotency
+ * is DOM-based for the same reason: a module flag cannot see removals,
+ * getElementById can. A found element is re-tagged too, so a leftover
+ * pre-0.4.4 element adopted across a hot swap heals its ownership.
+ */
 export function injectStyles(): void {
-  if (injected || typeof document === 'undefined') return
-  const style = document.createElement('style')
-  style.id = 'dsh-taskboard-styles'
-  style.textContent = STYLES
-  document.head.append(style)
-  injected = true
+  if (typeof document === 'undefined') return
+  let style = document.getElementById(STYLE_ID)
+  if (style === null) {
+    style = document.createElement('style')
+    style.id = STYLE_ID
+    style.textContent = STYLES
+    document.head.append(style)
+  }
+  style.dataset.plugin = PLUGIN_ID
+  style.dataset.pluginCss = CSS_TAG
 }
