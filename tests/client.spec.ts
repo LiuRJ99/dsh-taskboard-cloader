@@ -74,13 +74,6 @@ describe('client half', () => {
     expect(EventSourceMock.instances[0]!.url).toBe('/dsh-taskboard/events')
     expect(disposers.every(d => typeof d === 'function')).toBe(true)
 
-    // 0.4.4 watchdog: a stylesheet removed mid-session heals within one
-    // 2s tick — no page refresh needed (the random CSS-drop regression).
-    styleEl.remove()
-    await new Promise(r => setTimeout(r, 2_150))
-    expect(document.getElementById('dsh-taskboard-styles')).not.toBeNull()
-    document.getElementById('dsh-taskboard-styles')!.remove()
-
     // Explicit dispose through the captured disposers.
     for (const fn of disposers) (fn as () => void)()
   })
@@ -103,9 +96,10 @@ describe('client half', () => {
     injectStyles()
     expect(document.querySelectorAll('#dsh-taskboard-styles')).toHaveLength(1)
 
-    // Self-healing: removal (e.g. a rebuilt sibling's cleanup) is undone by
-    // the next call — the old module-level flag once blocked this until a
-    // full page refresh.
+    // Re-attach on demand: a removal (e.g. this plugin's own HMR rebuild
+    // cleanup) is undone by the next call — the old module-level flag once
+    // blocked this until a full page refresh. (No polling watchdog since
+    // 0.4.5: the ownership tag above is the root fix; re-apply re-injects.)
     style.remove()
     injectStyles()
     expect(document.getElementById('dsh-taskboard-styles')).not.toBeNull()

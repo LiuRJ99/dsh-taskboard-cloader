@@ -49,11 +49,6 @@ interface ClientContextFace {
 export function apply(ctx: ClientContextFace): void {
   try {
     injectStyles()
-    // Stylesheet watchdog (0.4.4): re-assert the stylesheet if anything
-    // removed it mid-session — defense-in-depth on top of the ownership
-    // tag (see styles.ts for the claim/reload mechanism it guards against).
-    // One getElementById per 2s tick; cleared with the plugin teardown.
-    const styleWatch = setInterval(() => { injectStyles() }, 2_000)
     const client = createClient()
     const controller = new BoardController(client)
 
@@ -114,7 +109,6 @@ export function apply(ctx: ClientContextFace): void {
     // race a same-lifetime re-apply); its rules are dsh-atb-* scoped, so a
     // leftover tag after a full disable is inert.
     ctx.effect?.(() => () => {
-      clearInterval(styleWatch)
       for (const d of disposers.splice(0)) d()
       controller.dispose()
     }, 'dsh-taskboard: client mount')
