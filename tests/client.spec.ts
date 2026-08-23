@@ -388,16 +388,17 @@ describe('client half', () => {
     localStorage.clear()
   })
 
-  it('isolation toggle: defaults on, remembers the choice, disables on non-git projects', async () => {
+  it('isolation toggle: create defaults follow the board setting, disables on non-git projects', async () => {
     localStorage.clear()
     const React = await import('react')
     const { createRoot } = await import('react-dom/client')
-    const { BoardController, loadDefaultIsolation } = await import('../src/client/controller.ts')
+    const { BoardController } = await import('../src/client/controller.ts')
     const { TaskFormModal } = await import('../src/client/board/TaskFormModal.tsx')
 
     const creates: unknown[] = []
+    // The board setting (看板设置) pins the default to worktree (0.5.0).
     const client = {
-      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [], settings: { defaultIsolation: 'worktree' } }),
       // ws-git reports gitAvailable; ws-plain does not.
       workspaces: async () => [
         { id: 'ws-git', path: '/p/g', title: 'G', sessionCount: 0, gitAvailable: true },
@@ -410,8 +411,7 @@ describe('client half', () => {
     controller.start()
     await new Promise(r => setTimeout(r, 10))
 
-    // Create mode: default = worktree (on), remembered from localStorage.
-    localStorage.setItem('dsh-taskboard-isolation-v1', 'none')
+    // Create mode: the initial toggle mirrors the board setting (worktree on).
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
@@ -423,11 +423,11 @@ describe('client half', () => {
     // The isolation pair is the second mode-picker in the modal.
     const isoPicker = Array.from(host.querySelectorAll<HTMLElement>('.dsh-atb-mode-picker'))[1]!
     const isoOpts = () => Array.from(isoPicker.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
-    expect(isoOpts()[0]!.dataset.on).toBe('false') // remembered 'none'
-    expect(isoOpts()[1]!.dataset.on).toBe('true')
+    expect(isoOpts()[0]!.dataset.on).toBe('true') // board default worktree
+    expect(isoOpts()[1]!.dataset.on).toBe('false')
 
-    // Switch to worktree, submit on the git workspace → isolation sent + persisted.
-    isoOpts()[0]!.click()
+    // Switch to 原目录执行, submit on the git workspace → explicit isolation sent.
+    isoOpts()[1]!.click()
     await new Promise(r => setTimeout(r, 10))
     const title = host.querySelector<HTMLInputElement>('input[maxlength="200"]')!
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
@@ -436,8 +436,7 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '创建任务'))!.click()
     await new Promise(r => setTimeout(r, 10))
-    expect(creates[0]).toMatchObject({ title: 'Iso task', isolation: 'worktree' })
-    expect(loadDefaultIsolation()).toBe('worktree')
+    expect(creates[0]).toMatchObject({ title: 'Iso task', isolation: 'none' })
 
     // Non-git workspace: both options disabled, hint shown, isolation omitted.
     const wsSelect = host.querySelector<HTMLSelectElement>('select')!
@@ -450,6 +449,77 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     expect(creates[1]).toMatchObject({ workspaceId: 'ws-plain' })
     expect((creates[1] as Record<string, unknown>).isolation).toBeUndefined()
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+
+    // A board WITHOUT the setting falls back to the factory default: 原目录执行.
+    const client2 = {
+      ...client,
+      state: async () => ({ schemaVersion: 1, revision: 2, tasks: [] }),
+    }
+    const controller2 = new BoardController(client2 as never)
+    controller2.start()
+    await new Promise(r => setTimeout(r, 10))
+    const host2 = document.createElement('div')
+    document.body.append(host2)
+    const root2 = createRoot(host2)
+    root2.render(React.createElement(TaskFormModal, { controller: controller2 }))
+    await new Promise(r => setTimeout(r, 10))
+    const picker2 = Array.from(host2.querySelectorAll<HTMLElement>('.dsh-atb-mode-picker'))[1]!
+    const opts2 = Array.from(picker2.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
+    expect(opts2[0]!.dataset.on).toBe('false')
+    expect(opts2[1]!.dataset.on).toBe('true') // factory default 'none'
+
+    root2.unmount()
+    host2.remove()
+    controller2.dispose()
+    localStorage.clear()
+  })
+
+  it('settings modal stages a draft, enables save only when dirty, saves via the controller', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { SettingsModal } = await import('../src/client/board/SettingsModal.tsx')
+
+    const saved: unknown[] = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [], settings: { defaultIsolation: 'worktree' } }),
+      workspaces: async () => [],
+      stream: () => () => {},
+      updateSettings: async (body: unknown) => { saved.push(body); return body },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(SettingsModal, { controller }))
+    await new Promise(r => setTimeout(r, 10))
+
+    const isoOpts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
+    expect(isoOpts().length).toBe(2)
+    expect(isoOpts()[0]!.textContent).toContain('原目录执行')
+    // Current setting worktree is the selected draft.
+    expect(isoOpts()[0]!.dataset.on).toBe('false')
+    expect(isoOpts()[1]!.dataset.on).toBe('true')
+
+    const saveBtn = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn'))
+      .find(b => b.textContent === '保存设置')!
+    expect(saveBtn().disabled).toBe(true) // clean draft → save disabled
+
+    // Pick 原目录执行 → dirty → save goes through the controller.
+    isoOpts()[0]!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(saveBtn().disabled).toBe(false)
+    saveBtn().click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(saved).toEqual([{ defaultIsolation: 'none' }])
 
     root.unmount()
     host.remove()

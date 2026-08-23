@@ -10,10 +10,9 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { BoardController } from '../controller.ts'
-import { loadDefaultIsolation, saveDefaultIsolation } from '../controller.ts'
 import type { TaskTemplateSpec } from '../../shared/api.ts'
 import type { ChecklistItem, IsolationMode, Urgency } from '../../shared/protocol.ts'
-import { MAX_CHECKLIST_ITEMS, nextCronTime, parseCron } from '../../shared/protocol.ts'
+import { MAX_CHECKLIST_ITEMS, defaultIsolationOf, nextCronTime, parseCron } from '../../shared/protocol.ts'
 import { fmtTime } from './TaskBoard.tsx'
 
 /** One row of the configured model catalog (from llm.models). */
@@ -134,10 +133,10 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const [presetId, setPresetId] = useState(initialPreset)
   const [presets, setPresets] = useState<Array<{ id: string; name?: string }>>([])
   const [presetDefault, setPresetDefault] = useState<string | undefined>(undefined)
-  // Isolation toggle: create mode starts from the remembered choice (default
-  // on) or the template's choice; edit mode starts from the task and locks
-  // once execution began.
-  const [isolation, setIsolation] = useState<IsolationMode>(task?.isolation ?? (prefill?.isolation === 'none' ? 'none' : prefill?.isolation === 'worktree' ? 'worktree' : loadDefaultIsolation()))
+  // Isolation toggle: create mode starts from the board setting (0.5.0
+  // 看板设置 → 默认执行隔离) or the template's choice; edit mode starts from
+  // the task and locks once execution began.
+  const [isolation, setIsolation] = useState<IsolationMode>(task?.isolation ?? (prefill?.isolation === 'none' ? 'none' : prefill?.isolation === 'worktree' ? 'worktree' : defaultIsolationOf(state.ledger.settings)))
   // Checklist (0.4.0): create = template texts / blank rows; edit = live items.
   const [checkRows, setCheckRows] = useState<CheckRow[]>(
     task?.checklist !== undefined && task.checklist.length > 0
@@ -193,10 +192,12 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   // default (runtime auto-degrades with a note) instead of persisting 'none'.
   const isolationDisabled = isolationLocked || !gitOk
 
-  /** Isolation payload for submit: undefined keeps the default (degrades naturally). */
+  /**
+   * Isolation payload for submit: undefined lets the HOST materialize the
+   * current board default at creation (non-git projects degrade naturally).
+   */
   const isolationPayload = (): string | undefined => {
     if (!gitOk) return undefined
-    if (!editing) saveDefaultIsolation(isolation)
     return isolation
   }
 

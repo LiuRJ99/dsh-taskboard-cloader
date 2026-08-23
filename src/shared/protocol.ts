@@ -107,10 +107,19 @@ export const URGENCY_COLOR: Readonly<Record<Urgency, string>> = {
  * - `worktree`: each execution runs in a fresh `git worktree` on a dedicated
  *   task branch (`task/<标题>+<taskId>`) under `<workspace>/.dsh-worktrees/`.
  * - `none`: run in the workspace directory as before, zero git interaction.
- * Omitted = the default `worktree`; non-git projects auto-degrade at run
- * time (the execution record carries an `isolationNote` explaining why).
+ * Omitted = {@link DEFAULT_ISOLATION}; since 0.5.0 creation materializes the
+ * board default onto the record (看板设置 → 执行隔离), and non-git projects
+ * still auto-degrade at run time (the execution record carries an
+ * `isolationNote` explaining why).
  */
 export type IsolationMode = 'worktree' | 'none'
+
+/**
+ * Factory-default isolation (0.5.0): 原目录执行. Applies when neither the
+ * task record nor the board setting (`BoardSettings.defaultIsolation`)
+ * says otherwise. Before 0.5.0 the implicit default was 'worktree'.
+ */
+export const DEFAULT_ISOLATION: IsolationMode = 'none'
 
 /** Validate an isolation value. */
 export function asIsolation(raw: string): IsolationMode {
@@ -120,9 +129,39 @@ export function asIsolation(raw: string): IsolationMode {
   return raw
 }
 
-/** Resolve a task's effective isolation (omitted → the worktree default). */
+/** Resolve a task's effective isolation (omitted → the factory default). */
 export function effectiveIsolation(task: Pick<TaskRecord, 'isolation'>): IsolationMode {
-  return task.isolation === undefined ? 'worktree' : task.isolation
+  return task.isolation === undefined ? DEFAULT_ISOLATION : task.isolation
+}
+
+/**
+ * Board-level settings persisted with the ledger (0.5.0). Only fields the
+ * user explicitly set are present; absent fields follow factory defaults.
+ */
+export type BoardSettings = {
+  /** Default code isolation applied when a NEW task is created without an explicit choice. */
+  defaultIsolation?: IsolationMode
+}
+
+/** Validate raw input into sanitized {@link BoardSettings} (unknown fields dropped). */
+export function asBoardSettings(raw: unknown): BoardSettings {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error('board settings must be an object')
+  }
+  const e = raw as Record<string, unknown>
+  const out: BoardSettings = {}
+  if (e.defaultIsolation !== undefined) {
+    if (typeof e.defaultIsolation !== 'string') {
+      throw new Error("defaultIsolation must be 'worktree' or 'none'")
+    }
+    out.defaultIsolation = asIsolation(e.defaultIsolation)
+  }
+  return out
+}
+
+/** The effective default isolation for NEW tasks (board setting → factory default). */
+export function defaultIsolationOf(settings?: BoardSettings): IsolationMode {
+  return settings?.defaultIsolation ?? DEFAULT_ISOLATION
 }
 
 /** How a task may run. */
@@ -419,6 +458,8 @@ export type TaskLedger = {
   /** Global monotonic revision; every mutation bumps it. */
   revision: number
   tasks: TaskRecord[]
+  /** Board-level settings (0.5.0); absent on ledgers never touched by 设置. */
+  settings?: BoardSettings
 }
 
 /** Current ledger format version. */
@@ -740,6 +781,8 @@ export type ImportPlan = {
   overwrite: TaskRecord[]
   /** Invalid entries with a human-readable reason (never imported). */
   invalid: Array<{ id?: string; reason: string }>
+  /** The file's board settings (0.5.0); replace-mode swaps them, merge keeps the live ones. */
+  settings?: BoardSettings
 }
 
 /** One unknown-value read helper: string fields with defaults. */
@@ -882,7 +925,7 @@ export function validateLedgerImport(raw: unknown, knownIds: ReadonlySet<string>
     throw new Error(`不支持的 schemaVersion ${String(e.schemaVersion)}（当前支持 ${LEDGER_SCHEMA_VERSION}）`)
   }
   if (!Array.isArray(e.tasks)) throw new Error('导入文件的 tasks 不是数组')
-  const plan: ImportPlan = { create: [], overwrite: [], invalid: [] }
+  const plan: ImportPlan = { create: [], overwrite: [], invalid: [], ...(e.settings !== undefined ? { settings: asBoardSettings(e.settings) } : {}) }
   const seen = new Set<string>()
   for (const entry of e.tasks) {
     const id = typeof (entry as { id?: unknown })?.id === 'string' ? (entry as { id: string }).id : undefined

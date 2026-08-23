@@ -179,3 +179,40 @@ describe('taskboard tool outputs', () => {
     for (const dispose of disposers) dispose()
   })
 })
+
+// ---------------------------------------------------------------- 0.5.0
+describe('taskboard_create default isolation (0.5.0 board settings)', () => {
+  it('omitted isolation materializes the board default (factory none); explicit wins; invalid rejected', async () => {
+    const { disposers, tool, exec, store } = await setup()
+
+    // Factory default (no settings record): 原目录执行. Create responses are
+    // summaries (no isolation field) — assert on the persisted record.
+    const a = await tool('taskboard_create').execute(
+      { title: 'Default none', workspaceId: 'ws-a', urgency: 'normal' }, exec,
+    ) as { task: { id: string } }
+    expect(store.get(a.task.id)!.isolation).toBe('none')
+
+    // The board setting switches the default for NEW tasks.
+    await store.mutate('settings-updated', ledger => {
+      ledger.settings = { defaultIsolation: 'worktree' }
+      return []
+    })
+    const b = await tool('taskboard_create').execute(
+      { title: 'Default wt', workspaceId: 'ws-a', urgency: 'normal' }, exec,
+    ) as { task: { id: string } }
+    expect(store.get(b.task.id)!.isolation).toBe('worktree')
+
+    // An explicit argument wins over the board default.
+    const c = await tool('taskboard_create').execute(
+      { title: 'Explicit none', workspaceId: 'ws-a', urgency: 'normal', isolation: 'none' }, exec,
+    ) as { task: { id: string } }
+    expect(store.get(c.task.id)!.isolation).toBe('none')
+
+    // Invalid values still rejected.
+    await expect(tool('taskboard_create').execute(
+      { title: 'Bad', workspaceId: 'ws-a', urgency: 'normal', isolation: 'docker' }, exec,
+    )).rejects.toThrow('isolation must be')
+
+    for (const dispose of disposers) dispose()
+  })
+})

@@ -480,8 +480,26 @@ describe('ExecutionService worktree isolation', () => {
     expect(t.executions[0]!.branch).toBeUndefined()
   })
 
+  it("bare legacy record (no isolation) follows the 0.5.0 factory default: 原目录执行", async () => {
+    const store = await storeWith(task({}))
+    const agents = fakeAgents()
+    const git = fakeGit({ detect: true })
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+
+    // Zero git interaction even though git is available.
+    expect(git.detectCalls).toEqual([])
+    expect(git.prepareCalls).toEqual([])
+    expect(agents.created[0]!.cwd).toBe('/proj/a')
+    const t = store.get('t-run')!
+    expect(t.executions[0]!.isolation).toBe('none')
+    expect(t.executions[0]!.isolationNote).toBeUndefined()
+  })
+
   it("worktree success: session cwd is the worktree, facts recorded, branch pinned once", async () => {
-    const store = await storeWith(task({ title: 'Fix the login page' }))
+    const store = await storeWith(task({ title: 'Fix the login page', isolation: 'worktree' }))
     const agents = fakeAgents()
     const git = fakeGit({
       detect: true,
@@ -549,7 +567,7 @@ describe('ExecutionService worktree isolation', () => {
   })
 
   it('non-git workspace degrades to the original directory with a note', async () => {
-    const store = await storeWith(task({}))
+    const store = await storeWith(task({ isolation: 'worktree' }))
     const agents = fakeAgents()
     const git = fakeGit({ detect: false })
     const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git })
@@ -567,7 +585,7 @@ describe('ExecutionService worktree isolation', () => {
   })
 
   it('prepare failure degrades with a note; absent git face degrades too', async () => {
-    const store = await storeWith(task({}))
+    const store = await storeWith(task({ isolation: 'worktree' }))
     const git = fakeGit({ detect: true, prepare: undefined })
     const svc = new ExecutionService({ store, agents: fakeAgents(), workspaces, events: fakeEvents(), now: () => 1_000, git })
     expect((await svc.run('t-run', 'manual')).ok).toBe(true)
@@ -575,14 +593,14 @@ describe('ExecutionService worktree isolation', () => {
     expect(execution.isolation).toBe('none')
     expect(execution.isolationNote).toContain('worktree 准备失败')
 
-    const store2 = await storeWith(task({}))
+    const store2 = await storeWith(task({ isolation: 'worktree' }))
     const svc2 = new ExecutionService({ store: store2, agents: fakeAgents(), workspaces, events: fakeEvents(), now: () => 1_000 })
     expect((await svc2.run('t-run', 'manual')).ok).toBe(true)
     expect(store2.get('t-run')!.executions[0]!.isolationNote).toContain('git 集成不可用')
   })
 
   it('collect failure never blocks settlement (fail-soft evidence)', async () => {
-    const store = await storeWith(task({}))
+    const store = await storeWith(task({ isolation: 'worktree' }))
     const events = fakeEvents()
     const agents = fakeAgents()
     const git = fakeGit({ detect: true, prepare: { path: '/proj/a/.dsh-worktrees/t-run', branch: 'task/t-run', baseCommit: 'abc' } })
@@ -599,7 +617,7 @@ describe('ExecutionService worktree isolation', () => {
   })
 
   it('续跑 (reuseWorktree): prepare receives reuse mode; framing says 续跑 and warns about existing work', async () => {
-    const store = await storeWith(task({ branch: 'task/Fix+t-run' }))
+    const store = await storeWith(task({ branch: 'task/Fix+t-run', isolation: 'worktree' }))
     const agents = fakeAgents()
     const git = fakeGit({
       detect: true,
@@ -626,7 +644,7 @@ describe('ExecutionService worktree isolation', () => {
   })
 
   it('turn failure on an isolated run still records the worktree evidence', async () => {
-    const store = await storeWith(task({}))
+    const store = await storeWith(task({ isolation: 'worktree' }))
     const events = fakeEvents()
     const agents = fakeAgents()
     const git = fakeGit({
@@ -653,7 +671,7 @@ describe('ExecutionService worktree isolation', () => {
   })
 
   it('cancel on an isolated run still records the worktree evidence', async () => {
-    const store = await storeWith(task({}))
+    const store = await storeWith(task({ isolation: 'worktree' }))
     const agents = fakeAgents()
     const git = fakeGit({
       detect: true,
@@ -673,7 +691,7 @@ describe('ExecutionService worktree isolation', () => {
 
   it('degrade note distinguishes missing git binary from non-git directory; degraded framing warns', async () => {
     // git binary missing → the note names git, not the repo.
-    const store = await storeWith(task({}))
+    const store = await storeWith(task({ isolation: 'worktree' }))
     const agents = fakeAgents()
     const git = fakeGit({ detect: false, binary: false })
     const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git })
@@ -685,7 +703,7 @@ describe('ExecutionService worktree isolation', () => {
     expect(inject.content[0]!.text).toContain('git status')
 
     // git present but the directory is not a repo → the note names the repo.
-    const store2 = await storeWith(task({}))
+    const store2 = await storeWith(task({ isolation: 'worktree' }))
     const git2 = fakeGit({ detect: false, binary: true })
     const svc2 = new ExecutionService({ store: store2, agents: fakeAgents(), workspaces, events: fakeEvents(), now: () => 1_000, git: git2 })
     expect((await svc2.run('t-run', 'manual')).ok).toBe(true)

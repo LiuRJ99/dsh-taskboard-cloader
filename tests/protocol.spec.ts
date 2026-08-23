@@ -9,10 +9,14 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   ALL_STATUSES,
+  DEFAULT_ISOLATION,
   MAIN_STATUSES,
+  asBoardSettings,
   canTransition,
   checklistFromTexts,
   checklistProgress,
+  defaultIsolationOf,
+  effectiveIsolation,
   emptyLedger,
   isClaim,
   nextCronTime,
@@ -215,6 +219,40 @@ describe('execution report', () => {
 // ---------------------------------------------------------------------------
 // ledger import validation (0.4.0)
 // ---------------------------------------------------------------------------
+
+describe('board settings & default isolation (0.5.0)', () => {
+  it('factory default is 原目录执行 (none); explicit task values always win', () => {
+    expect(DEFAULT_ISOLATION).toBe('none')
+    expect(effectiveIsolation({ isolation: undefined })).toBe('none')
+    expect(effectiveIsolation({ isolation: 'worktree' })).toBe('worktree')
+    expect(effectiveIsolation({ isolation: 'none' })).toBe('none')
+  })
+
+  it('asBoardSettings sanitizes; defaultIsolationOf resolves setting → factory', () => {
+    expect(asBoardSettings({ defaultIsolation: 'worktree', junk: 1 })).toEqual({ defaultIsolation: 'worktree' })
+    expect(asBoardSettings({})).toEqual({})
+    expect(() => asBoardSettings({ defaultIsolation: 'docker' })).toThrow("isolation must be")
+    expect(() => asBoardSettings({ defaultIsolation: 42 })).toThrow("defaultIsolation must be")
+    expect(() => asBoardSettings(null)).toThrow('object')
+    expect(defaultIsolationOf(undefined)).toBe('none')
+    expect(defaultIsolationOf({})).toBe('none')
+    expect(defaultIsolationOf({ defaultIsolation: 'worktree' })).toBe('worktree')
+  })
+
+  it('validateLedgerImport carries sanitized board settings; rejects broken ones', () => {
+    const NOW = 10_000
+    const plan = validateLedgerImport({
+      schemaVersion: 1,
+      tasks: [],
+      settings: { defaultIsolation: 'worktree', stray: true },
+    }, new Set(), NOW)
+    expect(plan.settings).toEqual({ defaultIsolation: 'worktree' })
+    const clean = validateLedgerImport({ schemaVersion: 1, tasks: [] }, new Set(), NOW)
+    expect(clean.settings).toBeUndefined()
+    expect(() => validateLedgerImport({ schemaVersion: 1, tasks: [], settings: { defaultIsolation: 'vm' } }, new Set(), NOW))
+      .toThrow('isolation must be')
+  })
+})
 
 describe('ledger import validation', () => {
   const NOW = 10_000

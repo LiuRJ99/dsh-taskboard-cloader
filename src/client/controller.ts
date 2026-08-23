@@ -8,7 +8,7 @@
  * @module dsh-taskboard/client/controller
  */
 import type { ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
-import type { ChecklistItem, IsolationMode, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
+import type { ChecklistItem, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
 import type { SessionJumpResult } from './session-jump.ts'
@@ -26,26 +26,6 @@ export type SortBy = 'default' | 'updated' | 'urgency' | 'created'
 
 /** localStorage key for persisted view state (filters + sort). */
 const VIEW_KEY = 'dsh-taskboard-view-v1'
-
-/** localStorage key for the remembered isolation toggle choice (0.3.0). */
-const ISOLATION_KEY = 'dsh-taskboard-isolation-v1'
-
-/** Load the remembered default isolation (worktree unless explicitly turned off). */
-export function loadDefaultIsolation(): IsolationMode {
-  try {
-    const raw = localStorage.getItem(ISOLATION_KEY)
-    return raw === 'none' ? 'none' : 'worktree'
-  } catch {
-    return 'worktree'
-  }
-}
-
-/** Remember the isolation toggle choice across forms (best effort). */
-export function saveDefaultIsolation(mode: IsolationMode): void {
-  try {
-    localStorage.setItem(ISOLATION_KEY, mode)
-  } catch { /* storage unavailable — choice just won't persist */ }
-}
 
 /** Load the persisted view state (never throws; fresh on any parse error). */
 function loadView(): { workspaceId?: string; urgencies: Urgency[]; sortBy: SortBy } {
@@ -92,6 +72,8 @@ export interface ControllerState {
   tplManagerOpen: boolean
   /** Import modal visible (0.4.0). */
   importOpen: boolean
+  /** Board-settings modal visible (0.5.0). */
+  settingsOpen: boolean
   /** Fields a chosen template prefills into the create form (consumed on open). */
   templatePrefill?: TaskTemplateSpec
   /** Transient error surface (action failures); cleared on next success. */
@@ -114,6 +96,7 @@ function initialState(): ControllerState {
     templates: [],
     tplManagerOpen: false,
     importOpen: false,
+    settingsOpen: false,
   }
 }
 
@@ -458,6 +441,28 @@ export class BoardController {
 
   /** Close the ⚙ diagnostics panel. */
   closeDiagnostics(): void { this.setState({ diagOpen: false }) }
+
+  /** Open the board-settings modal (0.5.0). */
+  openSettings(): void { this.setState({ settingsOpen: true }) }
+
+  /** Close the board-settings modal. */
+  closeSettings(): void { this.setState({ settingsOpen: false }) }
+
+  /**
+   * Replace board settings (0.5.0). The host broadcasts a settings-updated
+   * frame; refresh() pulls ledger.settings so every open view follows.
+   * @returns whether the write succeeded.
+   */
+  async updateSettings(body: Parameters<TaskboardClient['updateSettings']>[0]): Promise<boolean> {
+    try {
+      await this.client.updateSettings(body)
+      await this.refresh()
+      return true
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+      return false
+    }
+  }
 
   /** Clean one orphan worktree (⚙ panel); refreshes the diagnostics payload. */
   async cleanupOrphan(workspaceId: string, taskId: string): Promise<void> {

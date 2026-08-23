@@ -689,6 +689,10 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-imp-row-status { font-size: 10.5px; color: var(--dsw-alias-label-tertiary, gray); flex-shrink: 0; }
 .dsh-atb-imp-result { font-size: 12px; color: var(--dsw-alias-state-success-primary, #30a46c); margin-top: 10px; }
 .dsh-atb-badge[data-kind="checklist"] { color: var(--dsw-alias-label-secondary, inherit); }
+/* ---------- 0.5.0 board settings ---------- */
+.dsh-atb-set { max-width: 460px; width: min(460px, 92vw); }
+.dsh-atb-set .dsh-atb-mode-picker { margin-top: 8px; }
+.dsh-atb-set .dsh-atb-isolation-note { margin-top: 10px; }
 `
 
 /** Style element id (stable since 0.1.x: hook for tests and debugging). */

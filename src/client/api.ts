@@ -18,10 +18,12 @@ import type {
   MoveTaskBody,
   RejectTaskBody,
   RunTaskBody,
+  SettingsResponse,
   StateResponse,
   TaskRecord,
   TaskTemplate,
   TemplatesResponse,
+  UpdateSettingsBody,
   UpdateTaskBody,
   WorktreeRemoveBody,
   WorkspaceView,
@@ -82,6 +84,10 @@ export interface TaskboardClient {
   templateUpsert(body: { id?: string; name: string; task: TaskTemplate['task'] }): Promise<TaskTemplate>
   /** Delete a template by id. */
   templateDelete(id: string): Promise<{ deleted: boolean }>
+  /** Board settings (0.5.0; absent fields = factory defaults). */
+  settings(): Promise<SettingsResponse>
+  /** Replace board settings (whole-object semantics; affects new tasks only). */
+  updateSettings(body: UpdateSettingsBody): Promise<SettingsResponse>
   /** Subscribe to change frames; the disposer stops the stream. */
   stream(onChange: (event: ChangeEvent) => void, onGap: () => void): () => void
 }
@@ -115,6 +121,8 @@ export function createClient(): TaskboardClient {
     templates: () => unwrap<TemplatesResponse>(fetch('/dsh-taskboard/templates')),
     templateUpsert: body => post('/dsh-taskboard/templates', body),
     templateDelete: id => post('/dsh-taskboard/templates/delete', { id }),
+    settings: () => unwrap<SettingsResponse>(fetch('/dsh-taskboard/settings')),
+    updateSettings: body => post('/dsh-taskboard/settings/update', body),
     stream(onChange, onGap) {
       const es = new EventSource('/dsh-taskboard/events')
       let revision: number | undefined

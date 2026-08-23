@@ -12,6 +12,7 @@ import { PLUGIN_VERSION } from '../../shared/version.ts'
 import { DRAG_TYPE, TaskCard } from './TaskCard.tsx'
 import { TaskDetail } from './TaskDetail.tsx'
 import { TaskFormModal } from './TaskFormModal.tsx'
+import { SettingsModal } from './SettingsModal.tsx'
 import { ImportModal } from './ImportModal.tsx'
 import { TemplateManager } from './TemplateManager.tsx'
 import { useAlert } from './AlertModal.tsx'
@@ -90,6 +91,9 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
   // + 新建任务 ▼ dropdown (0.4.0): blank / templates / manage / import.
   const [newMenuOpen, setNewMenuOpen] = useState(false)
   const closeMenu = (): void => setNewMenuOpen(false)
+  // ⬇ 导出 ▼ dropdown (0.5.1): whole-ledger JSON backup or task-list CSV.
+  const [exportOpen, setExportOpen] = useState(false)
+  const closeExport = (): void => setExportOpen(false)
 
   return (
     <div className="dsh-atb-board">
@@ -174,10 +178,42 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
         <button type="button" className="dsh-atb-btn" onClick={() => controller.toggleSecondary()}>
           {state.secondaryOpen ? '返回看板' : '其它任务'}
         </button>
+        <button type="button" className="dsh-atb-btn" title="看板设置：新建任务的默认执行隔离等" onClick={() => controller.openSettings()}>🛠 设置</button>
         <button type="button" className="dsh-atb-btn" title="健康诊断：遗留 worktree、台账基本项" onClick={() => controller.openDiagnostics()}>⚙ 诊断</button>
         <button type="button" className="dsh-atb-btn" title="从 JSON 备份文件导入台账（预览后合并或整册替换）" onClick={() => controller.openImport()}>⬆ 导入</button>
-        <button type="button" className="dsh-atb-btn" title="下载完整台账备份（JSON）" onClick={() => controller.exportJson()}>⬇ JSON</button>
-        <button type="button" className="dsh-atb-btn" title="下载任务清单（CSV）" onClick={() => controller.exportCsv()}>⬇ CSV</button>
+        <div className="dsh-atb-newmenu">
+          <button
+            type="button"
+            className="dsh-atb-btn"
+            title="导出台账：完整 JSON 备份或任务清单 CSV"
+            onClick={() => setExportOpen(!exportOpen)}
+          >
+            ⬇ 导出 ▼
+          </button>
+          {exportOpen && (
+            <>
+              <div className="dsh-atb-newmenu-backdrop" onClick={closeExport} />
+              <div className="dsh-atb-newmenu-list">
+                <button
+                  type="button"
+                  className="dsh-atb-newmenu-opt"
+                  title="完整台账备份（含执行历史与看板设置），可用于导入恢复"
+                  onClick={() => { closeExport(); controller.exportJson() }}
+                >
+                  完整台账（JSON）
+                </button>
+                <button
+                  type="button"
+                  className="dsh-atb-newmenu-opt"
+                  title="任务清单表格（Excel 可直接打开，中文已加 BOM）"
+                  onClick={() => { closeExport(); controller.exportCsv() }}
+                >
+                  任务清单（CSV）
+                </button>
+              </div>
+            </>
+          )}
+        </div>
         <a
           className="dsh-atb-ver"
           href="https://github.com/cloader/dsh-taskboard"
@@ -260,6 +296,8 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
       )}
 
       {state.diagOpen && <DiagnosticsPanel controller={controller} />}
+
+      {state.settingsOpen && <SettingsModal controller={controller} />}
 
       {state.importOpen && <ImportModal controller={controller} />}
 
