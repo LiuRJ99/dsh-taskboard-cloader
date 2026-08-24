@@ -320,7 +320,8 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
             return path !== WORKTREE_DIR && !path.startsWith(`${WORKTREE_DIR}/`)
           })
         if (dirtyLines.length > 0) {
-          throw new Error(`主工作区有 ${dirtyLines.length} 处未提交修改，请先提交或暂存后再合并`)
+          // Machine-readable tag: callers classify without parsing zh-CN text.
+          throw Object.assign(new Error(`主工作区有 ${dirtyLines.length} 处未提交修改，请先提交或暂存后再合并`), { code: 'dirty-tree' })
         }
       }
       const merged = await heavy(['merge', '--no-ff', '--no-edit', branch], root)
@@ -342,7 +343,8 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
       const status = await quick(['status', '--porcelain'], worktreePath)
       if (status.ok && status.stdout.trim().length > 0) {
         const lines = status.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0)
-        throw new Error(`worktree 有 ${lines.length} 处未提交修改，拒绝删除：\n${lines.slice(0, 10).join('\n')}`)
+        // Machine-readable tag: purge flows classify without parsing zh-CN text.
+        throw Object.assign(new Error(`worktree 有 ${lines.length} 处未提交修改，拒绝删除：\n${lines.slice(0, 10).join('\n')}`), { code: 'dirty-worktree' })
       }
       const removed = await heavy(['worktree', 'remove', worktreePath], root)
       if (removed.ok) return 'removed'

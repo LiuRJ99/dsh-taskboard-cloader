@@ -141,8 +141,10 @@ export const ERR = {
   invalidInput: 'invalid_input',
 } as const
 
-/** Tool failure: an Error whose message starts with a stable code. */
-class ToolError extends Error {
+/** Tool failure: an Error whose message starts with a stable code. The code
+ *  is also carried structurally so the routes layer can map failures without
+ *  re-parsing messages (review P2). */
+export class ToolError extends Error {
   constructor(readonly code: string, detail: string) {
     super(`Error: ${code}: ${detail}`)
   }

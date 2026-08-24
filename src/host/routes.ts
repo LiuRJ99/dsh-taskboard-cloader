@@ -43,6 +43,7 @@ import type { TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
 import type { TaskStore } from './store.ts'
+import { ERR, ToolError } from './tools.ts'
 import type { WorkspaceFace } from './tools.ts'
 
 /** Heartbeat cadence for the SSE stream. */
@@ -83,7 +84,7 @@ export interface TaskboardRoutesOptions {
 }
 
 /** Validate a template's task spec (routes-side, unknown → invalid_input). */
-function normalizeTemplateSpec(raw: unknown): TaskTemplate['task'] {
+function normalizeTemplateSpec(raw: unknown, now: number): TaskTemplate['task'] {
   if (typeof raw !== 'object' || raw === null) throw new Error('Error: invalid_input: task must be an object')
   const e = raw as Record<string, unknown>
   const spec: TaskTemplate['task'] = {}
@@ -106,7 +107,7 @@ function normalizeTemplateSpec(raw: unknown): TaskTemplate['task'] {
   if (isolation !== undefined) spec.isolation = asIsolation(isolation)
   if (presetId !== undefined && presetId.trim().length > 0) spec.presetId = presetId.trim()
   if (e.execution !== undefined) {
-    spec.execution = normalizeExecution(e.execution as { mode?: string; cron?: string }, Date.now())
+    spec.execution = normalizeExecution(e.execution as { mode?: string; cron?: string }, now)
   }
   if (e.model !== undefined) spec.model = normalizeModel(e.model)
   if (e.checklist !== undefined) {
@@ -197,9 +198,18 @@ function normalizePresetId(raw: string | null): string | undefined {
 /** Map a thrown domain error to the envelope. */
 function toFail(error: unknown): { res: ApiFail; status: number } {
   const message = error instanceof Error ? error.message : String(error)
+  // Structured path first (review P2): ToolError carries its code — no need
+  // to parse the 'Error: <code>: …' prefix it also renders into the message.
+  if (error instanceof ToolError) {
+    const mapped = error.code === ERR.workspaceMismatch ? 'forbidden' : error.code
+    const known: ApiFail['error']['code'][] = ['invalid_input', 'not_found', 'version_conflict', 'invalid_transition', 'forbidden', 'internal']
+    if ((known as string[]).includes(mapped)) {
+      return fail(mapped as ApiFail['error']['code'], message.slice(7 + error.code.length + 2))
+    }
+  }
   const code = message.startsWith('Error: ') ? message.slice(7).split(':')[0] : undefined
-  const known: ApiFail['error']['code'][] = ['invalid_input', 'not_found', 'version_conflict', 'invalid_transition', 'forbidden', 'internal']
-  if (code !== undefined && (known as string[]).includes(code)) {
+  const known2: ApiFail['error']['code'][] = ['invalid_input', 'not_found', 'version_conflict', 'invalid_transition', 'forbidden', 'internal']
+  if (code !== undefined && (known2 as string[]).includes(code)) {
     return fail(code as ApiFail['error']['code'], message.slice(7 + code.length + 2))
   }
   if (code === 'workspace_mismatch') return fail('forbidden', message.slice(7 + code.length + 2))
@@ -409,7 +419,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
       }
 
       if (req.method !== 'POST') {
-        res.writeHead(405)
+        res.writeHead(405, { allow: 'GET, POST' })
         res.end()
         return
       }
@@ -652,7 +662,10 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
                     }
                   } catch (error) {
                     const message = error instanceof Error ? error.message : String(error)
-                    if (message.includes('未提交修改')) {
+                    // Structured classification (review P2): git tags its dirty
+                    // rejections with a code; the keyword stays as a fallback.
+                    const dirty = (error as { code?: string }).code === 'dirty-worktree' || message.includes('未提交修改')
+                    if (dirty) {
                       throw new Error(`Error: invalid_input: ${message}；请先处理这些改动（提交、续跑或手动保存）再物理清除任务`)
                     }
                     throw new Error(`Error: invalid_input: ${message}`)
@@ -961,7 +974,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const template = await options.templates.upsert({
             id: str(body, 'id') ?? undefined,
             name,
-            task: normalizeTemplateSpec(body.task),
+            task: normalizeTemplateSpec(body.task, options.now()),
           })
           json(res, { ok: true, value: template }, 201)
         } catch (error) {

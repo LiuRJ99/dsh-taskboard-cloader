@@ -135,12 +135,14 @@ export function createClient(): TaskboardClient {
       const es = new EventSource('/dsh-taskboard/events')
       let revision: number | undefined
       const hello = (event: MessageEvent): void => {
-        const payload = JSON.parse(event.data) as { revision: number }
+        let payload: { revision: number }
+        try { payload = JSON.parse(event.data) as { revision: number } } catch { return } // malformed frame → ignore
         if (revision !== undefined && payload.revision !== revision) onGap()
         revision = payload.revision
       }
       const change = (event: MessageEvent): void => {
-        const payload = JSON.parse(event.data) as ChangeEvent
+        let payload: ChangeEvent
+        try { payload = JSON.parse(event.data) as ChangeEvent } catch { return } // malformed frame → ignore
         // A gap means we missed frames while disconnected: reconcile fully.
         if (revision !== undefined && payload.revision !== revision + 1) onGap()
         revision = payload.revision

@@ -148,8 +148,9 @@ export class BoardController {
     this.disposeStream = this.client.stream(
       (change: ChangeEvent) => {
         this.seenRevision = change.revision
-        this.setState({ ledger: { ...this.state.ledger, revision: change.revision } })
         // Any change invalidates the full snapshot; refetch (cheap, local).
+        // No intermediate revision-only setState — the refresh result is the
+        // single render a frame produces (review P2: frames rendered twice).
         void this.refresh()
       },
       () => { void this.refresh() },

@@ -13,7 +13,7 @@ import type { BoardController } from '../controller.ts'
 import type { TaskTemplateSpec } from '../../shared/api.ts'
 import type { ChecklistItem, IsolationMode, Urgency } from '../../shared/protocol.ts'
 import { MAX_CHECKLIST_ITEMS, defaultIsolationOf, nextCronTime, parseCron } from '../../shared/protocol.ts'
-import { fmtTime } from './TaskBoard.tsx'
+import { fmtTime } from './format.ts'
 
 /** One row of the configured model catalog (from llm.models). */
 export interface CatalogModel { provider: string; model: string; name?: string }

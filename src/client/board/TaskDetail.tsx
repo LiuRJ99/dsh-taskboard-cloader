@@ -12,21 +12,14 @@ import type { BoardController } from '../controller.ts'
 import type { ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
 import { canTransition, checklistProgress } from '../../shared/protocol.ts'
 import { useAlert } from './AlertModal.tsx'
-import { fmtTime, isStaleClaim } from './TaskBoard.tsx'
+import { fmtTime, isStaleClaim } from './format.ts'
+import { MOVE_LABEL, OUTCOME_LABEL, STATUS_LABEL, URGENCY_LABEL } from './labels.ts'
 
 /** Statuses a user may move this task to, per the state machine. */
 function moveTargets(task: TaskRecord): TaskRecord['status'][] {
   const all: TaskRecord['status'][] = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'canceled', 'archived']
   return all.filter(to => canTransition(task.status, to))
 }
-
-const MOVE_LABEL: Record<string, string> = {
-  backlog: '待规划', todo: '待办', in_progress: '进行中', in_review: '待验收',
-  done: '完成', canceled: '取消', archived: '归档',
-}
-const STATUS_LABEL: Record<string, string> = { ...MOVE_LABEL }
-const URGENCY_LABEL: Record<string, string> = { urgent: '紧急', normal: '一般', relaxed: '不急' }
-const OUTCOME_LABEL: Record<string, string> = { running: '执行中', succeeded: '成功', failed: '失败', cancelled: '已取消' }
 
 /** Compact session-id display (execution sessions carry the taskboard infix). */
 function shortId(id: string | undefined): string {
