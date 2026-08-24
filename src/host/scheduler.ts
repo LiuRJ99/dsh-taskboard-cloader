@@ -25,11 +25,23 @@ export interface SchedulerDeps {
   now: () => number
   /** Max concurrently running executions (default 3; must match the execution service). */
   maxConcurrent?: number
-  /** Timer face (injectable for tests). */
+  /** Timer face (injectable for tests). The timeout pair is optional so
+   *  older injections keep working; gaps fall back to the globals. */
   timers?: {
     setInterval(fn: () => void, ms: number): unknown
     clearInterval(handle: unknown): void
+    setTimeout?(fn: () => void, ms: number): unknown
+    clearTimeout?(handle: unknown): void
   }
+}
+
+type SchedulerTimers = NonNullable<SchedulerDeps['timers']>
+
+const DEFAULT_TIMERS: Required<SchedulerTimers> = {
+  setInterval: (fn: () => void, ms: number): unknown => setInterval(fn, ms),
+  clearInterval: (handle: unknown): void => { clearInterval(handle as Parameters<typeof clearInterval>[0]) },
+  setTimeout: (fn: () => void, ms: number): unknown => setTimeout(fn, ms),
+  clearTimeout: (handle: unknown): void => { clearTimeout(handle as Parameters<typeof clearTimeout>[0]) },
 }
 
 /**
@@ -37,32 +49,37 @@ export interface SchedulerDeps {
  */
 export class SchedulerService {
   private handle: unknown
-  private catchup: ReturnType<typeof setTimeout> | undefined
+  private catchup: unknown
+  private timers: Required<SchedulerTimers> = DEFAULT_TIMERS
 
   /** @param deps - store + execution + clock. */
   constructor(private readonly deps: SchedulerDeps) {}
 
   /** Start ticking. */
   start(): void {
-    const timers = this.deps.timers ?? {
-      setInterval: (fn: () => void, ms: number) => setInterval(fn, ms),
-      clearInterval: (handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>),
-    }
-    this.handle = timers.setInterval(() => { void this.tick() }, TICK_MS)
+    // Fill optional timer slots from the globals so a legacy injection that
+    // only carries the interval pair still works end to end.
+    this.timers = this.deps.timers === undefined ? DEFAULT_TIMERS : { ...DEFAULT_TIMERS, ...this.deps.timers }
+    // A tick rejection (disk error inside a mutation) must never surface as
+    // an unhandled rejection — log it and keep the schedule alive.
+    this.handle = this.timers.setInterval(() => { void this.tick().catch(error => {
+      console.error('[dsh-taskboard] scheduler tick failed:', error)
+    }) }, TICK_MS)
     // Catch up promptly on host restart: run one tick soon after start. The
-    // handle is cleared on dispose so a torn-down scheduler never fires.
-    this.catchup = setTimeout(() => { void this.tick() }, 3_000)
+    // handles are cleared on dispose so a torn-down scheduler never fires.
+    this.catchup = this.timers.setTimeout(() => { void this.tick().catch(error => {
+      console.error('[dsh-taskboard] scheduler tick failed:', error)
+    }) }, 3_000)
   }
 
   /** Stop ticking. */
   dispose(): void {
     if (this.catchup !== undefined) {
-      clearTimeout(this.catchup)
+      this.timers.clearTimeout(this.catchup)
       this.catchup = undefined
     }
     if (this.handle === undefined) return
-    const timers = this.deps.timers ?? { clearInterval: (h: unknown) => clearInterval(h as ReturnType<typeof setInterval>) }
-    timers.clearInterval(this.handle)
+    this.timers.clearInterval(this.handle)
     this.handle = undefined
   }
 
