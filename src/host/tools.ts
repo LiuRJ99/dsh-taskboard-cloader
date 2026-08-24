@@ -833,7 +833,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     description:
       'Submit the structured execution report for the task you are currently executing (summary / changed '
       + 'files / how you verified / artifacts / remaining risk). Submit BEFORE moving the task to in_review; '
-      + 'a later submission overwrites the previous report. Commits and diffs are host-collected — do not repeat them.',
+      + 'a later submission overwrites the previous report. If your run already settled, you may back-submit '
+      + 'onto your latest succeeded execution while you still hold the task. Commits and diffs are host-collected.',
     parameters: {
       summary: { type: 'string', required: true, description: 'What was done (1..2000 chars).' },
       changedFiles: {
@@ -875,8 +876,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       try {
         const { sessionId } = caller(exec as ToolRunContext)
         const report = normalizeExecutionReport(args)
-        // Locate the RUNNING execution this session owns — reports attach to
-        // the live run, so the agent never needs to know execution ids.
+        // Path 1 (unchanged): attach to the RUNNING execution this session
+        // owns — reports ride the live run, so the agent never needs ids.
         let taskId: string | undefined
         let executionId: string | undefined
         await store.mutate('execution-recorded', ledger => {
@@ -891,8 +892,28 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           }
           return undefined
         })
+        // Path 2 (review follow-up, P2): back-submit onto a session-owned
+        // SETTLED execution — the main conversation claims tasks directly and
+        // has no live run. Allowed when the session holds the task or owns
+        // its latest successful execution; never touches anyone else's runs.
         if (taskId === undefined || executionId === undefined) {
-          throw new ToolError(ERR.forbidden, 'no running execution belongs to this session — the report can only be submitted while the taskboard execution session is still running')
+          await store.mutate('execution-recorded', ledger => {
+            for (const task of ledger.tasks) {
+              if (task.trashedAt !== undefined || task.status === 'archived') continue
+              const last = task.executions[task.executions.length - 1]
+              const owned = last !== undefined && last.sessionId === sessionId && last.outcome === 'succeeded'
+              const holds = task.claimedBy === sessionId && last !== undefined && last.sessionId === sessionId
+              if (!owned && !holds) continue
+              last!.report = report
+              taskId = task.id
+              executionId = last!.id
+              return [task]
+            }
+            return undefined
+          })
+        }
+        if (taskId === undefined || executionId === undefined) {
+          throw new ToolError(ERR.forbidden, 'no running execution and no settled execution of yours to report on — reports attach to your running execution, or back-submit onto your latest succeeded one while you hold the task')
         }
         return json({ taskId, executionId, report })
       } catch (error) { fail(error) }
