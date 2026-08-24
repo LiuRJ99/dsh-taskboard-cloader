@@ -393,6 +393,89 @@ describe('ExecutionService', () => {
     expect(store.get('t-run')!.executions[0]!.outcome).toBe('cancelled')
   })
 
+  it('cancel after the execution settled reports failure instead of fake success', async () => {
+    const store = await storeWith(task())
+    const disposed: string[] = []
+    // Gate the agent dispose so a cancel in flight parks there while the
+    // run's success settlement commits first (the stale-read race that used
+    // to report 取消成功 for an already-succeeded run).
+    let releaseDispose: (() => void) | undefined
+    const disposeGate = new Promise<void>(resolve => { releaseDispose = resolve })
+    let idle: (() => void) | undefined
+    const agents: AgentsFace = {
+      async create(options: { sessionId: string }) {
+        return {
+          agent: {
+            id: options.sessionId,
+            followup: () => {},
+            inject: () => {},
+            whenIdle: () => new Promise<void>(resolve => { idle = resolve }),
+          },
+          dispose: async () => { disposed.push(options.sessionId); await disposeGate },
+        }
+      },
+    } as never
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    const result = await svc.run('t-run', 'manual')
+    if (!result.ok) throw new Error('run failed')
+
+    // Settle the run (quiescence) and start the cancel BEFORE that settlement
+    // commits: cancel's synchronous read still sees 'running', then parks on
+    // the gated dispose while the success settlement wins the store queue.
+    idle!()
+    const cancelling = svc.cancel('t-run')
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
+    releaseDispose!()
+    const cancelled = await cancelling
+    expect(cancelled.ok).toBe(false)
+    if (!cancelled.ok) expect(cancelled.error).toContain('already settled')
+    // The committed settlement survived intact — no fabricated cancel state.
+    const t = store.get('t-run')!
+    expect(t.executions[0]!.outcome).toBe('succeeded')
+    expect(t.status).toBe('in_review')
+    // The cancel really reached the dispose step (it was just too late).
+    expect(disposed).toEqual([result.sessionId])
+  })
+
+  it('dispose() detaches the turn/end listener: late failures write nothing', async () => {
+    // A live-looking execution gives an attached listener something to write.
+    const store = await storeWith(task({
+      status: 'in_progress',
+      claimedBy: 'session-live',
+      claimedAt: 1,
+      executions: [{ id: 'e-live', sessionId: 'session-live', trigger: 'manual', startedAt: 1, outcome: 'running' }],
+    }))
+    const events = fakeEvents()
+    const unsubCalls: string[] = []
+    const innerOn = events.onSessionEvent
+    // Recording events face: the unsubscribe spy ALSO removes the listener
+    // (real bus semantics), so a post-dispose dispatch reaches nobody.
+    const recording: EventsFace = {
+      onSessionEvent: listener => {
+        const off = innerOn(listener)
+        return () => { unsubCalls.push('unsubscribe'); off() }
+      },
+    }
+    const svc = new ExecutionService({ store, agents: fakeAgents(), workspaces, events: recording, now: () => 1_000 })
+
+    svc.dispose()
+    expect(unsubCalls).toEqual(['unsubscribe'])
+
+    // A late turn/end error for the live session: no listener is attached,
+    // so noteFailure never runs and the ledger is untouched.
+    const revisionBefore = store.snapshot().revision
+    events.dispatch('session-live', { type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'late failure' } } } })
+    // Deterministic drain: let any would-be settlement enqueue, then wait
+    // behind the store's serial queue before asserting nothing happened.
+    await new Promise(r => setTimeout(r, 0))
+    await store.read(() => undefined)
+    const t = store.get('t-run')!
+    expect(t.executions[0]!.outcome).toBe('running')
+    expect(t.status).toBe('in_progress')
+    expect(t.comments).toHaveLength(0)
+    expect(store.snapshot().revision).toBe(revisionBefore)
+  })
+
   it('reconciles stale running executions after a host restart', async () => {
     const interrupted = task({
       id: 't-restart',

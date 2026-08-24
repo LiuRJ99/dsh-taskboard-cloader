@@ -334,6 +334,46 @@ describe('taskboard routes', () => {
     expect(bad.status).toBe(404)
   })
 
+  it('archived tasks are immutable: update and comment both refuse with 400 invalid_transition', async () => {
+    const created = await post('/dsh-taskboard/tasks', { title: '已归档', workspaceId: 'ws-a', urgency: 'normal' })
+    const id = created.json.value.id as string
+    await store.mutate('task-updated', ledger => {
+      const target = ledger.tasks.find(t => t.id === id)!
+      target.status = 'archived'
+      target.version += 1
+      return [target]
+    })
+    const full = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+
+    const upd = await post(`/dsh-taskboard/tasks/${id}/update`, { ifVersion: full.value.version, title: '不该改' })
+    expect(upd.status).toBe(400)
+    expect(upd.json.error.code).toBe('invalid_transition')
+    expect(upd.json.error.message).toContain('archived tasks are immutable')
+
+    const comment = await post(`/dsh-taskboard/tasks/${id}/comment`, { body: '迟到的评论' })
+    expect(comment.status).toBe(400)
+    expect(comment.json.error.code).toBe('invalid_transition')
+
+    // Nothing slipped through: title/version/comments all frozen.
+    const after = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    expect(after.value.title).toBe('已归档')
+    expect(after.value.version).toBe(full.value.version)
+    expect(after.value.comments).toEqual([])
+  })
+
+  it('POST /tasks rejects non-initial statuses (backlog/todo only)', async () => {
+    const bad = await post('/dsh-taskboard/tasks', { title: '不能直接进行中', workspaceId: 'ws-a', urgency: 'normal', status: 'in_progress' })
+    expect(bad.status).toBe(400)
+    expect(bad.json.error.code).toBe('invalid_transition')
+    expect(bad.json.error.message).toContain('a new task must start as backlog or todo')
+    expect(store.snapshot().tasks).toHaveLength(0) // nothing was created
+
+    // backlog is a legal starting status (未授权 backlog column).
+    const backlog = await post('/dsh-taskboard/tasks', { title: '储备', workspaceId: 'ws-a', urgency: 'relaxed', status: 'backlog' })
+    expect(backlog.status).toBe(201)
+    expect(backlog.json.value.status).toBe('backlog')
+  })
+
   it('keeps an agent claim alive across user edits; a user move releases it', async () => {
     const created = await post('/dsh-taskboard/tasks', { title: 'Held', workspaceId: 'ws-a', urgency: 'normal' })
     const id = created.json.value.id as string
