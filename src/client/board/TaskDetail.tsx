@@ -374,6 +374,10 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
   const [confirmDone, setConfirmDone] = useState(false)
   const [confirmPurge, setConfirmPurge] = useState(false)
   const [confirmCancel, setConfirmCancel] = useState(false)
+  // Top action buttons (duplicate / save-as-template / run / reuse-run)
+  // share one in-flight guard: a double click used to fire duplicate runs or
+  // copies while the first round-trip was still pending (review P0).
+  const [actionBusy, setActionBusy] = useState(false)
   const { alert: showAlert, el: alertEl } = useAlert()
   const ws = controller.getSnapshot().workspaces.find(w => w.id === task.workspaceId)
   const canRun = task.status !== 'in_progress' && task.status !== 'done' && task.status !== 'archived'
@@ -381,6 +385,13 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
   const holder = task.status === 'in_progress' ? task.claimedBy : undefined
   const stale = now !== undefined && isStaleClaim(task, now)
   const unchecked = (task.checklist ?? []).filter(i => !i.checked).length
+
+  /** Fire one top action under the shared busy guard; re-enable on settle. */
+  const runAction = (action: () => Promise<unknown>): void => {
+    if (actionBusy) return
+    setActionBusy(true)
+    void action().catch(() => undefined).finally(() => setActionBusy(false))
+  }
 
   /** Jump to an execution's session; prompt precisely when it cannot open. */
   const jumpToSession = (sessionId: string): void => {
@@ -435,7 +446,8 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
             type="button"
             className="dsh-atb-detail-edit"
             title="复制此任务的全部配置为一张新卡（待办列）"
-            onClick={() => void controller.duplicate(task)}
+            disabled={actionBusy}
+            onClick={() => runAction(() => controller.duplicate(task))}
           >
             ⧉ 复制
           </button>
@@ -443,11 +455,11 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
             type="button"
             className="dsh-atb-detail-edit"
             title="把此任务的配置（含清单）保存为模板，新建任务时可用"
-            onClick={() => {
-              void controller.saveAsTemplate(task).then(ok => {
-                if (ok) showAlert('已存为模板（新建任务 ▼ 下拉可用，可在模板管理中改名）')
-              })
-            }}
+            disabled={actionBusy}
+            onClick={() => runAction(async () => {
+              const ok = await controller.saveAsTemplate(task)
+              if (ok) showAlert('已存为模板（新建任务 ▼ 下拉可用，可在模板管理中改名）')
+            })}
           >
             ⌗ 存为模板
           </button>
@@ -456,7 +468,8 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
               type="button"
               className="dsh-atb-detail-run"
               title="续跑：保留现有 worktree 与分支（上次的改动和提交都在原处），在其上继续执行；默认「立即执行」会重置为全新基线"
-              onClick={() => void controller.run(task.id, true)}
+              disabled={actionBusy}
+              onClick={() => runAction(() => controller.run(task.id, true))}
             >
               ↻ 续跑
             </button>
@@ -466,7 +479,8 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
               type="button"
               className="dsh-atb-detail-run"
               title={task.model !== undefined ? `新会话执行（${task.model.model}）` : '新会话执行（默认模型）'}
-              onClick={() => void controller.run(task.id)}
+              disabled={actionBusy}
+              onClick={() => runAction(() => controller.run(task.id))}
             >
               ▶ 立即执行
             </button>

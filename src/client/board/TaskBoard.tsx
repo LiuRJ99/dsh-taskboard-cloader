@@ -284,7 +284,9 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
 
       {selected !== undefined && (
         <div className="dsh-atb-detailpanel">
-          <TaskDetail task={selected} controller={controller} now={now} />
+          {/* key: remount per task — without it, confirm states and comment
+              drafts leak across task switches (review P0). */}
+          <TaskDetail key={selected.id} task={selected} controller={controller} now={now} />
         </div>
       )}
 
