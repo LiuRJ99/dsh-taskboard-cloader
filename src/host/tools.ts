@@ -430,8 +430,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         }
         const urgency = asUrgency(args.urgency)
         const status = args.status === undefined ? 'todo' as const : asStatus(args.status)
-        if (status === 'done' || status === 'archived') {
-          throw new ToolError(ERR.invalidTransition, 'a new task cannot start as done/archived')
+        if (status !== 'backlog' && status !== 'todo') {
+          throw new ToolError(ERR.invalidTransition, 'a new task must start as backlog or todo (in_progress requires claiming the task)')
         }
         const execution = normalizeExecution(args.execution ?? {}, deps.now())
         const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
@@ -646,6 +646,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         let next: TaskRecord | undefined
         await store.mutate('comment-added', ledger => {
           const { index, task } = liveTaskAt(ledger, args.id)
+          if (task.status === 'archived') throw new ToolError(ERR.invalidTransition, 'archived tasks are immutable')
           next = structuredClone(task)
           next.comments.push(comment)
           next.version = task.version + 1

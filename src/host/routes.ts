@@ -442,6 +442,9 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           if (workspaces.get(workspaceId) === undefined) throw new Error('Error: not_found: unknown workspace')
           const urgency = asUrgency(str(body, 'urgency') ?? '')
           const status = str(body, 'status') === null ? 'todo' as const : asStatus(str(body, 'status')!)
+          if (status !== 'backlog' && status !== 'todo') {
+            throw new Error('Error: invalid_transition: a new task must start as backlog or todo')
+          }
           const execution = normalizeExecution((body.execution as { mode?: string; cron?: string } | undefined) ?? {}, options.now())
           const model = body.model === undefined ? undefined : checkModel(body.model, options.modelProviders)
           const isolationRaw = str(body, 'isolation')
@@ -511,6 +514,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             await store.mutate('task-updated', ledger => {
               const { index, task } = liveTaskAt(ledger, id)
               if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
+              if (task.status === 'archived') throw new Error('Error: invalid_transition: archived tasks are immutable')
               next = structuredClone(task)
               const title = str(body, 'title')
               if (title !== null) next.title = normalizeTitle(title)
@@ -614,6 +618,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             const comment = { id: newCommentId(), body: normalizeBody(bodyText), version: 1, createdAt: options.now() }
             await store.mutate('comment-added', ledger => {
               const { index, task } = liveTaskAt(ledger, id)
+              if (task.status === 'archived') throw new Error('Error: invalid_transition: archived tasks are immutable')
               const next = structuredClone(task)
               next.comments.push(comment)
               next.version = task.version + 1
