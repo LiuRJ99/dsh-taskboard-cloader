@@ -465,34 +465,39 @@ function fakeWorkspaces(): WorkspaceFace {
   }
 }
 
-/** Build a registered tool set over a temp store; returns name → tool. */
-async function toolSet(cwd: string): Promise<Map<string, { execute(args: unknown, exec: unknown): Promise<unknown> }>> {
-  const dir = await mkdtemp(join(tmpdir(), 'taskboard-tools-'))
-  const store = new TaskStore({ file: join(dir, 'ledger.json') })
-  await store.mutate('task-created', ledger => {
-    ledger.tasks.push(makeTask('t-1'), makeTask('t-2', { workspaceId: 'ws-b' }))
-    return ledger.tasks
-  })
-  const deps: ToolDeps = { store, workspaces: fakeWorkspaces(), now: () => 1_000 }
-  const tools = new Map<string, { execute(args: unknown, exec: unknown): Promise<unknown> }>()
-  const ctx = {
-    tools: {
-      register(tool: { name: string; execute(args: unknown, exec: unknown): Promise<unknown> }) {
-        tools.set(tool.name, tool)
-        return () => tools.delete(tool.name)
-      },
-    },
-  }
-  registerTaskboardTools(ctx as never, deps)
-  ;(tools as { __dir?: string }).__dir = dir
-  ;(tools as { __store?: typeof store }).__store = store
-  return tools
-}
-
 /** The exec face for a calling agent session in cwd. */
 const agentExec = (cwd: string) => ({ agent: { id: 'sess-1', session: { header: { cwd } } } })
 
 describe('taskboard tools', () => {
+  // One shared temp dir for the whole describe (removed in afterAll); each
+  // toolSet() call stores its ledger in a uniquely named file inside it —
+  // same discipline as the TaskStore describe above (no per-call dirs leak).
+  let dir: string
+  beforeAll(async () => { dir = await mkdtemp(join(tmpdir(), 'taskboard-tools-')) })
+  afterAll(async () => { await rm(dir, { recursive: true, force: true }) })
+
+  /** Build a registered tool set over the shared dir; returns name → tool. */
+  async function toolSet(cwd: string): Promise<Map<string, { execute(args: unknown, exec: unknown): Promise<unknown> }>> {
+    const store = new TaskStore({ file: join(dir, `led-${Math.random().toString(36).slice(2)}.json`) })
+    await store.mutate('task-created', ledger => {
+      ledger.tasks.push(makeTask('t-1'), makeTask('t-2', { workspaceId: 'ws-b' }))
+      return ledger.tasks
+    })
+    const deps: ToolDeps = { store, workspaces: fakeWorkspaces(), now: () => 1_000 }
+    const tools = new Map<string, { execute(args: unknown, exec: unknown): Promise<unknown> }>()
+    const ctx = {
+      tools: {
+        register(tool: { name: string; execute(args: unknown, exec: unknown): Promise<unknown> }) {
+          tools.set(tool.name, tool)
+          return () => tools.delete(tool.name)
+        },
+      },
+    }
+    registerTaskboardTools(ctx as never, deps)
+    ;(tools as { __store?: typeof store }).__store = store
+    return tools
+  }
+
   it('list returns compact summaries with filters', async () => {
     const tools = await toolSet('/proj/a')
     const result = await tools.get('taskboard_list')!.execute({ workspaceId: 'ws-a' }, agentExec('/proj/a'))

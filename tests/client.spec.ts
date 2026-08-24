@@ -6,6 +6,7 @@
  * jsdom document without throwing.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { waitFor } from './wait-for.ts'
 
 /** Stub a route payload. */
 function routeResponse(path: string): unknown {
@@ -189,9 +190,10 @@ describe('client half', () => {
     disposers.push(dispose)
     controller.start()
     // Initial mount renders 0|0|0; the refresh then rolls each slot to the
-    // live counts. jsdom never fires transitionend, so the animation settles
-    // through the 400ms fallback — wait past it before asserting final text.
-    await new Promise(r => setTimeout(r, 460))
+    // live counts. jsdom never fires transitionend, so each slot settles via
+    // the 400ms fallback — poll the DOM until the strip reaches its final
+    // text (no fixed sleep racing the animation constant).
+    await waitFor(() => document.querySelector<HTMLElement>('.dsh-atb-entry-stats')?.textContent === '2|1|3', 3_000)
 
     const stats = document.querySelector<HTMLElement>('.dsh-atb-entry-stats')
     expect(stats).not.toBeNull()

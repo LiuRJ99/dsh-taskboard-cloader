@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ExecutionService, type AgentsFace, type EventsFace } from '../src/host/execution.ts'
+import { waitFor } from './wait-for.ts'
 import { SchedulerService } from '../src/host/scheduler.ts'
 import { TaskStore } from '../src/host/store.ts'
 import { normalizeExecution, type TaskRecord } from '../src/shared/protocol.ts'
@@ -160,7 +161,7 @@ describe('ExecutionService', () => {
 
     // Quiescence settles the execution as succeeded.
     agents.idle()
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
     t = store.get('t-run')!
     expect(t.executions[0]!.outcome).toBe('succeeded')
     expect(t.executions[0]!.endedAt).toBe(1_000)
@@ -223,7 +224,7 @@ describe('ExecutionService', () => {
       type: 'turn/end',
       data: { turn: 1, reason: { kind: 'error', error: { message: 'boom: quota exceeded' } } },
     })
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'failed')
     const t = store.get('t-run')!
     expect(t.executions[0]!.outcome).toBe('failed')
     expect(t.executions[0]!.error).toContain('quota exceeded')
@@ -246,7 +247,10 @@ describe('ExecutionService', () => {
       type: 'turn/end',
       data: { reason: { kind: 'error', error: { message: 'quota exceeded' } } },
     })
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => {
+      const cur = store.get('t-run')!
+      return cur.status === 'todo' && cur.executions[0]!.outcome === 'failed'
+    })
     // Failure no longer strands the card in in_progress.
     t = store.get('t-run')!
     expect(t.status).toBe('todo')
@@ -261,7 +265,7 @@ describe('ExecutionService', () => {
     const result = await svc.run('t-run', 'manual')
     if (!result.ok) throw new Error('run failed')
     agents.idle()
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
     const t = store.get('t-run')!
     expect(t.executions[0]!.outcome).toBe('succeeded')
     expect(t.claimedBy).toBeUndefined()
@@ -282,7 +286,7 @@ describe('ExecutionService', () => {
     const result = await svc.run('t-run', 'manual')
     if (!result.ok) throw new Error('run failed')
     agents.idle('session-worker')
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.status === 'in_review')
     const t = store.get('t-run')!
     expect(t.status).toBe('in_review')
     const sysComment = t.comments.find(c => c.body.includes('[系统]'))
@@ -300,7 +304,7 @@ describe('ExecutionService', () => {
       type: 'turn/end',
       data: { reason: { kind: 'error', error: { message: 'quota exceeded' } } },
     })
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.status === 'todo')
     const t = store.get('t-run')!
     expect(t.status).toBe('todo')
     const sysComment = t.comments.find(c => c.body.includes('[系统]'))
@@ -322,7 +326,7 @@ describe('ExecutionService', () => {
     expect(svc.inFlight()).toBe(3)
     // Settling one execution frees a slot.
     agents.idle(agents.created[0]!.sessionId)
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => svc.inFlight() === 2)
     expect(svc.inFlight()).toBe(2)
     expect((await svc.run('t-4', 'manual')).ok).toBe(true)
   })
@@ -377,8 +381,15 @@ describe('ExecutionService', () => {
     // Nothing left to cancel.
     expect((await svc.cancel('t-run')).ok).toBe(false)
     // A late settlement after cancel no-ops (the record is no longer running).
+    // Deterministic drain: give the whenIdle microtask chain room to enqueue
+    // the late settle mutation, then wait behind it on the store's serial
+    // queue before asserting the outcome survived.
     agents.idle()
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(async () => {
+      await new Promise(r => setTimeout(r, 0))
+      await store.read(() => undefined)
+      return true
+    })
     expect(store.get('t-run')!.executions[0]!.outcome).toBe('cancelled')
   })
 
@@ -539,7 +550,7 @@ describe('ExecutionService worktree isolation', () => {
 
     // Settlement collects the worktree evidence into the ledger.
     agents.idle(result.sessionId)
-    await new Promise(r => setTimeout(r, 20))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
     const settled = store.get('t-run')!
     const execution = settled.executions[0]!
     expect(execution.outcome).toBe('succeeded')
@@ -609,7 +620,7 @@ describe('ExecutionService worktree isolation', () => {
 
     const result = await svc.run('t-run', 'manual')
     agents.idle(result.ok ? result.sessionId : '')
-    await new Promise(r => setTimeout(r, 20))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
     const execution = store.get('t-run')!.executions[0]!
     expect(execution.outcome).toBe('succeeded')
     expect(execution.commits).toBeUndefined()
@@ -658,7 +669,10 @@ describe('ExecutionService worktree isolation', () => {
     expect(result.ok).toBe(true)
     // The turn errors out mid-flight.
     events.dispatch(result.ok ? result.sessionId : '', { type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'quota exceeded' } } } })
-    await new Promise(r => setTimeout(r, 20))
+    await waitFor(() => {
+      const cur = store.get('t-run')!
+      return cur.status === 'todo' && cur.executions[0]!.outcome === 'failed'
+    })
 
     const t = store.get('t-run')!
     const execution = t.executions[0]!
@@ -682,7 +696,7 @@ describe('ExecutionService worktree isolation', () => {
 
     expect((await svc.run('t-run', 'manual')).ok).toBe(true)
     expect((await svc.cancel('t-run')).ok).toBe(true)
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'cancelled')
 
     const execution = store.get('t-run')!.executions[0]!
     expect(execution.outcome).toBe('cancelled')
@@ -904,7 +918,10 @@ describe('R2/R3 settlement race regressions', () => {
     // SUCCESS settlement first: outcome 'succeeded' + auto-move to in_review
     // for a run that never reached quiescence. Now only the failure path
     // writes. Let its evidence+mutation chain commit.
-    await new Promise(r => setTimeout(r, 30))
+    await waitFor(() => {
+      const cur = store.get('t-run')!
+      return cur.executions[0]!.outcome === 'failed' && cur.executions[0]!.error?.includes('quiescence') === true
+    })
 
     const t = store.get('t-run')!
     expect(t.executions[0]!.outcome).toBe('failed')
@@ -936,8 +953,7 @@ describe('R2/R3 settlement race regressions', () => {
     const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
 
     const running = svc.run('t-run', 'manual') // parks inside agents.create
-    await new Promise(r => setTimeout(r, 30))
-    expect(store.get('t-run')!.status).toBe('in_progress') // gate committed
+    await waitFor(() => store.get('t-run')!.status === 'in_progress') // gate committed
 
     // A cancel inside the startup window: no runs entry exists yet, so the
     // old code had nothing to dispose — the soon-to-be-created agent became a
