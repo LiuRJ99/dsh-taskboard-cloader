@@ -45,7 +45,7 @@
     "agent"
   ],
   "scripts": {
-    "build": "npm run build:host && npm run build:client",
+    "build": "node scripts/clean-lib.mjs && npm run build:host && npm run build:client",
     "build:host": "tsdown -c tsdown.host.config.ts",
     "build:client": "tsdown -c tsdown.client.config.ts && node scripts/wrap-client.mjs",
     "watch": "tsdown -c tsdown.host.config.ts --watch",
@@ -65,6 +65,7 @@
     "@types/react": "~18.3.1",
     "@types/react-dom": "^18.3.7",
     "jsdom": "^25.0.1",
+    "puppeteer-core": "^25.8.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tsdown": "0.22.2",
