@@ -216,3 +216,67 @@ describe('taskboard_create default isolation (0.5.0 board settings)', () => {
     for (const dispose of disposers) dispose()
   })
 })
+
+describe('R1 regression: writes guard inside the serial queue', () => {
+  it('two simultaneous comments both land (no blind overwrite of a pre-read clone)', async () => {
+    const { store, disposers, tool, exec } = await setup()
+    const created = await tool('taskboard_create').execute({ title: 'Race', workspaceId: 'ws-a', urgency: 'normal' }, exec)
+    const id = (created as { task: { id: string } }).task.id
+
+    // Promise.all drives both executes synchronously to their first await.
+    // The old code pre-read the task outside the mutation: the second writer
+    // cloned it BEFORE the first mutation published (the persist window) and
+    // then blind-overwrote the whole record — one comment vanished while both
+    // calls reported success. The guards now run on the fresh draft inside
+    // the queue, so both appends survive.
+    const [a, b] = await Promise.all([
+      tool('taskboard_comment_add').execute({ id, body: 'A' }, exec),
+      tool('taskboard_comment_add').execute({ id, body: 'B' }, exec),
+    ]) as [{ comment: { id: string } }, { comment: { id: string } }]
+    expect(a.comment.id).toBeTruthy()
+    expect(b.comment.id).toBeTruthy()
+
+    const task = store.get(id)!
+    expect(task.comments.map(c => c.body)).toEqual(['A', 'B'])
+    expect(task.version).toBe(3) // create v1 + one bump per comment
+    for (const dispose of disposers) dispose()
+  })
+
+  it('a stale ifVersion update cannot overwrite a newer write', async () => {
+    const { store, disposers, tool, exec } = await setup()
+    const created = await tool('taskboard_create').execute({ title: 'Stale', workspaceId: 'ws-a', urgency: 'normal' }, exec)
+    const id = (created as { task: { id: string } }).task.id
+
+    // The agent holds v1; a GUI comment bumps the task to v2 before the
+    // update's mutation runs — it must fail with version_conflict instead of
+    // clobbering the comment from the stale clone.
+    await store.mutate('comment-added', ledger => {
+      const t = ledger.tasks.find(x => x.id === id)!
+      t.comments.push({ id: 'c-gui', body: 'GUI comment', version: 1, createdAt: 7_000 })
+      t.version += 1
+      return [t]
+    })
+    await expect(tool('taskboard_update').execute({ id, ifVersion: 1, title: 'Clobber' }, exec))
+      .rejects.toThrow('stale version 1 (current 2)')
+    const after = store.get(id)!
+    expect(after.title).toBe('Stale')
+    expect(after.comments.map(c => c.body)).toEqual(['GUI comment'])
+    for (const dispose of disposers) dispose()
+  })
+
+  it('S5: soft-delete refuses while an execution of the task is running', async () => {
+    const { store, disposers, tool, exec } = await setup()
+    const created = await tool('taskboard_create').execute({ title: 'Live run', workspaceId: 'ws-a', urgency: 'normal' }, exec)
+    const id = (created as { task: { id: string } }).task.id
+    await store.mutate('execution-recorded', ledger => {
+      const t = ledger.tasks.find(x => x.id === id)!
+      t.executions.push({ id: 'e-1', trigger: 'manual', startedAt: 7_000, outcome: 'running' })
+      t.version += 1
+      return [t]
+    })
+    await expect(tool('taskboard_delete').execute({ id, ifVersion: 2 }, exec))
+      .rejects.toThrow('正在运行')
+    expect(store.get(id)!.trashedAt).toBeUndefined()
+    for (const dispose of disposers) dispose()
+  })
+})

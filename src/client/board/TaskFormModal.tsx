@@ -155,9 +155,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     return () => document.removeEventListener('keydown', onKey)
   }, [controller])
 
-  // Model catalog: the plugin face provides it when the runtime is up.
+  // Model catalog: the controller exposes the installed face when the runtime is up.
   useEffect(() => {
-    const face = (controller as unknown as { modelCatalog?: () => Promise<CatalogModel[]> }).modelCatalog
+    const face = controller.modelCatalog
     if (face === undefined) return
     void face().then(setCatalog).catch(() => setCatalog([]))
   }, [controller])
@@ -166,7 +166,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   // create mode (unless a template pinned one) so executions run with a
   // real tool set out of the box.
   useEffect(() => {
-    const face = (controller as unknown as { presetCatalog?: () => Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }> }).presetCatalog
+    const face = controller.presetCatalog
     if (face === undefined) return
     void face().then(roster => {
       setPresets(roster.presets)

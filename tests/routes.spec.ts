@@ -5,7 +5,7 @@
  * stream.
  */
 import { createServer, type Server } from 'node:http'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -39,6 +39,7 @@ const workspaces: WorkspaceFace = {
 const gitBehavior = {
   mergeError: undefined as string | undefined,
   removeError: undefined as undefined | ((path: string) => string | undefined),
+  removeUnregistered: undefined as boolean | undefined,
   branchDeleteError: undefined as string | undefined,
   /** When true, isAncestor reports "branch already merged" (no-op merge). */
   noop: false,
@@ -67,6 +68,8 @@ const gitFace: GitFace = {
     gitBehavior.removed.push(path)
     const error = gitBehavior.removeError?.(path)
     if (error !== undefined) throw new Error(error)
+    if (gitBehavior.removeUnregistered === true) return 'unregistered' as const
+    return 'removed' as const
   },
   deleteBranch: async (_root, branch) => {
     gitBehavior.deletedBranches.push(branch)
@@ -465,14 +468,31 @@ describe('taskboard routes', () => {
       const orphan = diag.value.orphanWorktrees.find((o: { taskId: string }) => o.taskId === 't-ghost')
       expect(orphan).toEqual({ workspaceId: 'ws-tmp', workspacePath: dir, taskId: 't-ghost', path: ghostPath.replaceAll('\\', '/') })
 
-      // Cleanup with git reporting "not a working tree" → fs fallback.
-      gitBehavior.removeError = () => 'fatal: not a working tree: ' + ghostPath
+      // Cleanup with git reporting an unregistered leftover → fs fallback
+      // (S3: structured outcome from the face, not a parsed stderr message).
+      gitBehavior.removeUnregistered = true
       const clean = await post('/dsh-taskboard/worktree-cleanup', { workspaceId: 'ws-tmp', taskId: 't-ghost' })
       expect(clean.status).toBe(200)
       expect(clean.json.value.cleaned).toBe(true)
 
       diag = await (await fetch(`${base}/dsh-taskboard/diagnostics`)).json()
       expect(diag.value.orphanWorktrees.find((o: { taskId: string }) => o.taskId === 't-ghost')).toBeUndefined()
+
+      // R4: cleanup with traversal-shaped taskIds must never reach the fs
+      // layer (the old flow rm -rf'd whatever worktreePathOf joined).
+      const victim = join(dir, 'victim-project')
+      await mkdir(victim, { recursive: true })
+      await writeFile(join(victim, 'important.txt'), 'keep me')
+      try {
+        for (const taskId of ['../victim-project', '..\\victim-project', '../../elsewhere', 'a/b', '.dsh-worktrees-evil']) {
+          const attack = await post('/dsh-taskboard/worktree-cleanup', { workspaceId: 'ws-tmp', taskId })
+          expect(attack.status).toBe(400)
+          expect(attack.json.error.code).toBe('invalid_input')
+        }
+        expect(await readFile(join(victim, 'important.txt'), 'utf8')).toBe('keep me')
+      } finally {
+        await rm(victim, { recursive: true, force: true })
+      }
 
       // Cleanup refuses a task that still exists in the ledger.
       const created = await post('/dsh-taskboard/tasks', { title: 'Live', workspaceId: 'ws-a', urgency: 'normal' })

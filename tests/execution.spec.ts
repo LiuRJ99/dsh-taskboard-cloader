@@ -453,7 +453,7 @@ function fakeGit(behavior: {
     },
     isAncestor: async () => false,
     merge: async () => {},
-    removeWorktree: async () => {},
+    removeWorktree: async () => 'removed' as const,
     deleteBranch: async () => {},
     showCommit: async () => undefined,
     showPathDiff: async () => undefined,
@@ -877,5 +877,81 @@ describe('SchedulerService', () => {
     await scheduler.tick()
     expect(runs).toEqual(['t-due'])
     expect(store.get('t-due')!.execution.nextRunAt).toBeGreaterThan(now)
+  })
+})
+
+describe('R2/R3 settlement race regressions', () => {
+  it('R2: a whenIdle rejection settles the execution as failed — never succeeded/in_review', async () => {
+    const store = await storeWith(task())
+    const agents: AgentsFace = {
+      async create(options: { sessionId: string }) {
+        return {
+          agent: {
+            id: options.sessionId,
+            followup: () => {},
+            inject: () => {},
+            whenIdle: () => Promise.reject(new Error('driver died')),
+          },
+          dispose: async () => {},
+        }
+      },
+    } as never
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+    // The old code raced noteFailure against settle() and could commit the
+    // SUCCESS settlement first: outcome 'succeeded' + auto-move to in_review
+    // for a run that never reached quiescence. Now only the failure path
+    // writes. Let its evidence+mutation chain commit.
+    await new Promise(r => setTimeout(r, 30))
+
+    const t = store.get('t-run')!
+    expect(t.executions[0]!.outcome).toBe('failed')
+    expect(t.executions[0]!.error).toContain('quiescence')
+    expect(t.status).toBe('todo') // handed back, not auto-moved to in_review
+    expect(t.comments.some(c => c.body.includes('执行失败'))).toBe(true)
+  })
+
+  it('R3: cancel during the startup window disposes the fresh agent and submits no work', async () => {
+    const store = await storeWith(task())
+    const disposed: string[] = []
+    const followups: unknown[] = []
+    let releaseCreate: (() => void) | undefined
+    const createGate = new Promise<void>(resolve => { releaseCreate = resolve })
+    const agents: AgentsFace = {
+      async create(options: { sessionId: string }) {
+        await createGate
+        return {
+          agent: {
+            id: options.sessionId,
+            followup: (message: unknown) => { followups.push(message) },
+            inject: () => {},
+            whenIdle: () => new Promise<void>(() => { /* never settles */ }),
+          },
+          dispose: async () => { disposed.push(options.sessionId) },
+        }
+      },
+    } as never
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+
+    const running = svc.run('t-run', 'manual') // parks inside agents.create
+    await new Promise(r => setTimeout(r, 30))
+    expect(store.get('t-run')!.status).toBe('in_progress') // gate committed
+
+    // A cancel inside the startup window: no runs entry exists yet, so the
+    // old code had nothing to dispose — the soon-to-be-created agent became a
+    // zombie working a cancelled card.
+    const cancelResult = await svc.cancel('t-run')
+    expect(cancelResult.ok).toBe(true)
+
+    releaseCreate!()
+    const result = await running
+    expect(result.ok).toBe(false) // 'cancelled during startup'
+    expect(disposed).toHaveLength(1) // the fresh agent WAS disposed
+    expect(followups).toHaveLength(0) // no work was ever submitted
+    const t = store.get('t-run')!
+    expect(t.status).toBe('todo')
+    expect(t.executions[0]!.outcome).toBe('cancelled')
   })
 })

@@ -126,7 +126,7 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
                     title={t.task.description !== undefined && t.task.description.length > 0 ? t.task.description.slice(0, 120) : t.name}
                     onClick={() => { closeMenu(); controller.newFromTemplate(t.task) }}
                   >
-                    {t.name}{t.builtin === true ? '' : ''}
+                    {t.name}
                   </button>
                 ))}
                 <div className="dsh-atb-newmenu-sep" />

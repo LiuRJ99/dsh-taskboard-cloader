@@ -199,18 +199,29 @@ describe('createGitFace (scripted exec)', () => {
     expect(exec.calls.some(a => a[0] === 'worktree' && a[1] === 'remove')).toBe(false)
   })
 
-  it('removeWorktree removes a clean worktree and surfaces git failures', async () => {
+  it('removeWorktree: clean → removed; unregistered leftover → structured outcome; other failures throw', async () => {
     const okExec = scripted([
       { match: a => a[0] === 'status' && a[1] === '--porcelain', result: ok('') },
       { match: a => a[0] === 'worktree' && a[1] === 'remove', result: ok('') },
     ])
-    await expect(createGitFace(okExec).removeWorktree('/r', '/wt')).resolves.toBeUndefined()
+    expect(await createGitFace(okExec).removeWorktree('/r', '/wt')).toBe('removed')
 
-    const failExec = scripted([
+    // S3: a path git no longer knows resolves 'unregistered' (the caller owns
+    // the fs fallback) — classified via `worktree list`, never parsed stderr.
+    const unregisteredExec = scripted([
       { match: a => a[0] === 'status' && a[1] === '--porcelain', result: ok('') },
       { match: a => a[0] === 'worktree' && a[1] === 'remove', result: bad('fatal: not a working tree') },
+      { match: a => a[0] === 'worktree' && a[1] === 'list', result: ok('worktree /r\n') },
     ])
-    await expect(createGitFace(failExec).removeWorktree('/r', '/wt')).rejects.toThrow('not a working tree')
+    expect(await createGitFace(unregisteredExec).removeWorktree('/r', '/wt')).toBe('unregistered')
+
+    // A REGISTERED worktree that failed to remove for another reason throws.
+    const failExec = scripted([
+      { match: a => a[0] === 'status' && a[1] === '--porcelain', result: ok('') },
+      { match: a => a[0] === 'worktree' && a[1] === 'remove', result: bad('fatal: unable to lock') },
+      { match: a => a[0] === 'worktree' && a[1] === 'list', result: ok('worktree /wt\n') },
+    ])
+    await expect(createGitFace(failExec).removeWorktree('/r', '/wt')).rejects.toThrow('unable to lock')
   })
 
   it('deleteBranch succeeds or reports the git error', async () => {
@@ -238,14 +249,33 @@ describe('createGitFace (scripted exec)', () => {
     expect(await no.isAncestor('/r', 'task/x')).toBe(false)
   })
 
-  it('prepareWorktree reuse: a live worktree is kept as-is with its own HEAD as baseline', async () => {
+  it('prepareWorktree reuse: a live worktree on OUR branch is kept as-is with its own HEAD as baseline', async () => {
     const exec = scripted([
       { match: a => a[0] === 'rev-parse' && a[1] === 'HEAD' && a.length === 2, result: ok('wt777\n') },
+      // S14: the reuse probe also verifies the checked-out branch.
+      { match: a => a[0] === 'rev-parse' && a[1] === '--abbrev-ref', result: ok('task/x\n') },
     ])
     const info = await createGitFace(exec).prepareWorktree('/r', '/wt', 'task/x', 'reuse')
     expect(info).toEqual({ path: '/wt', branch: 'task/x', baseCommit: 'wt777', reused: true })
     // No structural command was issued — the worktree was left untouched.
     expect(exec.calls.some(a => a[0] === 'worktree' || a[0] === 'branch')).toBe(false)
+  })
+
+  it('prepareWorktree reuse (S14): a live worktree on a FOREIGN branch falls back to fresh preparation', async () => {
+    const exec = scripted([
+      { match: a => a[0] === 'rev-parse' && a[1] === 'HEAD' && a.length === 2, result: ok('wt777\n') },
+      { match: a => a[0] === 'rev-parse' && a[1] === '--abbrev-ref', result: ok('main\n') },
+      // ...so the fresh path takes over: main HEAD, existing branch is reset, re-added.
+      { match: (a, o) => a[0] === 'rev-parse' && a[1] === 'HEAD' && o.cwd === '/r', result: ok('root999\n') },
+      { match: a => a[0] === 'show-ref', result: ok('refs/heads/task/x hash\n') },
+      { match: a => a[0] === 'worktree' && a[1] === 'remove', result: ok('') },
+      { match: a => a[0] === 'worktree' && a[1] === 'prune', result: ok('') },
+      { match: a => a[0] === 'branch' && a[1] === '-f', result: ok('') },
+      { match: a => a[0] === 'worktree' && a[1] === 'add', result: ok('') },
+    ])
+    const info = await createGitFace(exec).prepareWorktree('/r', '/wt', 'task/x', 'reuse')
+    expect(info).toEqual({ path: '/wt', branch: 'task/x', baseCommit: 'root999' })
+    expect(info?.reused).toBeUndefined()
   })
 
   it('prepareWorktree reuse falls back to a fresh preparation when no worktree is alive', async () => {

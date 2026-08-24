@@ -25,7 +25,9 @@ import {
   normalizeExecutionReport,
   parseCron,
   summarize,
+  validateImportedTask,
   validateLedgerImport,
+  isValidTaskId,
   type TaskRecord,
 } from '../src/shared/protocol.ts'
 import { TASKBOARD_PROTOCOL } from '../src/host/protocol-text.ts'
@@ -690,5 +692,25 @@ describe('taskboard tools', () => {
 
     // Invalid payload shape.
     await expect(tools.get('taskboard_execution_report')!.execute({ changedFiles: ['a'] }, exec)).rejects.toThrow('summary')
+  })
+})
+
+describe('R4: task id charset gate (import + path building)', () => {
+  it('isValidTaskId accepts minted ids and rejects traversal-shaped ones', () => {
+    expect(isValidTaskId('t-mfx9-ab12cd')).toBe(true)
+    expect(isValidTaskId('T_long-1')).toBe(true)
+    for (const bad of ['../../x', '..\\..\\x', 'a/b', 'a b', '.hidden', 'x'.repeat(101), '', 'a$b']) {
+      expect(isValidTaskId(bad)).toBe(false)
+    }
+  })
+
+  it('validateImportedTask rejects traversal-shaped ids at the protocol boundary', () => {
+    const base = { title: 'T', workspaceId: 'ws-a', status: 'todo', comments: [], executions: [] }
+    // Length alone (the old check) let these into the ledger — they ride
+    // straight into join(ws, '.dsh-worktrees', id) downstream.
+    for (const id of ['../../victim', '..\\..\\victim', 'a/b', '.ssh']) {
+      expect(validateImportedTask({ ...base, id }, 0)).toMatchObject({ ok: false })
+    }
+    expect(validateImportedTask({ ...base, id: 't-abc-def' }, 0)).toMatchObject({ ok: true })
   })
 })

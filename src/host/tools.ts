@@ -46,6 +46,7 @@ import {
   syncClaim,
   type Actor,
   type ChecklistItem,
+  type TaskLedger,
   type TaskModel,
   type TaskRecord,
 } from '../shared/protocol.ts'
@@ -124,7 +125,7 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
   } else {
     lines.push('执行记录: 无')
   }
-  const updatedBy = t.updatedBy.kind === 'agent' ? `agent ${String(t.updatedBy.sessionId).slice(0, 24)}` : 'user'
+  const updatedBy = t.updatedBy.kind === 'agent' ? `agent ${String(t.updatedBy.sessionId).slice(0, 24)}` : t.updatedBy.kind === 'system' ? 'system' : 'user'
   lines.push(`更新: ${new Date(t.updatedAt).toISOString()} 由 ${updatedBy}`)
   return lines.join('\n')
 }
@@ -223,6 +224,20 @@ function versionGuard(task: TaskRecord, ifVersion: number | undefined): void {
   }
 }
 
+/**
+ * Find a live (non-trashed) task INSIDE a mutator (R1: every guard must run
+ * on the fresh draft the serial queue hands us, never on a pre-read clone —
+ * a pre-read can pass its version check and then blind-overwrite a task that
+ * changed while the caller awaited). Throws not_found for missing/trashed.
+ */
+function liveTaskAt(ledger: TaskLedger, id: string): { index: number; task: TaskRecord } {
+  const index = ledger.tasks.findIndex(t => t.id === id)
+  if (index < 0) throw new ToolError(ERR.notFound, `no task ${id}`)
+  const task = ledger.tasks[index]!
+  if (task.trashedAt !== undefined) throw new ToolError(ERR.notFound, `no task ${id}`)
+  return { index, task }
+}
+
 /** Re-throw with a stable code; non-ToolErrors become invalid_input. */
 function fail(error: unknown): never {
   if (error instanceof ToolError) throw error
@@ -249,7 +264,7 @@ export interface ToolContextFace {
 }
 
 /**
- * Register all eight tools.
+ * Register all ten tools.
  * @param ctx - a context exposing `tools.register`.
  * @param deps - store + workspaces + clock.
  * @returns dispose functions, one per tool.
@@ -425,7 +440,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         // existing tasks.
         const isolation = args.isolation === undefined ? defaultIsolationOf(store.snapshot().settings) : asIsolation(args.isolation)
         const presetId = args.presetId?.trim() || undefined
-        const checklist = args.checklist !== undefined ? checklistFromTexts(args.checklist) : undefined
+        // T9: match the GUI create route — trim and drop blank lines instead
+        // of failing the whole call over one empty string.
+        const checklistTexts = args.checklist?.map(c => c.trim()).filter(c => c.length > 0)
+        const checklist = checklistTexts !== undefined && checklistTexts.length > 0 ? checklistFromTexts(checklistTexts) : undefined
         const now = deps.now()
         const task: TaskRecord = {
           id: newTaskId(),
@@ -492,25 +510,27 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     }, exec: unknown) {
       try {
         const { actor } = caller(exec as ToolRunContext)
-        const task = store.get(args.id)
-        if (task === undefined || task.trashedAt !== undefined) throw new ToolError(ERR.notFound, `no task ${args.id}`)
-        versionGuard(task, args.ifVersion)
-        if (task.status === 'archived') throw new ToolError(ERR.invalidTransition, 'archived tasks are immutable')
-        const next: TaskRecord = structuredClone(task)
-        if (args.title !== undefined) next.title = normalizeTitle(args.title)
-        if (args.description !== undefined) next.description = args.description.trim()
-        if (args.prompt !== undefined) next.prompt = normalizePrompt(args.prompt)
-        if (args.urgency !== undefined) next.urgency = asUrgency(args.urgency)
-        if (args.blocked !== undefined) next.blocked = args.blocked
-        next.version = task.version + 1
-        next.updatedAt = deps.now()
-        next.updatedBy = actor
+        // R1: lookup + version guard + write run inside the serial-queue
+        // mutation, on the fresh draft — a pre-read clone could pass its
+        // version check and then blind-overwrite a concurrent writer.
+        let next: TaskRecord | undefined
         await store.mutate('task-updated', ledger => {
-          const i = ledger.tasks.findIndex(t => t.id === args.id)
-          ledger.tasks[i] = next
+          const { index, task } = liveTaskAt(ledger, args.id)
+          versionGuard(task, args.ifVersion)
+          if (task.status === 'archived') throw new ToolError(ERR.invalidTransition, 'archived tasks are immutable')
+          next = structuredClone(task)
+          if (args.title !== undefined) next.title = normalizeTitle(args.title)
+          if (args.description !== undefined) next.description = args.description.trim()
+          if (args.prompt !== undefined) next.prompt = normalizePrompt(args.prompt)
+          if (args.urgency !== undefined) next.urgency = asUrgency(args.urgency)
+          if (args.blocked !== undefined) next.blocked = args.blocked
+          next.version = task.version + 1
+          next.updatedAt = deps.now()
+          next.updatedBy = actor
+          ledger.tasks[index] = next
           return [next]
         })
-        return json({ task: summarize(next) })
+        return json({ task: summarize(next!) })
       } catch (error) { fail(error) }
     },
   })) as () => void)
@@ -540,44 +560,47 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       try {
         const { actor } = caller(exec as ToolRunContext)
         const to = asStatus(args.status)
-        const task = store.get(args.id)
-        if (task === undefined || task.trashedAt !== undefined) throw new ToolError(ERR.notFound, `no task ${args.id}`)
-        versionGuard(task, args.ifVersion)
+        // Claim boundary (policy gate): resolving the caller's workspace is
+        // async, so it happens BEFORE the mutation — the comparison runs INSIDE
+        // against the FRESH task (stronger than the old stale-clone compare).
+        const callerWsId = to === 'in_progress'
+          ? await callerWorkspace(deps, exec as ToolRunContext)
+          : undefined
+        // R1: every state guard + the write itself run inside the mutation.
+        let next: TaskRecord | undefined
+        await store.mutate('task-moved', ledger => {
+          const { index, task } = liveTaskAt(ledger, args.id)
+          versionGuard(task, args.ifVersion)
 
-        // Code-level gate: agents never complete a task.
-        if (to === 'done') {
-          throw new ToolError(ERR.forbidden, 'moving a task to done requires explicit user confirmation (GUI); agents cannot do it')
-        }
-        if (!canTransition(task.status, to)) {
-          throw new ToolError(ERR.invalidTransition, `illegal transition ${task.status} → ${to}`)
-        }
-        // Exclusive hold: while a task is in_progress under a session
-        // (explicit claimedBy — an agent claim or a live execution), no other
-        // session may move it (that would be a takeover).
-        if (task.status === 'in_progress' && task.claimedBy !== undefined && task.claimedBy !== actor.sessionId) {
-          throw new ToolError(ERR.forbidden, `task is held by session ${task.claimedBy}; never take over another session's claim`)
-        }
-        // Claim boundary: the calling session must belong to the task's project.
-        if (isClaim(task.status, to)) {
-          const wsId = await callerWorkspace(deps, exec as ToolRunContext)
-          if (wsId !== task.workspaceId) {
+          // Code-level gate: agents never complete a task.
+          if (to === 'done') {
+            throw new ToolError(ERR.forbidden, 'moving a task to done requires explicit user confirmation (GUI); agents cannot do it')
+          }
+          if (!canTransition(task.status, to)) {
+            throw new ToolError(ERR.invalidTransition, `illegal transition ${task.status} → ${to}`)
+          }
+          // Exclusive hold: while a task is in_progress under a session
+          // (explicit claimedBy — an agent claim or a live execution), no other
+          // session may move it (that would be a takeover).
+          if (task.status === 'in_progress' && task.claimedBy !== undefined && task.claimedBy !== actor.sessionId) {
+            throw new ToolError(ERR.forbidden, `task is held by session ${task.claimedBy}; never take over another session's claim`)
+          }
+          // Claim boundary: the calling session must belong to the task's project.
+          if (isClaim(task.status, to) && callerWsId !== task.workspaceId) {
             throw new ToolError(ERR.workspaceMismatch, 'only a session inside this task\'s project may claim it')
           }
-        }
-        const next: TaskRecord = structuredClone(task)
-        next.status = to
-        next.version = task.version + 1
-        next.updatedAt = deps.now()
-        next.updatedBy = actor
-        if (isClaim(task.status, to)) next.blocked = false
-        // Record the holder on a claim; every move out of in_progress releases it.
-        syncClaim(next, to, deps.now(), isClaim(task.status, to) ? actor.sessionId : undefined)
-        await store.mutate('task-moved', ledger => {
-          const i = ledger.tasks.findIndex(t => t.id === args.id)
-          ledger.tasks[i] = next
+          next = structuredClone(task)
+          next.status = to
+          next.version = task.version + 1
+          next.updatedAt = deps.now()
+          next.updatedBy = actor
+          if (isClaim(task.status, to)) next.blocked = false
+          // Record the holder on a claim; every move out of in_progress releases it.
+          syncClaim(next, to, deps.now(), isClaim(task.status, to) ? actor.sessionId : undefined)
+          ledger.tasks[index] = next
           return [next]
         })
-        return json({ task: summarize(next) })
+        return json({ task: summarize(next!) })
       } catch (error) { fail(error) }
     },
   })) as () => void)
@@ -610,8 +633,6 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     async execute(args: { id: string; body: string }, exec: unknown) {
       try {
         const { sessionId } = caller(exec as ToolRunContext)
-        const task = store.get(args.id)
-        if (task === undefined || task.trashedAt !== undefined) throw new ToolError(ERR.notFound, `no task ${args.id}`)
         const comment = {
           id: newCommentId(),
           body: normalizeBody(args.body),
@@ -619,16 +640,20 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           createdAt: deps.now(),
           threadId: sessionId,
         }
-        const next: TaskRecord = structuredClone(task)
-        next.comments.push(comment)
-        next.version = task.version + 1
-        next.updatedAt = deps.now()
+        // R1: find + append inside the mutation (no ifVersion by design —
+        // comments are append-only — but the write must not clobber a task
+        // that changed while we were queued).
+        let next: TaskRecord | undefined
         await store.mutate('comment-added', ledger => {
-          const i = ledger.tasks.findIndex(t => t.id === args.id)
-          ledger.tasks[i] = next
+          const { index, task } = liveTaskAt(ledger, args.id)
+          next = structuredClone(task)
+          next.comments.push(comment)
+          next.version = task.version + 1
+          next.updatedAt = deps.now()
+          ledger.tasks[index] = next
           return [next]
         })
-        return json({ comment, task: { id: next.id, version: next.version, status: next.status } })
+        return json({ comment, task: { id: next!.id, version: next!.version, status: next!.status } })
       } catch (error) { fail(error) }
     },
   })) as () => void)
@@ -682,15 +707,23 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     async execute(args: { id: string; ifVersion: number }, exec: unknown) {
       try {
         caller(exec as ToolRunContext)
-        const task = store.get(args.id)
-        if (task === undefined) throw new ToolError(ERR.notFound, `no task ${args.id}`)
-        versionGuard(task, args.ifVersion)
-        const next: TaskRecord = structuredClone(task)
-        next.trashedAt = deps.now()
-        next.version = task.version + 1
+        // R1: guards inside the mutation. S5: a running execution keeps
+        // writing to the task (report, settlement) — refuse the soft-delete
+        // until it is cancelled or settled. T8: clear claim residue.
+        let next: TaskRecord | undefined
         await store.mutate('task-deleted', ledger => {
-          const i = ledger.tasks.findIndex(t => t.id === args.id)
-          ledger.tasks[i] = next
+          const { index, task } = liveTaskAt(ledger, args.id)
+          versionGuard(task, args.ifVersion)
+          if (task.executions.some(e => e.outcome === 'running')) {
+            throw new ToolError(ERR.invalidInput, '任务有正在运行的执行（先在 GUI 取消或等它结束再删除）')
+          }
+          next = structuredClone(task)
+          next.trashedAt = deps.now()
+          next.version = task.version + 1
+          delete next.claimedBy
+          delete next.claimedAt
+          next.blocked = false
+          ledger.tasks[index] = next
           return [next]
         })
         return { trashed: true }
@@ -739,57 +772,57 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     }, exec: unknown) {
       try {
         const { actor } = caller(exec as ToolRunContext)
-        const task = store.get(args.id)
-        if (task === undefined || task.trashedAt !== undefined) throw new ToolError(ERR.notFound, `no task ${args.id}`)
-        versionGuard(task, args.ifVersion)
-        if (task.status === 'archived') throw new ToolError(ERR.invalidTransition, 'archived tasks are immutable')
-        const next: TaskRecord = structuredClone(task)
-        const checklist: ChecklistItem[] = next.checklist === undefined ? [] : [...next.checklist]
-
-        if (args.action === 'add') {
-          const texts = args.items ?? []
-          if (texts.length === 0 || texts.length > 10) {
-            throw new ToolError(ERR.invalidInput, 'items must carry 1..10 texts per add call')
-          }
-          if (checklist.length + texts.length > MAX_CHECKLIST_ITEMS) {
-            throw new ToolError(ERR.invalidInput, `checklist may hold at most ${MAX_CHECKLIST_ITEMS} items (currently ${checklist.length})`)
-          }
-          checklist.push(...checklistFromTexts(texts))
-        } else if (args.action === 'check') {
-          if (args.itemId === undefined) throw new ToolError(ERR.invalidInput, 'itemId is required for check')
-          const item = checklist.find(i => i.id === args.itemId)
-          if (item === undefined) throw new ToolError(ERR.notFound, `no checklist item ${args.itemId} (task ${args.id})`)
-          const note = args.note !== undefined && args.note.trim().length > 0 ? args.note.trim().slice(0, 400) : undefined
-          item.checked = true
-          item.checkedBy = actor.sessionId
-          item.checkedAt = deps.now()
-          if (note !== undefined) item.note = note
-        } else if (args.action === 'uncheck') {
-          if (args.itemId === undefined) throw new ToolError(ERR.invalidInput, 'itemId is required for uncheck')
-          const item = checklist.find(i => i.id === args.itemId)
-          if (item === undefined) throw new ToolError(ERR.notFound, `no checklist item ${args.itemId} (task ${args.id})`)
-          item.checked = false
-          delete item.checkedBy
-          delete item.checkedAt
-          delete item.note
-        } else {
-          throw new ToolError(ERR.invalidInput, `action must be add | check | uncheck (got "${args.action}")`)
-        }
-
-        if (checklist.length > 0) next.checklist = checklist
-        else delete next.checklist
-        next.version = task.version + 1
-        next.updatedAt = deps.now()
-        next.updatedBy = actor
+        // R1: guards + the checklist edit itself run inside the mutation.
+        let next: TaskRecord | undefined
         await store.mutate('task-updated', ledger => {
-          const i = ledger.tasks.findIndex(t => t.id === args.id)
-          ledger.tasks[i] = next
+          const { index, task } = liveTaskAt(ledger, args.id)
+          versionGuard(task, args.ifVersion)
+          if (task.status === 'archived') throw new ToolError(ERR.invalidTransition, 'archived tasks are immutable')
+          next = structuredClone(task)
+          const checklist: ChecklistItem[] = next.checklist === undefined ? [] : [...next.checklist]
+
+          if (args.action === 'add') {
+            const texts = args.items ?? []
+            if (texts.length === 0 || texts.length > 10) {
+              throw new ToolError(ERR.invalidInput, 'items must carry 1..10 texts per add call')
+            }
+            if (checklist.length + texts.length > MAX_CHECKLIST_ITEMS) {
+              throw new ToolError(ERR.invalidInput, `checklist may hold at most ${MAX_CHECKLIST_ITEMS} items (currently ${checklist.length})`)
+            }
+            checklist.push(...checklistFromTexts(texts))
+          } else if (args.action === 'check') {
+            if (args.itemId === undefined) throw new ToolError(ERR.invalidInput, 'itemId is required for check')
+            const item = checklist.find(i => i.id === args.itemId)
+            if (item === undefined) throw new ToolError(ERR.notFound, `no checklist item ${args.itemId} (task ${args.id})`)
+            const note = args.note !== undefined && args.note.trim().length > 0 ? args.note.trim().slice(0, 400) : undefined
+            item.checked = true
+            item.checkedBy = actor.sessionId
+            item.checkedAt = deps.now()
+            if (note !== undefined) item.note = note
+          } else if (args.action === 'uncheck') {
+            if (args.itemId === undefined) throw new ToolError(ERR.invalidInput, 'itemId is required for uncheck')
+            const item = checklist.find(i => i.id === args.itemId)
+            if (item === undefined) throw new ToolError(ERR.notFound, `no checklist item ${args.itemId} (task ${args.id})`)
+            item.checked = false
+            delete item.checkedBy
+            delete item.checkedAt
+            delete item.note
+          } else {
+            throw new ToolError(ERR.invalidInput, `action must be add | check | uncheck (got "${args.action}")`)
+          }
+
+          if (checklist.length > 0) next.checklist = checklist
+          else delete next.checklist
+          next.version = task.version + 1
+          next.updatedAt = deps.now()
+          next.updatedBy = actor
+          ledger.tasks[index] = next
           return [next]
         })
-        const progress = next.checklist !== undefined
-          ? { done: next.checklist.filter(i => i.checked).length, total: next.checklist.length }
+        const progress = next!.checklist !== undefined
+          ? { done: next!.checklist.filter(i => i.checked).length, total: next!.checklist.length }
           : { done: 0, total: 0 }
-        return json({ task: { id: next.id, version: next.version }, checklist: next.checklist ?? [], ...progress })
+        return json({ task: { id: next!.id, version: next!.version }, checklist: next!.checklist ?? [], ...progress })
       } catch (error) { fail(error) }
     },
   })) as () => void)

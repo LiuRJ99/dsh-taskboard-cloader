@@ -684,11 +684,11 @@ describe('client half', () => {
       create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
     }
     const controller = new BoardController(client as never)
-    // presetCatalog face: 标准 is the deployment default, 梁神 also available.
-    ;(controller as unknown as { presetCatalog?: () => Promise<unknown> }).presetCatalog = async () => ({
+    // preset roster face (T13: formal installer): 标准 is the deployment default, 梁神 also available.
+    controller.installPresetRoster(async () => ({
       presets: [{ id: 'standard', name: '标准模式' }, { id: 'liangshen', name: '梁神模式' }],
       defaultId: 'standard',
-    })
+    }))
     controller.start()
     await new Promise(r => setTimeout(r, 10))
 

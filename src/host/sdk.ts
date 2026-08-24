@@ -141,7 +141,18 @@ function validateValue(schema: RawSchema, value: unknown, path: string): string[
     }
     return violations
   }
-  return matchesScalarType(value, schema.type) ? [] : [`${path} must be ${schema.type}`]
+  if (!matchesScalarType(value, schema.type)) return [`${path} must be ${schema.type}`]
+  // T10: enum/const are compiled into the schema — validate them at runtime
+  // too, so the "pre-validates the same way" promise holds for every node.
+  const enumValues = schema.enum as unknown[] | undefined
+  if (enumValues !== undefined && !enumValues.some(v => v === value)) {
+    return [`${path} must be one of ${enumValues.map(String).join(', ')}`]
+  }
+  const constValue = (schema as { const?: unknown }).const
+  if (constValue !== undefined && constValue !== value) {
+    return [`${path} must be ${String(constValue)}`]
+  }
+  return []
 }
 
 /** Options shape we consume (a structural subset of the SDK's defineTool). */

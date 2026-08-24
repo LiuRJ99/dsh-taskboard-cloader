@@ -57,7 +57,7 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
         // Block drag if a session is still executing this task
         if (running !== undefined) {
           e.preventDefault()
-          const msg = `该任务正在由【${task.title}】会话执行，不能拖动`
+          const msg = `该任务正由会话执行中（${task.title}），不能拖动`
           if (onAlert !== undefined) onAlert(msg)
           else alert(msg)
           return

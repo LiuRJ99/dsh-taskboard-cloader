@@ -6,11 +6,12 @@
  *
  * @module dsh-taskboard/host/store
  */
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
   LEDGER_SCHEMA_VERSION,
   emptyLedger,
+  isPlausibleTaskRecord,
   pruneExecutions,
   type TaskLedger,
   type TaskRecord,
@@ -23,7 +24,7 @@ export interface LedgerChange {
   /** The mutated tasks, if any (a comment purge may touch none). */
   tasks: readonly TaskRecord[]
   /** What kind of mutation this was (for SSE event naming later). */
-  kind: 'task-created' | 'task-updated' | 'task-moved' | 'task-deleted' | 'comment-added' | 'execution-recorded' | 'settings-updated'
+  kind: 'task-created' | 'task-updated' | 'task-moved' | 'task-deleted' | 'comment-added' | 'execution-recorded' | 'settings-updated' | 'ledger-replaced'
 }
 
 /** Options for {@link TaskStore}. */
@@ -56,7 +57,20 @@ export class TaskStore {
       const raw = await readFile(this.file, 'utf8')
       const parsed = JSON.parse(raw) as TaskLedger
       if (typeof parsed.revision === 'number' && Array.isArray(parsed.tasks)) {
-        const tasks = parsed.tasks as TaskRecord[]
+        // S11: trust no record wholesale — drop structurally broken entries
+        // (including R4's traversal-shaped ids from a hand-edited file) with
+        // a notice instead of letting them reach the path-building layers.
+        const plausible: TaskRecord[] = []
+        for (const entry of parsed.tasks as unknown[]) {
+          if (!isPlausibleTaskRecord(entry)) {
+            const rawId = (entry as { id?: unknown })?.id
+            const id = typeof rawId === 'string' ? rawId.slice(0, 60) : String(rawId)
+            console.warn('[dsh-taskboard] dropping implausible ledger entry on load:', id)
+            continue
+          }
+          plausible.push(entry as TaskRecord)
+        }
+        const tasks = plausible
         // Migration from pre-claim-field ledgers: an agent-held in_progress
         // task carried its holder in updatedBy — backfill the explicit claim
         // fields so the hold survives user edits (updatedBy is audit-only).
@@ -146,9 +160,29 @@ export class TaskStore {
           fn(change)
         } catch { /* subscriber errors never abort the write */ }
       }
-      return { ledger: draft, changed }
+      // S9: hand out frozen clones — the return value used to BE the new
+      // internal ledger; callers must never mutate internal state in place.
+      return {
+        ledger: deepFreeze(structuredClone(draft)),
+        changed: changed.map(t => deepFreeze(structuredClone(t))),
+      }
     }
     const result = (this.queue = this.queue.then(run, run)) as ReturnType<typeof run>
+    return result
+  }
+
+  /**
+   * Run a read INSIDE the serial queue (R3): observes exactly the ledger
+   * state after all previously enqueued mutations — immune to the
+   * write-then-publish window around `mutate`'s persistence. Read-only: the
+   * callback receives a frozen deep clone and nothing is written.
+   */
+  async read<T>(fn: (ledger: TaskLedger) => T): Promise<T> {
+    const run = async (): Promise<T> => {
+      await this.load()
+      return fn(deepFreeze(structuredClone(this.ledger)))
+    }
+    const result = (this.queue = this.queue.then(run, run)) as Promise<T>
     return result
   }
 }
@@ -164,10 +198,20 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-/** Atomic file persist: write temp, then rename over the target. */
+/**
+ * Atomic file persist: write temp, fsync, then rename over the target (S10:
+ * without the sync, a power loss after rename can leave a zero-length file —
+ * the next load would quarantine the ledger and start empty).
+ */
 async function persistAtomic(file: string, contents: string): Promise<void> {
   await mkdir(dirname(file), { recursive: true })
   const temp = join(dirname(file), `.${Math.random().toString(36).slice(2)}.tmp`)
-  await writeFile(temp, contents, 'utf8')
+  const fh = await open(temp, 'w')
+  try {
+    await fh.writeFile(contents, 'utf8')
+    await fh.sync()
+  } finally {
+    await fh.close()
+  }
   await rename(temp, file)
 }

@@ -1,7 +1,7 @@
 /**
  * Host loader entry for dsh-taskboard.
  *
- * Wiring: the ledger store (one JSON file under the DSH home), the eight
+ * Wiring: the ledger store (one JSON file under the DSH home), the ten
  * `taskboard_*` agent tools, the agent workflow-protocol system-prompt
  * section, the /taskboard JSON+SSE routes (when a webServer is served),
  * the host execution service (fresh in-project sessions, pinned models), and

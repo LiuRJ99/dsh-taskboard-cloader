@@ -168,7 +168,7 @@ export function ImportModal({ controller }: { controller: BoardController }) {
               className="dsh-atb-btn"
               data-primary="true"
               data-danger={mode === 'replace' && confirmReplace ? 'true' : undefined}
-              disabled={plan === undefined || busy || (result !== undefined && false)}
+              disabled={plan === undefined || busy}
               onClick={commit}
             >
               {mode === 'replace' && confirmReplace ? '确认整册替换' : '执行导入'}

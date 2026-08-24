@@ -286,6 +286,7 @@ export function nextCronTime(match: CronMatch, from: number): number | null {
 export type Actor =
   | { kind: 'user' }
   | { kind: 'agent'; sessionId: string }
+  | { kind: 'system' }
 
 /** A progress/report comment on a task. */
 export type CommentRecord = {
@@ -477,6 +478,16 @@ export function emptyLedger(): TaskLedger {
 /** Random base36 suffix. */
 function suffix(): string {
   return Math.random().toString(36).slice(2, 8)
+}
+
+/**
+ * Legal task id charset (R4): `t-<base36>-<base36>` from {@link newTaskId},
+ * and the ONLY shape accepted from the outside (import) or used to build
+ * filesystem paths (worktree dirs). Ids ride into `join(ws, '.dsh-worktrees',
+ * id)` — a lax charset here is an arbitrary-directory delete primitive.
+ */
+export function isValidTaskId(id: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)
 }
 
 /** Mint a task id. */
@@ -811,7 +822,10 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
   const e = raw as Record<string, unknown>
   const id = typeof e.id === 'string' ? e.id.trim() : ''
   const fail = (reason: string): { ok: false; reason: string } => ({ ok: false, reason })
-  if (id.length === 0 || id.length > 100) return fail('missing/invalid id')
+  // R4①: length alone let traversal-shaped ids (`../../x`, `..\..\x`) into
+  // the ledger; the charset gate is the primary defense for every downstream
+  // filesystem use of a task id.
+  if (!isValidTaskId(id)) return fail('missing/invalid id (must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$)')
   try {
     const execution = normalizeExecution(
       typeof e.execution === 'object' && e.execution !== null ? e.execution as { mode?: string; cron?: string } : {},
@@ -907,6 +921,26 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error))
   }
+}
+
+/**
+ * Minimal structural check for ONE ledger record at load time (S11): unlike
+ * {@link validateImportedTask} this REBUILDS NOTHING (cron state, ids and
+ * timestamps must survive a load untouched) — it only rejects entries whose
+ * shape would break downstream consumers, including the R4 id charset.
+ * @param raw - the untyped record.
+ */
+export function isPlausibleTaskRecord(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null) return false
+  const t = raw as Record<string, unknown>
+  return typeof t.id === 'string' && isValidTaskId(t.id)
+    && typeof t.title === 'string' && t.title.length > 0
+    && typeof t.workspaceId === 'string' && t.workspaceId.length > 0
+    && ALL_STATUSES.includes(t.status as TaskStatus)
+    && typeof t.version === 'number' && Number.isFinite(t.version) && t.version >= 1
+    && Array.isArray(t.comments) && Array.isArray(t.executions)
+    && typeof t.execution === 'object' && t.execution !== null
+    && (t.execution as { mode?: unknown }).mode !== undefined
 }
 
 /**

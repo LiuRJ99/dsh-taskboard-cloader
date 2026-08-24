@@ -52,11 +52,13 @@ export function apply(ctx: ClientContextFace): void {
     const client = createClient()
     const controller = new BoardController(client)
 
-    // Model catalog for the composer: llm.models over the connection RPC.
+    // Model catalog for the composer: llm.models over the connection RPC —
+    // installed through the controller's formal installer (T13: no more
+    // monkeypatched instance properties).
     const connection = ctx.get?.('connection') as ConnectionFace | undefined
     if (connection !== undefined) {
       type CatalogRow = { provider: string; model: string; name?: string }
-      ;(controller as unknown as { modelCatalog?: () => Promise<CatalogRow[]> }).modelCatalog = async (): Promise<CatalogRow[]> => {
+      controller.installModelCatalog(async (): Promise<CatalogRow[]> => {
         const response = await connection.api.llm.models({})
         if (!response.result.ok) return []
         const out: CatalogRow[] = []
@@ -66,13 +68,13 @@ export function apply(ctx: ClientContextFace): void {
           }
         }
         return out
-      }
+      })
 
       // Preset roster for the composer (0.3.3): agentPreset.list over the
       // connection RPC — [{id, name}] plus which one is the deployment
       // default (the form pre-selects it on create).
       type PresetRow = { id: string; name?: string }
-      ;(controller as unknown as { presetCatalog?: () => Promise<{ presets: PresetRow[]; defaultId?: string }> }).presetCatalog = async (): Promise<{ presets: PresetRow[]; defaultId?: string }> => {
+      controller.installPresetRoster(async (): Promise<{ presets: PresetRow[]; defaultId?: string }> => {
         const list = connection.api.agentPresets
         if (list === undefined) return { presets: [] }
         const response = await list.list({})
@@ -80,7 +82,7 @@ export function apply(ctx: ClientContextFace): void {
         const presets = response.result.value.presets.map((p: { id: string; name?: string }) => ({ id: p.id, name: p.name }))
         const def = response.result.value.presets.find((p: { id: string; isDefault: boolean }) => p.isDefault)
         return { presets, ...(def !== undefined ? { defaultId: def.id } : {}) }
-      }
+      })
     }
 
     // Session navigation for execution rows: resolved LAZILY on every jump —

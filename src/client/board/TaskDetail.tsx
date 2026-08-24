@@ -426,7 +426,7 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
             <Chip>v{task.version}</Chip>
           </div>
           <div className="dsh-atb-detail-sub">
-            更新 {fmtTime(task.updatedAt)} · 最近操作 {task.updatedBy.kind === 'agent' ? `🤖 ${shortId(task.updatedBy.sessionId)}` : '👤 用户'}
+            更新 {fmtTime(task.updatedAt)} · 最近操作 {task.updatedBy.kind === 'agent' ? `🤖 ${shortId(task.updatedBy.sessionId)}` : task.updatedBy.kind === 'system' ? '⚙️ 系统' : '👤 用户'}
           </div>
         </div>
         <div className="dsh-atb-detail-topbtns">
@@ -578,8 +578,8 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
             onChange={e => setComment(e.target.value)}
             onKeyDown={e => {
               if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && comment.trim().length > 0) {
-                void controller.comment(task.id, comment)
-                setComment('')
+                // T13: keep the draft when the post fails (reject 表单同样保留).
+                void controller.comment(task.id, comment).then(ok => { if (ok) setComment('') })
               }
             }}
           />
@@ -587,7 +587,9 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
             type="button"
             className="dsh-atb-composer-send"
             disabled={comment.trim().length === 0}
-            onClick={() => { void controller.comment(task.id, comment); setComment('') }}
+            onClick={() => {
+              void controller.comment(task.id, comment).then(ok => { if (ok) setComment('') })
+            }}
           >
             发表
           </button>

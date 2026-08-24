@@ -93,13 +93,19 @@ export class TemplateStore {
     this.loaded = true
   }
 
-  /** Atomic persist (temp + rename), same discipline as the ledger. */
+  /** Atomic persist (temp + fsync + rename — S10, same discipline as the ledger). */
   private async persist(templates: TaskTemplate[]): Promise<void> {
-    const { mkdir, writeFile, rename } = await import('node:fs/promises')
+    const { mkdir, open, rename } = await import('node:fs/promises')
     const { dirname, join } = await import('node:path')
     await mkdir(dirname(this.file), { recursive: true })
     const temp = join(dirname(this.file), `.${Math.random().toString(36).slice(2)}.tmp`)
-    await writeFile(temp, JSON.stringify({ templates }, null, 2), 'utf8')
+    const fh = await open(temp, 'w')
+    try {
+      await fh.writeFile(JSON.stringify({ templates }, null, 2), 'utf8')
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
     await rename(temp, this.file)
   }
 
@@ -120,6 +126,9 @@ export class TemplateStore {
     if (name.length === 0 || name.length > 60) throw new Error('模板名必须 1..60 字符')
     const now = Date.now()
     const existing = input.id !== undefined ? templates.find(t => t.id === input.id) : undefined
+    // T12: built-ins are factory content — editable only by delete + recreate
+    // (deleting stays allowed), never silently overwritten in place.
+    if (existing?.builtin === true) throw new Error('内置模板不可覆盖；可删除后另建，或以新名称存为新模板')
     const stored: TaskTemplate = existing !== undefined
       ? { ...existing, name, task: input.task, updatedAt: now }
       : { id: input.id ?? newTemplateId(), name, task: input.task, createdAt: now, updatedAt: now }

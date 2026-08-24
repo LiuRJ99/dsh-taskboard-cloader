@@ -109,7 +109,14 @@ export class BoardController {
   private disposed = false
   private disposeStream: (() => void) | undefined
   private refreshInFlight: Promise<void> | undefined
+  /** Newest change-frame revision seen on the SSE stream (S16 refresh chase). */
+  private seenRevision: number | undefined
   private sessionJumper: ((sessionId: string) => Promise<SessionJumpResult>) | undefined
+  /** Composer catalog faces, installed formally by the client entry (T13). */
+  private readonly catalogFaces: {
+    models?: () => Promise<Array<{ provider: string; model: string; name?: string }>>
+    presets?: () => Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }>
+  } = {}
 
   /** @param client - the route client. */
   constructor(private readonly client: TaskboardClient) {}
@@ -140,6 +147,7 @@ export class BoardController {
     void this.refresh()
     this.disposeStream = this.client.stream(
       (change: ChangeEvent) => {
+        this.seenRevision = change.revision
         this.setState({ ledger: { ...this.state.ledger, revision: change.revision } })
         // Any change invalidates the full snapshot; refetch (cheap, local).
         void this.refresh()
@@ -153,15 +161,23 @@ export class BoardController {
     if (this.refreshInFlight !== undefined) return this.refreshInFlight
     this.refreshInFlight = (async () => {
       try {
-        const [ledger, workspaces] = await Promise.all([
-          this.client.state(),
-          this.client.workspaces(),
-        ])
-        let selected: TaskRecord | undefined
-        if (this.state.selectedId !== undefined) {
-          selected = ledger.tasks.find(t => t.id === this.state.selectedId)
+        // S16: a change frame landing while a fetch is in flight used to
+        // strand the board on a stale snapshot forever (the deduped request
+        // predates the newest frame and no further event arrives). Chase the
+        // newest seen revision — bounded rounds, then give up until the next
+        // frame.
+        for (let round = 0; round < 3; round++) {
+          const [ledger, workspaces] = await Promise.all([
+            this.client.state(),
+            this.client.workspaces(),
+          ])
+          let selected: TaskRecord | undefined
+          if (this.state.selectedId !== undefined) {
+            selected = ledger.tasks.find(t => t.id === this.state.selectedId)
+          }
+          this.setState({ ledger, workspaces, error: undefined, selectedId: selected === undefined ? undefined : this.state.selectedId })
+          if (this.seenRevision === undefined || ledger.revision >= this.seenRevision) break
         }
-        this.setState({ ledger, workspaces, error: undefined, selectedId: selected === undefined ? undefined : this.state.selectedId })
       } catch (error) {
         this.setState({ error: error instanceof Error ? error.message : String(error) })
       } finally {
@@ -258,6 +274,26 @@ export class BoardController {
    */
   installSessionJumper(jumper: (sessionId: string) => Promise<SessionJumpResult>): void {
     this.sessionJumper = jumper
+  }
+
+  /** T13: formal installers for the composer catalog faces (was a monkeypatch from the client entry). */
+  installModelCatalog(fn: () => Promise<Array<{ provider: string; model: string; name?: string }>>): void {
+    this.catalogFaces.models = fn
+  }
+
+  /** T13: formal installer for the preset roster face. */
+  installPresetRoster(fn: () => Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }>): void {
+    this.catalogFaces.presets = fn
+  }
+
+  /** The installed model catalog face, when the runtime provides one. */
+  get modelCatalog(): (() => Promise<Array<{ provider: string; model: string; name?: string }>>) | undefined {
+    return this.catalogFaces.models
+  }
+
+  /** The installed preset roster face, when the runtime provides one. */
+  get presetCatalog(): (() => Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }>) | undefined {
+    return this.catalogFaces.presets
   }
 
   /**
@@ -373,13 +409,18 @@ export class BoardController {
     }
   }
 
-  /** Append a user comment. */
-  async comment(id: string, body: string): Promise<void> {
+  /**
+   * Append a user comment. Returns whether it landed — the composer keeps its
+   * text on failure (T13: it used to clear unconditionally and lose the draft).
+   */
+  async comment(id: string, body: string): Promise<boolean> {
     try {
       await this.client.comment(id, body)
       await this.refresh()
+      return true
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) })
+      return false
     }
   }
 
@@ -620,7 +661,11 @@ export class BoardController {
   /** Download the task list as a CSV (BOM-prefixed for Excel + Chinese text). */
   exportCsv(): void {
     const esc = (v: unknown): string => {
-      const s = String(v ?? '')
+      let s = String(v ?? '')
+      // S17: formula-injection guard — title/description are agent-controllable
+      // and a cell starting with = + - @ would be EXECUTED as a formula by
+      // Excel; neutralize with a leading apostrophe.
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
       return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
     const header = ['id', 'title', 'status', 'urgency', 'blocked', 'project', 'claimedBy', 'mode', 'cron', 'nextRunAt', 'model', 'createdAt', 'updatedAt', 'comments', 'executions']
