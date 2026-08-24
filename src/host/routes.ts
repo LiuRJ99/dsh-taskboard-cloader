@@ -228,7 +228,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
     const frame = `event: change\ndata: ${JSON.stringify({ revision: change.revision, kind: change.kind, tasks: change.tasks.map(summarize) })}\n\n`
     for (const res of subscribers) res.write(frame)
   }
-  store.subscribe(broadcast)
+  const unsubscribeBroadcast = store.subscribe(broadcast)
 
   // Workspace git detection, TTL-cached and fail-soft (false on any error):
   // feeds the create-form isolation toggle and the diagnostics panel.
@@ -1025,6 +1025,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
     ctx.webServer.register({ kind: 'exact', path: SSE_PATH, handler: sse }),
   ]
   return () => {
+    unsubscribeBroadcast()
     for (const dispose of disposers) dispose()
     if (heartbeat !== undefined) clearInterval(heartbeat)
     for (const res of subscribers) res.end()

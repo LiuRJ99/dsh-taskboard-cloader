@@ -179,6 +179,9 @@ export function apply(ctx: Context): void {
       const scheduler = new SchedulerService({ store, execution, now, maxConcurrent })
       scheduler.start()
       disposers.push(() => scheduler.dispose())
+      // Detach the settlement listener with the plugin — a hot reload must
+      // not leave stale services reacting to turn/end errors (review P1).
+      disposers.push(() => execution.dispose())
 
       return () => {
         disposeRoutes?.()

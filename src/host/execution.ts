@@ -159,9 +159,12 @@ export class ExecutionService {
   /** Live executions by execution id (settles and cancels remove entries). */
   private readonly runs = new Map<string, RunEntry>()
 
+  /** Detaches the turn/end listener (plugin teardown — review P1). */
+  private readonly unsubscribeEvents: () => void
+
   /** @param deps - store + agents + workspaces + events + clock. */
   constructor(private readonly deps: ExecutionDeps) {
-    deps.events.onSessionEvent((sessionId, event) => {
+    this.unsubscribeEvents = deps.events.onSessionEvent((sessionId, event) => {
       if (event.type !== 'turn/end') return
       // S7 (open question): ANY turn/end with an error reason fails the whole
       // execution and hands the task back. Whether the DSH session loop can
@@ -175,6 +178,11 @@ export class ExecutionService {
         })
       }
     })
+  }
+
+  /** Detach the settlement listener; safe to call once at plugin teardown. */
+  dispose(): void {
+    this.unsubscribeEvents()
   }
 
   /**
@@ -614,11 +622,13 @@ export class ExecutionService {
     // The cancelled session may already have committed work — keep the
     // evidence (best effort) so the user can inspect or 续跑 (0.3.1).
     const facts = await this.collectEvidence(entry?.prepared)
+    let settled = false
     await this.deps.store.mutate('execution-recorded', (ledger) => {
       const target = ledger.tasks.find(t => t.id === taskId)
       if (target === undefined) return undefined
       const execution = target.executions.find(e => e.id === running.id)
       if (execution === undefined || execution.outcome !== 'running') return undefined
+      settled = true
       execution.outcome = 'cancelled'
       execution.endedAt = this.deps.now()
       this.applyFacts(execution, facts)
@@ -630,6 +640,10 @@ export class ExecutionService {
       }
       return [target]
     })
+    // The execution may have settled (succeeded/failed) between the stale
+    // read above and this mutation — a no-op cancel must NOT report success
+    // (the GUI used to show 取消成功 for an already-succeeded run, review P1).
+    if (!settled) return { ok: false, error: 'execution already settled' }
     return { ok: true, executionId: running.id }
   }
 

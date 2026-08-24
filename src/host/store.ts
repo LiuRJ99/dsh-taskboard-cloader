@@ -145,7 +145,9 @@ export class TaskStore {
       const draft: TaskLedger = structuredClone(this.ledger)
       const changed = mutator(draft)
       if (changed === undefined) {
-        return { ledger: this.ledger, changed: [] }
+        // S9 parity: even a no-op mutation hands out a frozen clone — never
+        // the live internal ledger.
+        return { ledger: deepFreeze(structuredClone(this.ledger)), changed: [] }
       }
       // Retention cap: every committed mutation re-checks the touched tasks,
       // so execution history can never grow unbounded (SSE state payload).
