@@ -31,6 +31,7 @@ import {
   asUrgency,
   canTransition,
   checklistFromTexts,
+  defaultIsolationOf,
   effectivePrompt,
   isClaim,
   isClaimedBy,
@@ -391,7 +392,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       },
       isolation: {
         type: 'string',
-        description: 'Code isolation for executions: "worktree" (default — each run gets a fresh git worktree on branch task/<标题>+<taskId>) or "none" (run in the project directory, zero git interaction).',
+        description: 'Code isolation for executions: "worktree" (each run gets a fresh git worktree on branch task/<标题>+<taskId>) or "none" (run in the project directory, zero git interaction). Omitted → the board default (看板设置 → 默认执行隔离; factory default "none").',
       },
       presetId: {
         type: 'string',
@@ -441,7 +442,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
         const speed = args.speed === undefined ? undefined : asTaskSpeed(args.speed)
         const permissionMode = args.permissionMode === undefined ? undefined : asPermissionMode(args.permissionMode)
-        const isolation = args.isolation === undefined ? undefined : asIsolation(args.isolation)
+        // 0.5.0: an omitted isolation is MATERIALIZED from the board setting
+        // (看板设置) at creation, so later setting changes never rewrite
+        // existing tasks.
+        const isolation = args.isolation === undefined ? defaultIsolationOf(store.snapshot().settings) : asIsolation(args.isolation)
         const presetId = args.presetId?.trim() || undefined
         const checklist = args.checklist !== undefined ? checklistFromTexts(args.checklist) : undefined
         const now = deps.now()
@@ -458,7 +462,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           model,
           ...(speed !== undefined ? { speed } : {}),
           ...(permissionMode !== undefined ? { permissionMode } : {}),
-          ...(isolation !== undefined ? { isolation } : {}),
+          isolation,
           ...(presetId !== undefined ? { presetId } : {}),
           ...(checklist !== undefined ? { checklist } : {}),
           version: 1,

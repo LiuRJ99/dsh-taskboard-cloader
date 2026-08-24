@@ -127,6 +127,10 @@ export function apply(ctx: ClientContextFace): void {
     // cordis effect semantics: the callback runs immediately and its RETURN
     // VALUE is the disposer (family-plugin precedent: () => () => {...}).
     // A single-layer arrow here executes the teardown immediately.
+    // The stylesheet itself is NOT removed here: the HMR driver owns removal
+    // of tagged styles on this plugin's rebuild (and a self-removal could
+    // race a same-lifetime re-apply); its rules are dsh-atb-* scoped, so a
+    // leftover tag after a full disable is inert.
     ctx.effect?.(() => () => {
       for (const d of disposers.splice(0)) d()
       controller.dispose()

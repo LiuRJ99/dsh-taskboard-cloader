@@ -797,3 +797,85 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
     expect(gitBehavior.showPathCalls.at(-1)).toMatchObject({ cwd: '/proj/a', path: 'src/b.ts', base: 'abc123' })
   })
 })
+
+// ---------------------------------------------------------------- 0.5.0
+describe('taskboard routes 0.5.0 (board settings → default isolation)', () => {
+  it('GET /settings starts empty; update validates, persists, and shows in state', async () => {
+    const initial = await fetch(`${base}/dsh-taskboard/settings`)
+    expect(initial.status).toBe(200)
+    expect((await initial.json()).value).toEqual({})
+
+    const badValue = await post('/dsh-taskboard/settings/update', { defaultIsolation: 'docker' })
+    expect(badValue.status).toBe(400)
+    expect(badValue.json.error.code).toBe('invalid_input')
+    const badType = await post('/dsh-taskboard/settings/update', { defaultIsolation: 42 })
+    expect(badType.status).toBe(400)
+
+    const ok = await post('/dsh-taskboard/settings/update', { defaultIsolation: 'worktree' })
+    expect(ok.status).toBe(200)
+    expect(ok.json.value).toEqual({ defaultIsolation: 'worktree' })
+
+    const after = await (await fetch(`${base}/dsh-taskboard/settings`)).json()
+    expect(after.value).toEqual({ defaultIsolation: 'worktree' })
+    const state = await (await fetch(`${base}/dsh-taskboard/state`)).json()
+    expect(state.value.settings).toEqual({ defaultIsolation: 'worktree' })
+  })
+
+  it('create materializes the board default on omitted isolation; explicit wins; earlier tasks unaffected', async () => {
+    // Board setting is 'worktree' from the previous test. Create responses
+    // are SUMMARIES (no isolation field) — assertions read the full record.
+    const wt = await post('/dsh-taskboard/tasks', { title: 'Settings default wt', workspaceId: 'ws-a', urgency: 'normal' })
+    expect(wt.status).toBe(201)
+    const wtId = wt.json.value.id as string
+    const wtFull = await (await fetch(`${base}/dsh-taskboard/tasks/${wtId}`)).json()
+    expect(wtFull.value.isolation).toBe('worktree')
+
+    // Back to factory defaults ({}): new tasks materialize 'none'.
+    const reset = await post('/dsh-taskboard/settings/update', {})
+    expect(reset.status).toBe(200)
+    const none = await post('/dsh-taskboard/tasks', { title: 'Settings default none', workspaceId: 'ws-a', urgency: 'normal' })
+    const noneFull = await (await fetch(`${base}/dsh-taskboard/tasks/${none.json.value.id}`)).json()
+    expect(noneFull.value.isolation).toBe('none')
+
+    // Explicit choice still wins over the board default.
+    const explicit = await post('/dsh-taskboard/tasks', { title: 'Explicit iso', workspaceId: 'ws-a', urgency: 'normal', isolation: 'worktree' })
+    const explicitFull = await (await fetch(`${base}/dsh-taskboard/tasks/${explicit.json.value.id}`)).json()
+    expect(explicitFull.value.isolation).toBe('worktree')
+
+    // The earlier task keeps its creation-time value after the switch.
+    const reread = await (await fetch(`${base}/dsh-taskboard/tasks/${wtId}`)).json()
+    expect(reread.value.isolation).toBe('worktree')
+  })
+
+  it('import replace swaps board settings; merge keeps the live ones; invalid settings refuse the file', async () => {
+    await post('/dsh-taskboard/settings/update', { defaultIsolation: 'none' })
+    const ledgerFile = {
+      schemaVersion: 1,
+      tasks: [{ id: 't-imp-set', title: '导入设置', workspaceId: 'ws-a', urgency: 'normal', comments: [], executions: [] }],
+      settings: { defaultIsolation: 'worktree' },
+    }
+
+    // Merge: task lands, live settings untouched.
+    const merged = await post('/dsh-taskboard/import', { mode: 'merge', ledger: ledgerFile })
+    expect(merged.status).toBe(200)
+    let settings = await (await fetch(`${base}/dsh-taskboard/settings`)).json()
+    expect(settings.value).toEqual({ defaultIsolation: 'none' })
+
+    // Replace: whole-ledger swap carries the file's settings.
+    const replaced = await post('/dsh-taskboard/import', { mode: 'replace', ledger: ledgerFile })
+    expect(replaced.status).toBe(200)
+    settings = await (await fetch(`${base}/dsh-taskboard/settings`)).json()
+    expect(settings.value).toEqual({ defaultIsolation: 'worktree' })
+
+    // Invalid settings reject the import outright.
+    const badFile = { ...ledgerFile, settings: { defaultIsolation: 'docker' } }
+    const refused = await post('/dsh-taskboard/import/preview', badFile)
+    expect(refused.status).toBe(400)
+
+    // Leave the board at the factory default for any later readers.
+    await store.mutate('settings-updated', ledger => {
+      delete ledger.settings
+      return []
+    })
+  })
+})

@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the webServer Context merge (ctx.webServer).
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
+  asBoardSettings,
   asIsolation,
   asPermissionMode,
   asStatus,
@@ -23,6 +24,7 @@ import {
   asUrgency,
   canTransition,
   checklistFromTexts,
+  defaultIsolationOf,
   newCommentId,
   newTaskId,
   normalizeBody,
@@ -361,6 +363,13 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           return
         }
 
+        // Board settings (0.5.0): absent fields follow factory defaults.
+        if (pathname === `${ROUTE_PREFIX}/settings`) {
+          await store.load()
+          json(res, { ok: true, value: store.snapshot().settings ?? {} })
+          return
+        }
+
         const taskMatch = pathname.match(new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)$`))
         if (taskMatch !== null) {
           const task = store.get(taskMatch[1]!)
@@ -405,7 +414,10 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const speed = body.speed === undefined ? undefined : asTaskSpeed(str(body, 'speed') ?? '')
           const permissionMode = body.permissionMode === undefined ? undefined : asPermissionMode(str(body, 'permissionMode') ?? '')
           const isolationRaw = str(body, 'isolation')
-          const isolation = isolationRaw === null ? undefined : asIsolation(isolationRaw)
+          // 0.5.0: an omitted isolation is MATERIALIZED from the board
+          // setting (看板设置) at creation, so later setting changes never
+          // rewrite existing tasks.
+          const isolation = isolationRaw === null ? defaultIsolationOf(store.snapshot().settings) : asIsolation(isolationRaw)
           const presetId = normalizePresetId(str(body, 'presetId'))
           let checklist: TaskRecord['checklist'] = undefined
           if (body.checklist !== undefined) {
@@ -429,7 +441,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             model,
             ...(speed !== undefined ? { speed } : {}),
             ...(permissionMode !== undefined ? { permissionMode } : {}),
-            ...(isolation !== undefined ? { isolation } : {}),
+            isolation,
             ...(presetId !== undefined ? { presetId } : {}),
             ...(checklist !== undefined ? { checklist } : {}),
             version: 1,
@@ -832,6 +844,10 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             if (mode === 'replace') {
               replacedTotal = ledger.tasks.length
               ledger.tasks = structuredClone(imported)
+              // Replace is a whole-ledger swap (0.5.0): board settings ride
+              // along when the file carries them; merge keeps the live ones.
+              if (plan.settings !== undefined) ledger.settings = structuredClone(plan.settings)
+              else delete ledger.settings
               return ledger.tasks
             }
             const byId = new Map(ledger.tasks.map(t => [t.id, t]))
@@ -879,6 +895,24 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             task: normalizeTemplateSpec(body.task),
           })
           json(res, { ok: true, value: template }, 201)
+        } catch (error) {
+          const f = toFail(error)
+          json(res, f.res, f.status)
+        }
+        return
+      }
+
+      // ------------------------------------------ POST /settings/update
+      // (0.5.0) Whole-object replace semantics: omitted fields fall back to
+      // their factory defaults. Affects only tasks created AFTER the change.
+      if (pathname === `${ROUTE_PREFIX}/settings/update`) {
+        try {
+          const next = asBoardSettings(body)
+          await store.mutate('settings-updated', ledger => {
+            ledger.settings = next
+            return []
+          })
+          json(res, { ok: true, value: next })
         } catch (error) {
           const f = toFail(error)
           json(res, f.res, f.status)

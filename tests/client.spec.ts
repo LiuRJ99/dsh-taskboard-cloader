@@ -54,8 +54,14 @@ describe('client half', () => {
     const ctx = { get: () => undefined, effect: (fn: () => unknown) => { disposers.push(fn()) } }
     expect(() => apply(ctx as never)).not.toThrow()
 
-    // Styles injected exactly once.
-    expect(document.getElementById('dsh-taskboard-styles')).not.toBeNull()
+    // Styles injected exactly once, and ownership-tagged: the shell's
+    // client-module system claims UN-tagged styles for whichever sibling
+    // plugin materializes next, and HMR deletes them by this attribute on
+    // that sibling's rebuild — the 0.4.3 random CSS-drop field report.
+    const styleEl = document.getElementById('dsh-taskboard-styles')!
+    expect(styleEl).not.toBeNull()
+    expect(styleEl.getAttribute('data-plugin')).toBe('dsh-taskboard')
+    expect(styleEl.getAttribute('data-plugin-css')).toBe('dsh-taskboard/styles')
 
     // No panes exist: mounts wait via observers without throwing. Give the
     // controller's initial refresh a tick.
@@ -70,6 +76,41 @@ describe('client half', () => {
 
     // Explicit dispose through the captured disposers.
     for (const fn of disposers) (fn as () => void)()
+  })
+
+  it('stylesheet is ownership-tagged, idempotent, and re-attaches after removal', async () => {
+    const { injectStyles } = await import('../src/client/styles.ts')
+    document.getElementById('dsh-taskboard-styles')?.remove()
+
+    injectStyles()
+    const style = document.getElementById('dsh-taskboard-styles')!
+    expect(style).not.toBeNull()
+    // Ownership tag: untagged styles get claimed by whichever sibling plugin
+    // materializes next and deleted on THAT plugin's HMR rebuild (observed
+    // with lazily-materializing profile bundles) — data-plugin pins the
+    // stylesheet to this plugin.
+    expect(style.getAttribute('data-plugin')).toBe('dsh-taskboard')
+    expect(style.getAttribute('data-plugin-css')).toBe('dsh-taskboard/styles')
+
+    // DOM-idempotent: a second call neither duplicates nor recreates.
+    injectStyles()
+    expect(document.querySelectorAll('#dsh-taskboard-styles')).toHaveLength(1)
+
+    // Re-attach on demand: a removal (e.g. this plugin's own HMR rebuild
+    // cleanup) is undone by the next call — the old module-level flag once
+    // blocked this until a full page refresh. (No polling watchdog since
+    // 0.4.5: the ownership tag above is the root fix; re-apply re-injects.)
+    style.remove()
+    injectStyles()
+    expect(document.getElementById('dsh-taskboard-styles')).not.toBeNull()
+
+    // A leftover element mistagged by a pre-0.4.4 claim is adopted AND
+    // re-tagged with correct ownership.
+    const leftover = document.getElementById('dsh-taskboard-styles')!
+    leftover.setAttribute('data-plugin', 'other-plugin')
+    injectStyles()
+    expect(leftover.getAttribute('data-plugin')).toBe('dsh-taskboard')
+    leftover.remove()
   })
 
   it('sidebar entry places itself once a sidebar pane exists', async () => {
@@ -394,16 +435,17 @@ describe('client half', () => {
     localStorage.clear()
   })
 
-  it('isolation toggle: defaults on, remembers the choice, disables on non-git projects', async () => {
+  it('isolation toggle: create defaults follow the board setting, disables on non-git projects', async () => {
     localStorage.clear()
     const React = await import('react')
     const { createRoot } = await import('react-dom/client')
-    const { BoardController, loadDefaultIsolation } = await import('../src/client/controller.ts')
+    const { BoardController } = await import('../src/client/controller.ts')
     const { TaskFormModal } = await import('../src/client/board/TaskFormModal.tsx')
 
     const creates: unknown[] = []
+    // The board setting (看板设置) pins the default to worktree (0.5.0).
     const client = {
-      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [], settings: { defaultIsolation: 'worktree' } }),
       // ws-git reports gitAvailable; ws-plain does not.
       workspaces: async () => [
         { id: 'ws-git', path: '/p/g', title: 'G', sessionCount: 0, gitAvailable: true },
@@ -419,8 +461,7 @@ describe('client half', () => {
     controller.start()
     await new Promise(r => setTimeout(r, 10))
 
-    // Create mode: default = worktree (on), remembered from localStorage.
-    localStorage.setItem('dsh-taskboard-isolation-v1', 'none')
+    // Create mode: the initial toggle mirrors the board setting (worktree on).
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
@@ -453,11 +494,11 @@ describe('client half', () => {
     // The isolation pair is the second mode-picker in the modal.
     const isoPicker = Array.from(host.querySelectorAll<HTMLElement>('.dsh-atb-mode-picker'))[1]!
     const isoOpts = () => Array.from(isoPicker.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
-    expect(isoOpts()[0]!.dataset.on).toBe('false') // remembered 'none'
-    expect(isoOpts()[1]!.dataset.on).toBe('true')
+    expect(isoOpts()[0]!.dataset.on).toBe('true') // board default worktree
+    expect(isoOpts()[1]!.dataset.on).toBe('false')
 
-    // Switch to worktree, submit on the git workspace → isolation sent + persisted.
-    isoOpts()[0]!.click()
+    // Switch to 原目录执行, submit on the git workspace → explicit isolation sent.
+    isoOpts()[1]!.click()
     await new Promise(r => setTimeout(r, 10))
     const title = host.querySelector<HTMLInputElement>('input[maxlength="200"]')!
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
@@ -468,11 +509,10 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     expect(creates[0]).toMatchObject({
       title: 'Iso task',
-      isolation: 'worktree',
+      isolation: 'none',
       speed: 'fast',
       permissionMode: 'danger-full-access',
     })
-    expect(loadDefaultIsolation()).toBe('worktree')
 
     // Non-git workspace: both options disabled, hint shown, isolation omitted.
     const wsSelect = host.querySelector<HTMLSelectElement>('select')!
@@ -485,6 +525,77 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     expect(creates[1]).toMatchObject({ workspaceId: 'ws-plain' })
     expect((creates[1] as Record<string, unknown>).isolation).toBeUndefined()
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+
+    // A board WITHOUT the setting falls back to the factory default: 原目录执行.
+    const client2 = {
+      ...client,
+      state: async () => ({ schemaVersion: 1, revision: 2, tasks: [] }),
+    }
+    const controller2 = new BoardController(client2 as never)
+    controller2.start()
+    await new Promise(r => setTimeout(r, 10))
+    const host2 = document.createElement('div')
+    document.body.append(host2)
+    const root2 = createRoot(host2)
+    root2.render(React.createElement(TaskFormModal, { controller: controller2 }))
+    await new Promise(r => setTimeout(r, 10))
+    const picker2 = Array.from(host2.querySelectorAll<HTMLElement>('.dsh-atb-mode-picker'))[1]!
+    const opts2 = Array.from(picker2.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
+    expect(opts2[0]!.dataset.on).toBe('false')
+    expect(opts2[1]!.dataset.on).toBe('true') // factory default 'none'
+
+    root2.unmount()
+    host2.remove()
+    controller2.dispose()
+    localStorage.clear()
+  })
+
+  it('settings modal stages a draft, enables save only when dirty, saves via the controller', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { SettingsModal } = await import('../src/client/board/SettingsModal.tsx')
+
+    const saved: unknown[] = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [], settings: { defaultIsolation: 'worktree' } }),
+      workspaces: async () => [],
+      stream: () => () => {},
+      updateSettings: async (body: unknown) => { saved.push(body); return body },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(SettingsModal, { controller }))
+    await new Promise(r => setTimeout(r, 10))
+
+    const isoOpts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
+    expect(isoOpts().length).toBe(2)
+    expect(isoOpts()[0]!.textContent).toContain('原目录执行')
+    // Current setting worktree is the selected draft.
+    expect(isoOpts()[0]!.dataset.on).toBe('false')
+    expect(isoOpts()[1]!.dataset.on).toBe('true')
+
+    const saveBtn = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn'))
+      .find(b => b.textContent === '保存设置')!
+    expect(saveBtn().disabled).toBe(true) // clean draft → save disabled
+
+    // Pick 原目录执行 → dirty → save goes through the controller.
+    isoOpts()[0]!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(saveBtn().disabled).toBe(false)
+    saveBtn().click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(saved).toEqual([{ defaultIsolation: 'none' }])
 
     root.unmount()
     host.remove()
@@ -1365,5 +1476,35 @@ describe('client half', () => {
     center.remove()
     controller.dispose()
     localStorage.clear()
+  })
+
+  it('0.4.3 回归：折叠侧边栏时入口收成纯图标轨道（双信号选择器都在样式表里）', async () => {
+    localStorage.clear()
+    const { injectStyles } = await import('../src/client/styles.ts')
+    injectStyles()
+
+    // The collapse signals verified against the live shell packages:
+    // dsh-client-ui-layout sets data-sidebar-collapsed on the frame;
+    // dsh-client-ui-sidebar's root toggles its CSS-Module *_collapsed class
+    // (e.g. hHd-Xa_collapsed). The rail rules must key on BOTH (0.4.2
+    // dual-selector doctrine) and hide label + stats, with the native 36×36
+    // rail geometry the shell gives its own collapsed buttons.
+    const css = document.getElementById('dsh-taskboard-styles')!.textContent ?? ''
+    for (const signal of ['[data-sidebar-collapsed]', '[class*="_collapsed"]']) {
+      expect(css).toContain(`${signal} [data-dsh-atb-entry] .dsh-atb-entry-label,\n${signal} [data-dsh-atb-entry] .dsh-atb-entry-stats`)
+    }
+    expect(css).toContain('width: 36px; height: 36px; min-width: 36px;')
+    expect(css).toContain('margin: 0 0 12px; padding: 0;')
+
+    // DOM level: the entry markup keeps its label/stats spans (only the
+    // stylesheet hides them in the rail), and the collapse class on the
+    // sidebar root is exactly what the CSS keys on — verify the selector
+    // string the shell really produces matches our pattern.
+    const root = document.createElement('div')
+    root.className = 'hHd-Xa_root hHd-Xa_collapsed'
+    expect(root.matches('[class*="_collapsed"]')).toBe(true)
+    const expanded = document.createElement('div')
+    expanded.className = 'hHd-Xa_root'
+    expect(expanded.matches('[class*="_collapsed"]')).toBe(false)
   })
 })

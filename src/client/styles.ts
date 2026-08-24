@@ -69,6 +69,26 @@ html[data-dsh-atb-active] [class*="sidebarCol"] {
 @media (prefers-reduced-motion: reduce) {
   .dsh-atb-roll .dsh-atb-rn { transition: none; }
 }
+
+/* 0.4.3: collapsed rail. Collapsing the sidebar narrows it to an icon rail
+ * (layout frame carries data-sidebar-collapsed; the sidebar root toggles its
+ * CSS-Module *_collapsed class — dual signals, per the 0.4.2 shell doctrine).
+ * The entry then mirrors the native rail geometry (36×36 icon button, no
+ * label/stats) — matches .hHd-Xa_collapsed .hHd-Xa_newSession. */
+[data-sidebar-collapsed] [data-dsh-atb-entry],
+[class*="_collapsed"] [data-dsh-atb-entry] {
+  width: 36px; height: 36px; min-width: 36px;
+  margin: 0 0 12px; padding: 0;
+  justify-content: center; gap: 0; text-align: center;
+}
+[data-sidebar-collapsed] [data-dsh-atb-entry] .dsh-atb-entry-label,
+[data-sidebar-collapsed] [data-dsh-atb-entry] .dsh-atb-entry-stats,
+[class*="_collapsed"] [data-dsh-atb-entry] .dsh-atb-entry-label,
+[class*="_collapsed"] [data-dsh-atb-entry] .dsh-atb-entry-stats { display: none; }
+/* Native rail icons render ~16-20px; scale ours up from 14px to read at parity. */
+[data-sidebar-collapsed] [data-dsh-atb-entry] svg,
+[class*="_collapsed"] [data-dsh-atb-entry] svg { width: 16px; height: 16px; }
+
 .dsh-atb-search { width: 130px; }
 .dsh-atb-badge[data-kind="stale"] { background: rgba(217,130,43,.15); color: #d9822b; }
 
@@ -727,16 +747,53 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-imp-row-status { font-size: 10.5px; color: var(--dsw-alias-label-tertiary, gray); flex-shrink: 0; }
 .dsh-atb-imp-result { font-size: 12px; color: var(--dsw-alias-state-success-primary, #30a46c); margin-top: 10px; }
 .dsh-atb-badge[data-kind="checklist"] { color: var(--dsw-alias-label-secondary, inherit); }
+/* ---------- 0.5.0 board settings ---------- */
+.dsh-atb-set { max-width: 460px; width: min(460px, 92vw); }
+.dsh-atb-set .dsh-atb-mode-picker { margin-top: 8px; }
+.dsh-atb-set .dsh-atb-isolation-note { margin-top: 10px; }
 `
 
-let injected = false
+/** Style element id (stable since 0.1.x: hook for tests and debugging). */
+const STYLE_ID = 'dsh-taskboard-styles'
 
-/** Inject the stylesheet once (idempotent). */
+/**
+ * Ownership tag for the shell's client-module bookkeeping. The web shell
+ * claims every UNTAGGED `<style>` for whichever plugin module materializes
+ * next (claimStyles in dsh-client-modules), and the client HMR driver
+ * deletes `<style>` tags by this attribute on every rebuilt entry
+ * (removeOwnedStyles in dsh-client-hmr).
+ */
+const PLUGIN_ID = 'dsh-taskboard'
+
+/** Per-stylesheet identity, mirroring the shell's own data-plugin-css. */
+const CSS_TAG = 'dsh-taskboard/styles'
+
+/**
+ * Ensure the stylesheet lives in <head>: create when absent, re-attach when
+ * removed, always carry the ownership tags.
+ *
+ * 0.4.4 fix (field report: CSS randomly dropped, board renders as unstyled
+ * HTML until refresh): injection runs from cordis apply(), which resolves
+ * AFTER this module's materialization, so the old untagged <style> could be
+ * claimed by ANY sibling plugin module that materialized later (observed
+ * with lazily-materializing profile bundles). That sibling's next HMR
+ * rebuild then deleted OUR stylesheet, and the old module-level `injected`
+ * flag blocked re-injection until a full page refresh. Pre-tagging pins
+ * ownership to this plugin: sibling claims skip tagged styles, and only
+ * THIS plugin's rebuild removes it — the fresh apply re-injects. Idempotency
+ * is DOM-based for the same reason: a module flag cannot see removals,
+ * getElementById can. A found element is re-tagged too, so a leftover
+ * pre-0.4.4 element adopted across a hot swap heals its ownership.
+ */
 export function injectStyles(): void {
-  if (injected || typeof document === 'undefined') return
-  const style = document.createElement('style')
-  style.id = 'dsh-taskboard-styles'
-  style.textContent = STYLES
-  document.head.append(style)
-  injected = true
+  if (typeof document === 'undefined') return
+  let style = document.getElementById(STYLE_ID)
+  if (style === null) {
+    style = document.createElement('style')
+    style.id = STYLE_ID
+    style.textContent = STYLES
+    document.head.append(style)
+  }
+  style.dataset.plugin = PLUGIN_ID
+  style.dataset.pluginCss = CSS_TAG
 }

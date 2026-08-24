@@ -5,7 +5,7 @@
  *
  * @module dsh-taskboard/shared/api
  */
-import type { TaskLedger, TaskRecord, TaskSummary } from './protocol.ts'
+import type { BoardSettings, TaskLedger, TaskRecord, TaskSummary } from './protocol.ts'
 
 export type { TaskRecord }
 
@@ -160,6 +160,15 @@ export type TaskTemplate = {
 
 /** Templates listing response. */
 export type TemplatesResponse = { templates: TaskTemplate[] }
+
+/** Board-settings response (0.5.0; absent fields follow factory defaults). */
+export type SettingsResponse = BoardSettings
+
+/** Update-board-settings request body (0.5.0; whole-object replace semantics). */
+export type UpdateSettingsBody = {
+  /** Default code isolation for NEW tasks ('worktree' | 'none'). */
+  defaultIsolation?: string
+}
 
 /** Import dry-run response (0.4.0): every task classified, nothing written. */
 export type ImportPreviewResponse = {
