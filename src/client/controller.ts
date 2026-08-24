@@ -531,7 +531,8 @@ export class BoardController {
   async duplicate(task: TaskRecord): Promise<void> {
     try {
       await this.client.create({
-        title: `${task.title}（副本）`,
+        // Keep the suffix under the host's 200-char title cap (review P1).
+        title: `${task.title.slice(0, 196)}（副本）`,
         workspaceId: task.workspaceId,
         urgency: task.urgency,
         description: task.description.length > 0 ? task.description : undefined,

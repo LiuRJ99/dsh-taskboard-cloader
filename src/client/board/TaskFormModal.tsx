@@ -175,9 +175,13 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     void face().then(roster => {
       setPresets(roster.presets)
       setPresetDefault(roster.defaultId)
-      if (task?.presetId === undefined && initialPreset === '' && roster.defaultId !== undefined) setPresetId(roster.defaultId)
+      // CREATE mode only (review P1): pre-selecting in edit mode would
+      // silently pin the deployment default onto tasks that deliberately
+      // follow it. In create mode `task` is undefined, so checking
+      // `initialPreset` (template pin) alone is sufficient.
+      if (!editing && initialPreset === '' && roster.defaultId !== undefined) setPresetId(roster.defaultId)
     }).catch(() => setPresets([]))
-  }, [controller, task?.presetId, initialPreset])
+  }, [controller, editing, task?.presetId, initialPreset])
 
   // Live cron validation + next-run preview (same math as the host).
   const cronMatch = mode === 'scheduled' ? parseCron(cron.trim()) : null
