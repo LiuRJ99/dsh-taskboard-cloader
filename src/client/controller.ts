@@ -443,7 +443,11 @@ export class BoardController {
   closeDiagnostics(): void { this.setState({ diagOpen: false }) }
 
   /** Open the board-settings modal (0.5.0). */
-  openSettings(): void { this.setState({ settingsOpen: true }) }
+  openSettings(): void {
+    this.setState({ settingsOpen: true })
+    // Settings derives its category options from the global template library.
+    void this.loadTemplates()
+  }
 
   /** Close the board-settings modal. */
   closeSettings(): void { this.setState({ settingsOpen: false }) }
@@ -539,7 +543,7 @@ export class BoardController {
   closeTemplateManager(): void { this.setState({ tplManagerOpen: false }) }
 
   /** Create or replace a template; refreshes the list. */
-  async upsertTemplate(body: { id?: string; name: string; task: TaskTemplateSpec }): Promise<boolean> {
+  async upsertTemplate(body: { id?: string; name: string; category?: string; task: TaskTemplateSpec }): Promise<boolean> {
     try {
       await this.client.templateUpsert(body)
       await this.loadTemplates()
@@ -564,6 +568,9 @@ export class BoardController {
   async saveAsTemplate(task: TaskRecord): Promise<boolean> {
     return this.upsertTemplate({
       name: task.title.slice(0, 60),
+      // A concrete menu category is a useful default for one-click saves;
+      // “全部分类” leaves the template under the compatibility “其他” bucket.
+      category: this.state.ledger.settings?.templateMenuCategory ?? '其他',
       task: {
         title: task.title,
         description: task.description.length > 0 ? task.description : undefined,

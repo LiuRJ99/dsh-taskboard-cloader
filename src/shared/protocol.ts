@@ -167,6 +167,21 @@ export function asPermissionMode(raw: string): PermissionMode {
   return raw as PermissionMode
 }
 
+/** Maximum length for a user-defined template category label. */
+export const MAX_TEMPLATE_CATEGORY_LENGTH = 30
+
+/** Normalize a template category label; undefined means the default category. */
+export function normalizeTemplateCategory(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined
+  if (typeof raw !== 'string') throw new Error('template category must be a string')
+  const category = raw.trim()
+  if (category.length === 0) return undefined
+  if (category.length > MAX_TEMPLATE_CATEGORY_LENGTH) {
+    throw new Error(`template category must be 1..${MAX_TEMPLATE_CATEGORY_LENGTH} characters`)
+  }
+  return category
+}
+
 /**
  * Board-level settings persisted with the ledger (0.5.0). Only fields the
  * user explicitly set are present; absent fields follow factory defaults.
@@ -174,6 +189,8 @@ export function asPermissionMode(raw: string): PermissionMode {
 export type BoardSettings = {
   /** Default code isolation applied when a NEW task is created without an explicit choice. */
   defaultIsolation?: IsolationMode
+  /** Category filtered into the + 新建任务 menu; absent = all categories. */
+  templateMenuCategory?: string
 }
 
 /** Validate raw input into sanitized {@link BoardSettings} (unknown fields dropped). */
@@ -188,6 +205,10 @@ export function asBoardSettings(raw: unknown): BoardSettings {
       throw new Error("defaultIsolation must be 'worktree' or 'none'")
     }
     out.defaultIsolation = asIsolation(e.defaultIsolation)
+  }
+  if (e.templateMenuCategory !== undefined) {
+    const category = normalizeTemplateCategory(e.templateMenuCategory)
+    if (category !== undefined) out.templateMenuCategory = category
   }
   return out
 }

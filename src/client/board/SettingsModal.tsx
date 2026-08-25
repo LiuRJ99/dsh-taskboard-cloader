@@ -1,15 +1,15 @@
 /**
- * Board-settings modal (0.5.0): the user-owned defaults applied when a NEW
- * task is created without an explicit choice. Currently one section — 默认执行
- * 隔离 (worktree vs original directory); further sections can slot into the
- * body below. Saving goes through the host route (whole-object replace) and
- * the SSE change stream refreshes every open view.
+ * Board-settings modal (0.5.0): user-owned defaults applied when a NEW task
+ * is created without an explicit choice, plus the global template-menu
+ * category preference. Saving goes through the host route (whole-object
+ * replace) and the SSE change stream refreshes every open view.
  *
  * @module dsh-taskboard/client/board/SettingsModal
  */
 import { useState } from 'react'
 import type { BoardController } from '../controller.ts'
 import { DEFAULT_ISOLATION, type IsolationMode } from '../../shared/protocol.ts'
+import { templateCategoryOptions } from '../template-categories.ts'
 
 /** The isolation options with one-line hints (mirrors the task form). */
 const ISOLATION_OPTIONS: ReadonlyArray<{ value: IsolationMode; name: string; hint: string }> = [
@@ -24,12 +24,23 @@ const ISOLATION_OPTIONS: ReadonlyArray<{ value: IsolationMode; name: string; hin
  */
 export function SettingsModal({ controller }: { controller: BoardController }) {
   const state = controller.getSnapshot()
-  const current = state.ledger.settings?.defaultIsolation ?? DEFAULT_ISOLATION
-  const [draft, setDraft] = useState<IsolationMode>(current)
-  const dirty = draft !== current
+  const currentIsolation = state.ledger.settings?.defaultIsolation ?? DEFAULT_ISOLATION
+  const currentCategory = state.ledger.settings?.templateMenuCategory ?? ''
+  const [draftIsolation, setDraftIsolation] = useState<IsolationMode>(currentIsolation)
+  const [draftCategory, setDraftCategory] = useState(currentCategory)
+  const categories = templateCategoryOptions(state.templates)
+  const categoryOptions = currentCategory !== '' && !categories.some(o => o.value === currentCategory)
+    ? [...categories, { value: currentCategory, count: 0 }]
+    : categories
+  const dirty = draftIsolation !== currentIsolation || draftCategory !== currentCategory
 
   const save = (): void => {
-    void controller.updateSettings({ defaultIsolation: draft }).then(ok => {
+    void controller.updateSettings({
+      // Settings updates are whole-object replacements: keep every existing
+      // field instead of accidentally clearing defaultIsolation.
+      defaultIsolation: draftIsolation,
+      ...(draftCategory.length > 0 ? { templateMenuCategory: draftCategory } : {}),
+    }).then(ok => {
       if (ok) controller.closeSettings()
     })
   }
@@ -55,9 +66,9 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
                   key={o.value}
                   type="button"
                   className="dsh-atb-mode-opt"
-                  data-on={draft === o.value}
+                  data-on={draftIsolation === o.value}
                   title={o.hint}
-                  onClick={() => setDraft(o.value)}
+                  onClick={() => setDraftIsolation(o.value)}
                 >
                   <span className="dsh-atb-mode-name">{o.name}</span>
                   <span className="dsh-atb-mode-hint">{o.hint}</span>
@@ -65,8 +76,27 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
               ))}
             </div>
             <span className="dsh-atb-isolation-note">
-              当前保存的默认：{current === 'worktree' ? '🌿 Worktree 隔离' : '📁 原目录执行'}。
+              当前保存的默认：{currentIsolation === 'worktree' ? '🌿 Worktree 隔离' : '📁 原目录执行'}。
               仅影响之后新建的任务；已有任务保持创建时的选择，非 git 项目运行时仍自动降级原目录。
+            </span>
+          </section>
+
+          <section className="dsh-atb-diag-sec">
+            <h4>新建任务菜单的模板分类</h4>
+            <select
+              className="dsh-atb-template-category-select"
+              value={draftCategory}
+              onChange={e => setDraftCategory(e.target.value)}
+            >
+              <option value="">全部分类（{state.templates.length}）</option>
+              {categoryOptions.map(option => (
+                <option key={option.value} value={option.value}>
+                  {option.value}（{option.count}）{option.count === 0 ? ' · 当前无模板' : ''}
+                </option>
+              ))}
+            </select>
+            <span className="dsh-atb-isolation-note">
+              只影响“+ 新建任务”菜单的模板展示，不会影响模板内容和已有任务；模板类别可在“管理模板”中调整。
             </span>
           </section>
         </div>

@@ -30,6 +30,7 @@ import {
   normalizeBody,
   normalizeChecklist,
   normalizeExecution,
+  normalizeTemplateCategory,
   normalizeModel,
   normalizePrompt,
   normalizeTitle,
@@ -892,6 +893,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const template = await options.templates.upsert({
             id: str(body, 'id') ?? undefined,
             name,
+            category: normalizeTemplateCategory(body.category),
             task: normalizeTemplateSpec(body.task),
           })
           json(res, { ok: true, value: template }, 201)

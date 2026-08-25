@@ -646,10 +646,13 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
   // ------------------------------------------------------------- templates
   it('templates: seeds built-ins, upserts, renames, deletes', async () => {
     const list = await (await fetch(`${base}/dsh-taskboard/templates`)).json()
-    const names = (list.value.templates as Array<{ name: string; builtin?: boolean }>).map(t => t.name)
+    const names = (list.value.templates as Array<{ name: string; category?: string; builtin?: boolean }>).map(t => t.name)
     expect(names).toContain('Bug 修复')
     expect(names).toContain('发布检查')
     expect(names).toContain('例行巡检')
+    const categoryRows = list.value.templates as Array<{ name: string; category?: string }>
+    expect(categoryRows.find(t => t.name === 'Bug 修复')?.category).toBe('开发')
+    expect(categoryRows.find(t => t.name === '例行巡检')?.category).toBe('运营')
     const builtins = list.value.templates as Array<{ name: string; task: { speed?: string; permissionMode?: string } }>
     expect(builtins.find(t => t.name === 'Bug 修复')?.task).toMatchObject({ speed: 'standard', permissionMode: 'workspace-write' })
     expect(builtins.find(t => t.name === '发布检查')?.task).toMatchObject({ speed: 'standard', permissionMode: 'workspace-write' })
@@ -657,6 +660,7 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
 
     const created = await post('/dsh-taskboard/templates', {
       name: '我的模板',
+      category: ' 开发 ',
       task: {
         title: '从模板开始',
         urgency: 'urgent',
@@ -671,12 +675,14 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
     expect(created.json.value.task.checklist).toEqual(['a', 'b'])
     expect(created.json.value.task.speed).toBe('fast')
     expect(created.json.value.task.permissionMode).toBe('workspace-write')
+    expect(created.json.value.category).toBe('开发')
 
-    const renamed = await post('/dsh-taskboard/templates', { id, name: '改名后', task: { urgency: 'relaxed' } })
+    const renamed = await post('/dsh-taskboard/templates', { id, name: '改名后', category: '运营', task: { urgency: 'relaxed' } })
     expect(renamed.status).toBe(201)
+    expect(renamed.json.value.category).toBe('运营')
 
     // Bad spec rejected.
-    const bad = await post('/dsh-taskboard/templates', { name: 'x', task: { urgency: 'hot' } })
+    const bad = await post('/dsh-taskboard/templates', { name: 'x', category: 'x'.repeat(31), task: { urgency: 'normal' } })
     expect(bad.status).toBe(400)
 
     const deleted = await post('/dsh-taskboard/templates/delete', { id })
@@ -810,15 +816,17 @@ describe('taskboard routes 0.5.0 (board settings → default isolation)', () => 
     expect(badValue.json.error.code).toBe('invalid_input')
     const badType = await post('/dsh-taskboard/settings/update', { defaultIsolation: 42 })
     expect(badType.status).toBe(400)
+    const badCategory = await post('/dsh-taskboard/settings/update', { templateMenuCategory: 'x'.repeat(31) })
+    expect(badCategory.status).toBe(400)
 
-    const ok = await post('/dsh-taskboard/settings/update', { defaultIsolation: 'worktree' })
+    const ok = await post('/dsh-taskboard/settings/update', { defaultIsolation: 'worktree', templateMenuCategory: ' 开发 ' })
     expect(ok.status).toBe(200)
-    expect(ok.json.value).toEqual({ defaultIsolation: 'worktree' })
+    expect(ok.json.value).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '开发' })
 
     const after = await (await fetch(`${base}/dsh-taskboard/settings`)).json()
-    expect(after.value).toEqual({ defaultIsolation: 'worktree' })
+    expect(after.value).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '开发' })
     const state = await (await fetch(`${base}/dsh-taskboard/state`)).json()
-    expect(state.value.settings).toEqual({ defaultIsolation: 'worktree' })
+    expect(state.value.settings).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '开发' })
   })
 
   it('create materializes the board default on omitted isolation; explicit wins; earlier tasks unaffected', async () => {

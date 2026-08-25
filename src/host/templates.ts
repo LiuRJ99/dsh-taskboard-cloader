@@ -10,12 +10,14 @@
  */
 import { readFile } from 'node:fs/promises'
 import type { TaskTemplate } from '../shared/api.ts'
+import { normalizeTemplateCategory } from '../shared/protocol.ts'
 
 /** The built-in templates seeded when the side file does not exist yet. */
-export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: TaskTemplate['task'] }> = [
+export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; category?: string; task: TaskTemplate['task'] }> = [
   {
     id: 'tpl-bugfix',
     name: 'Bug 修复',
+    category: '开发',
     task: {
       title: '修复：',
       prompt: [
@@ -34,6 +36,7 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: 
   {
     id: 'tpl-release',
     name: '发布检查',
+    category: '开发',
     task: {
       title: '发布：',
       prompt: '执行发布流程：版本号更新、构建、测试、变更记录，完成后按序交接（不要实际推送/发布，等用户确认）。',
@@ -46,6 +49,7 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: 
   {
     id: 'tpl-patrol',
     name: '例行巡检',
+    category: '运营',
     task: {
       title: '巡检：',
       prompt: [
@@ -64,6 +68,17 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: 
 /** Mint a template id. */
 function newTemplateId(): string {
   return `tpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** Sanitize a template loaded from disk without rejecting the whole side file. */
+function sanitizeLoadedTemplate(template: TaskTemplate): TaskTemplate {
+  let category: string | undefined
+  try {
+    category = normalizeTemplateCategory(template.category)
+  } catch {
+    category = undefined
+  }
+  return { ...template, category }
 }
 
 /**
@@ -88,6 +103,7 @@ export class TemplateStore {
         parsed = value.templates.filter((t): t is TaskTemplate =>
           typeof t === 'object' && t !== null && typeof (t as TaskTemplate).id === 'string'
           && typeof (t as TaskTemplate).name === 'string' && typeof (t as TaskTemplate).task === 'object')
+          .map(sanitizeLoadedTemplate)
       }
     } catch { /* missing or corrupt → seed */ }
     if (parsed === undefined) {
@@ -102,11 +118,17 @@ export class TemplateStore {
       parsed = parsed.map(template => {
         const seed = template.builtin === true ? seeds.get(template.id) : undefined
         if (seed === undefined) return template
+        const missingCategory = template.category === undefined && seed.category !== undefined
         const missingSpeed = template.task.speed === undefined && seed.task.speed !== undefined
         const missingPermissionMode = template.task.permissionMode === undefined && seed.task.permissionMode !== undefined
-        if (!missingSpeed && !missingPermissionMode) return template
+        if (!missingCategory && !missingSpeed && !missingPermissionMode) return template
         changed = true
-        return { ...template, task: { ...seed.task, ...template.task }, updatedAt: Date.now() }
+        return {
+          ...template,
+          ...(missingCategory ? { category: seed.category } : {}),
+          task: { ...seed.task, ...template.task },
+          updatedAt: Date.now(),
+        }
       })
       if (changed) {
         try { await this.persist(parsed) } catch { /* best effort — memory still carries the migration */ }
@@ -136,16 +158,17 @@ export class TemplateStore {
    * Create or replace a template by id (a body without id creates).
    * @returns the stored template.
    */
-  async upsert(input: { id?: string; name: string; task: TaskTemplate['task'] }): Promise<TaskTemplate> {
+  async upsert(input: { id?: string; name: string; category?: string; task: TaskTemplate['task'] }): Promise<TaskTemplate> {
     await this.ensure()
     const templates = this.templates ?? []
     const name = input.name.trim()
     if (name.length === 0 || name.length > 60) throw new Error('模板名必须 1..60 字符')
+    const category = normalizeTemplateCategory(input.category)
     const now = Date.now()
     const existing = input.id !== undefined ? templates.find(t => t.id === input.id) : undefined
     const stored: TaskTemplate = existing !== undefined
-      ? { ...existing, name, task: input.task, updatedAt: now }
-      : { id: input.id ?? newTemplateId(), name, task: input.task, createdAt: now, updatedAt: now }
+      ? { ...existing, name, category, task: input.task, updatedAt: now }
+      : { id: input.id ?? newTemplateId(), name, ...(category !== undefined ? { category } : {}), task: input.task, createdAt: now, updatedAt: now }
     const index = existing !== undefined ? templates.indexOf(existing) : -1
     if (index >= 0) templates[index] = stored
     else templates.push(stored)

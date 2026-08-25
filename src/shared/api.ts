@@ -151,6 +151,8 @@ export type TaskTemplateSpec = {
 export type TaskTemplate = {
   id: string
   name: string
+  /** User-defined library category; absent templates display under “其他”. */
+  category?: string
   task: TaskTemplateSpec
   /** Seeded built-in templates (kept on load, deletable like any other). */
   builtin?: boolean
@@ -168,6 +170,8 @@ export type SettingsResponse = BoardSettings
 export type UpdateSettingsBody = {
   /** Default code isolation for NEW tasks ('worktree' | 'none'). */
   defaultIsolation?: string
+  /** Category filtered into the + 新建任务 menu; omitted = all categories. */
+  templateMenuCategory?: string
 }
 
 /** Import dry-run response (0.4.0): every task classified, nothing written. */

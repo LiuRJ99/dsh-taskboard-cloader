@@ -16,6 +16,7 @@ import { SettingsModal } from './SettingsModal.tsx'
 import { ImportModal } from './ImportModal.tsx'
 import { TemplateManager } from './TemplateManager.tsx'
 import { useAlert } from './AlertModal.tsx'
+import { matchesTemplateCategory } from '../template-categories.ts'
 
 /** Column labels. */
 const COLUMN_LABELS: Readonly<Record<TaskStatus, string>> = {
@@ -107,6 +108,10 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
   // + 新建任务 ▼ dropdown (0.4.0): blank / templates / manage / import.
   const [newMenuOpen, setNewMenuOpen] = useState(false)
   const closeMenu = (): void => setNewMenuOpen(false)
+  // The board setting is the only category control; the menu simply loads the
+  // templates belonging to that globally selected category.
+  const templateMenuCategory = state.ledger.settings?.templateMenuCategory
+  const visibleTemplates = state.templates.filter(template => matchesTemplateCategory(template, templateMenuCategory))
   // ⬇ 导出 ▼ dropdown (0.5.1): whole-ledger JSON backup or task-list CSV.
   const [exportOpen, setExportOpen] = useState(false)
   const closeExport = (): void => setExportOpen(false)
@@ -134,17 +139,24 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
               <div className="dsh-atb-newmenu-backdrop" onClick={closeMenu} />
               <div className="dsh-atb-newmenu-list">
                 <button type="button" className="dsh-atb-newmenu-opt" onClick={() => { closeMenu(); controller.setComposer(true) }}>空白任务</button>
-                {state.templates.map(t => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    className="dsh-atb-newmenu-opt"
-                    title={t.task.description !== undefined && t.task.description.length > 0 ? t.task.description.slice(0, 120) : t.name}
-                    onClick={() => { closeMenu(); controller.newFromTemplate(t.task) }}
-                  >
-                    {t.name}{t.builtin === true ? '' : ''}
-                  </button>
-                ))}
+                <div className="dsh-atb-newmenu-sep" />
+                {visibleTemplates.length === 0
+                  ? (
+                    <div className="dsh-atb-newmenu-empty">
+                      当前分类暂无模板，请在看板设置中调整模板分类
+                    </div>
+                  )
+                  : visibleTemplates.map(t => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className="dsh-atb-newmenu-opt"
+                      title={t.task.description !== undefined && t.task.description.length > 0 ? t.task.description.slice(0, 120) : t.name}
+                      onClick={() => { closeMenu(); controller.newFromTemplate(t.task) }}
+                    >
+                      {t.name}
+                    </button>
+                  ))}
                 <div className="dsh-atb-newmenu-sep" />
                 <button type="button" className="dsh-atb-newmenu-opt" onClick={() => { closeMenu(); controller.openTemplateManager() }}>⌗ 管理模板…</button>
               </div>

@@ -91,6 +91,9 @@ describe('client half', () => {
     // stylesheet to this plugin.
     expect(style.getAttribute('data-plugin')).toBe('dsh-taskboard')
     expect(style.getAttribute('data-plugin-css')).toBe('dsh-taskboard/styles')
+    // Board settings use the modal body's two-column grid; the settings
+    // section must span both columns so its options fill the modal.
+    expect(style.textContent).toContain('.dsh-atb-set .dsh-atb-diag-sec { grid-column: 1 / -1; }')
 
     // DOM-idempotent: a second call neither duplicates nor recreates.
     injectStyles()
@@ -603,6 +606,57 @@ describe('client half', () => {
     localStorage.clear()
   })
 
+  it('settings modal changes template category without dropping isolation', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { SettingsModal } = await import('../src/client/board/SettingsModal.tsx')
+
+    const saved: unknown[] = []
+    const client = {
+      state: async () => ({
+        schemaVersion: 1,
+        revision: 1,
+        tasks: [],
+        settings: { defaultIsolation: 'worktree' as const, templateMenuCategory: '开发' },
+      }),
+      workspaces: async () => [],
+      stream: () => () => {},
+      templates: async () => ({ templates: [
+        { id: 'tpl-dev', name: '开发模板', category: '开发', task: {}, createdAt: 0, updatedAt: 0 },
+        { id: 'tpl-ops', name: '运营模板', category: '运营', task: {}, createdAt: 0, updatedAt: 0 },
+      ] }),
+      updateSettings: async (body: unknown) => { saved.push(body); return body },
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+    await controller.loadTemplates()
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(SettingsModal, { controller }))
+    await new Promise(r => setTimeout(r, 10))
+
+    const category = host.querySelector<HTMLSelectElement>('.dsh-atb-template-category-select')!
+    expect(category.value).toBe('开发')
+    category.value = '运营'
+    category.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    const save = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn')).find(b => b.textContent === '保存设置')!
+    expect(save.disabled).toBe(false)
+    save.click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(saved).toEqual([{ defaultIsolation: 'worktree', templateMenuCategory: '运营' }])
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
   it('detail renders the isolation block; merge/remove call the controller', async () => {
     localStorage.clear()
     const React = await import('react')
@@ -1107,7 +1161,7 @@ describe('client half', () => {
     localStorage.clear()
   })
 
-  it('new-task menu lists templates and manages them; 存为模板 carries task fields', async () => {
+  it('new-task menu uses the board category and manages templates; 存为模板 carries task fields', async () => {
     localStorage.clear()
     const React = await import('react')
     const { createRoot } = await import('react-dom/client')
@@ -1115,13 +1169,13 @@ describe('client half', () => {
     const { TaskBoard } = await import('../src/client/board/TaskBoard.tsx')
 
     const templateList = [
-      { id: 'tpl-1', name: 'Bug 修复', task: { urgency: 'urgent', checklist: ['复现'] }, builtin: true, createdAt: 0, updatedAt: 0 },
-      { id: 'tpl-2', name: '我的模板', task: { title: '自定义' }, createdAt: 0, updatedAt: 0 },
+      { id: 'tpl-1', name: 'Bug 修复', category: '开发', task: { urgency: 'urgent', checklist: ['复现'] }, builtin: true, createdAt: 0, updatedAt: 0 },
+      { id: 'tpl-2', name: '我的模板', category: '运营', task: { title: '自定义' }, createdAt: 0, updatedAt: 0 },
     ]
     const upserts: unknown[] = []
     const deletes: string[] = []
     const client = {
-      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [], settings: { templateMenuCategory: '开发' } }),
       workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
       stream: () => () => {},
       templates: async () => ({ templates: templateList }),
@@ -1146,20 +1200,24 @@ describe('client half', () => {
     const options = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-newmenu-opt')).map(b => b.textContent)
     expect(options).toContain('空白任务')
     expect(options).toContain('Bug 修复')
-    expect(options).toContain('我的模板')
+    expect(options).not.toContain('我的模板')
     expect(options.some(o => o!.includes('管理模板'))).toBe(true)
+    // The menu has no visible filter; it uses the board setting ('开发') directly.
+    expect(host.querySelector('.dsh-atb-newmenu-filter')).toBeNull()
 
-    // Picking a template opens the composer prefilled from it.
-    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-newmenu-opt')).find(b => b.textContent === '我的模板'))!.click()
+    // Picking a template opens the composer prefilled from the active category.
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-newmenu-opt')).find(b => b.textContent === 'Bug 修复'))!.click()
     await new Promise(r => setTimeout(r, 10))
     const snap = controller.getSnapshot()
     expect(snap.composerOpen).toBe(true)
-    expect(snap.templatePrefill).toMatchObject({ title: '自定义' })
+    expect(snap.templatePrefill).toMatchObject({ urgency: 'urgent' })
     controller.closeForm()
 
     // Manager modal: rename save + delete flow reach the client.
     controller.openTemplateManager()
     await new Promise(r => setTimeout(r, 20))
+    expect(host.querySelector('.dsh-atb-tplm-filter')).toBeNull()
+    expect(Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-tplm-name')).map(input => input.value)).toEqual(['Bug 修复'])
     const nameInput = host.querySelector<HTMLInputElement>('.dsh-atb-tplm-name')!
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
     setter?.call(nameInput, '改名模板')
@@ -1167,7 +1225,7 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-tplm-btns .dsh-atb-btn')).find(b => b.textContent === '改名'))!.click()
     await new Promise(r => setTimeout(r, 10))
-    expect(upserts[0]).toMatchObject({ id: 'tpl-1', name: '改名模板' })
+    expect(upserts[0]).toMatchObject({ id: 'tpl-1', name: '改名模板', category: '开发' })
     controller.closeTemplateManager()
 
     root.unmount()

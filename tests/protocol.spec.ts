@@ -26,6 +26,7 @@ import {
   nextCronTime,
   normalizeChecklist,
   normalizeExecution,
+  normalizeTemplateCategory,
   normalizeExecutionReport,
   normalizeModel,
   parseCron,
@@ -253,10 +254,15 @@ describe('board settings & default isolation (0.5.0)', () => {
   })
 
   it('asBoardSettings sanitizes; defaultIsolationOf resolves setting → factory', () => {
-    expect(asBoardSettings({ defaultIsolation: 'worktree', junk: 1 })).toEqual({ defaultIsolation: 'worktree' })
+    expect(asBoardSettings({ defaultIsolation: 'worktree', templateMenuCategory: ' 开发 ', junk: 1 })).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '开发' })
     expect(asBoardSettings({})).toEqual({})
     expect(() => asBoardSettings({ defaultIsolation: 'docker' })).toThrow("isolation must be")
     expect(() => asBoardSettings({ defaultIsolation: 42 })).toThrow("defaultIsolation must be")
+    expect(() => asBoardSettings({ templateMenuCategory: 42 })).toThrow('template category must be a string')
+    expect(() => asBoardSettings({ templateMenuCategory: 'x'.repeat(31) })).toThrow('1..30')
+    expect(normalizeTemplateCategory('  开发  ')).toBe('开发')
+    expect(normalizeTemplateCategory('')).toBeUndefined()
+    expect(() => normalizeTemplateCategory(null)).toThrow('must be a string')
     expect(() => asBoardSettings(null)).toThrow('object')
     expect(defaultIsolationOf(undefined)).toBe('none')
     expect(defaultIsolationOf({})).toBe('none')
@@ -268,9 +274,9 @@ describe('board settings & default isolation (0.5.0)', () => {
     const plan = validateLedgerImport({
       schemaVersion: 1,
       tasks: [],
-      settings: { defaultIsolation: 'worktree', stray: true },
+      settings: { defaultIsolation: 'worktree', templateMenuCategory: '运营', stray: true },
     }, new Set(), NOW)
-    expect(plan.settings).toEqual({ defaultIsolation: 'worktree' })
+    expect(plan.settings).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '运营' })
     const clean = validateLedgerImport({ schemaVersion: 1, tasks: [] }, new Set(), NOW)
     expect(clean.settings).toBeUndefined()
     expect(() => validateLedgerImport({ schemaVersion: 1, tasks: [], settings: { defaultIsolation: 'vm' } }, new Set(), NOW))
