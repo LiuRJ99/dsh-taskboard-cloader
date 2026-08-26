@@ -135,10 +135,8 @@ function isErrorTurnEnd(data: unknown): { message: string } | undefined {
   const kind = (reason as { kind?: unknown }).kind
   if (kind !== 'error') return undefined
   const error = (reason as { error?: { message?: unknown } }).error
-  const detail = JSON.stringify(error) ?? ''
   const message = typeof error?.message === 'string' ? error.message : 'turn failed'
-  console.error('[dsh-taskboard] turn error detail:', detail.slice(0, 2000))
-  void detail
+  console.error('[dsh-taskboard] turn error detail:', JSON.stringify(error)?.slice(0, 2000) ?? '')
   return { message }
 }
 
@@ -187,13 +185,30 @@ export class ExecutionService {
   /** Live executions by execution id (settles and cancels remove entries). */
   private readonly runs = new Map<string, RunEntry>()
 
+  /** Detaches the turn/end listener (plugin teardown — review P1). */
+  private readonly unsubscribeEvents: () => void
+
   /** @param deps - store + agents + workspaces + events + clock. */
   constructor(private readonly deps: ExecutionDeps) {
-    deps.events.onSessionEvent((sessionId, event) => {
+    this.unsubscribeEvents = deps.events.onSessionEvent((sessionId, event) => {
       if (event.type !== 'turn/end') return
+      // S7 (open question): ANY turn/end with an error reason fails the whole
+      // execution and hands the task back. Whether the DSH session loop can
+      // produce recoverable per-turn errors (and keep the session alive) needs
+      // host-side confirmation; if it can, this should count consecutive
+      // errors or wait for an explicit termination signal instead.
       const failure = isErrorTurnEnd(event.data)
-      if (failure !== undefined) this.noteFailure(sessionId, failure.message)
+      if (failure !== undefined) {
+        this.noteFailure(sessionId, failure.message).catch(error => {
+          console.error('[dsh-taskboard] failure settlement error:', error)
+        })
+      }
     })
+  }
+
+  /** Detach the settlement listener; safe to call once at plugin teardown. */
+  dispose(): void {
+    this.unsubscribeEvents()
   }
 
   /**
@@ -233,13 +248,19 @@ export class ExecutionService {
     }
   }
 
-  /** Record a turn failure against the running execution of that session and give the task back. */
-  private noteFailure(sessionId: string, message: string): void {
+  /**
+   * Record a turn failure against the running execution of that session and
+   * give the task back. Resolves once the failure settlement has COMMITTED —
+   * R2: the whenIdle rejection path awaits this (and only this) before
+   * releasing its run entry, so a success settlement can never race it into
+   * the ledger and record a failed run as succeeded.
+   */
+  private noteFailure(sessionId: string, message: string): Promise<void> {
     // The failed session may already have committed work — collect the
     // evidence (best effort) BEFORE marking the execution failed (0.3.1).
     const entry = [...this.runs.values()].find(e => e.sessionId === sessionId)
-    void this.collectEvidence(entry?.prepared).then(facts => {
-      void this.deps.store.mutate('execution-recorded', (ledger) => {
+    return this.collectEvidence(entry?.prepared).then(facts =>
+      this.deps.store.mutate('execution-recorded', (ledger) => {
         for (const task of ledger.tasks) {
           for (const execution of task.executions) {
             if (execution.sessionId === sessionId && execution.outcome === 'running') {
@@ -267,16 +288,22 @@ export class ExecutionService {
           }
         }
         return undefined
-      })
-    })
+      }),
+    ).then(() => { /* failure settlement committed */ })
   }
 
-  /** Patch one task's execution record in the ledger. */
+  /**
+   * Patch one task's execution record in the ledger. R3 depth: a record that
+   * already settled (cancelled/failed/succeeded) is never resurrected — the
+   * startup path patches sessionId long after the gate opened, and a cancel
+   * may have committed in between.
+   */
   private async patchExecution(executionId: string, patch: Partial<ExecutionRecord>): Promise<void> {
     await this.deps.store.mutate('execution-recorded', (ledger) => {
       for (const task of ledger.tasks) {
         const execution = task.executions.find(e => e.id === executionId)
         if (execution !== undefined) {
+          if (execution.outcome !== 'running') return undefined
           Object.assign(execution, patch)
           return [task]
         }
@@ -334,6 +361,14 @@ export class ExecutionService {
         gate = 'task is already in progress'
         return undefined
       }
+      // S4: authoritative capacity check INSIDE the gate — counts ledger-wide
+      // running executions, immune to the startup window (`runs` registers
+      // only after agent creation, seconds later).
+      const running = ledger.tasks.reduce((n, t) => n + t.executions.filter(e => e.outcome === 'running').length, 0)
+      if (running >= max) {
+        gate = `execution concurrency limit reached (${running}/${max} running)`
+        return undefined
+      }
       target.executions.push({
         id: executionId,
         trigger,
@@ -343,7 +378,7 @@ export class ExecutionService {
       })
       target.status = 'in_progress'
       target.updatedAt = this.deps.now()
-      target.updatedBy = { kind: 'user' }
+      target.updatedBy = { kind: 'system' }
       target.claimedBy = sessionId
       target.claimedAt = this.deps.now()
       return [target]
@@ -396,6 +431,10 @@ export class ExecutionService {
       const message = error instanceof Error ? error.message : String(error)
       await this.patchExecution(executionId, { outcome: 'failed', error: `preset 组合失败：${message.slice(0, 400)}`, endedAt: this.deps.now() })
       await this.revertProgress(taskId)
+      // S1: a run that never started must not leave its worktree behind.
+      if (prepared !== undefined && this.deps.git !== undefined) {
+        try { await this.deps.git.removeWorktree(workspace.path, prepared.worktreePath) } catch { /* best effort (dirty worktrees are kept) */ }
+      }
       return { ok: false, error: `preset composition failed: ${message}` }
     }
     let handle: Awaited<ReturnType<AgentsFace['create']>>
@@ -420,6 +459,10 @@ export class ExecutionService {
       const message = error instanceof Error ? error.message : String(error)
       await this.patchExecution(executionId, { outcome: 'failed', error: message.slice(0, 500), endedAt: this.deps.now() })
       await this.revertProgress(taskId)
+      // S1: a run that never started must not leave its worktree behind.
+      if (prepared !== undefined && this.deps.git !== undefined) {
+        try { await this.deps.git.removeWorktree(workspace.path, prepared.worktreePath) } catch { /* best effort (dirty worktrees are kept) */ }
+      }
       return { ok: false, error: message }
     }
 
@@ -446,6 +489,24 @@ export class ExecutionService {
       await this.patchExecution(executionId, { outcome: 'failed', error: message.slice(0, 500), endedAt: this.deps.now() })
       await this.revertProgress(taskId)
       return { ok: false, error: message }
+    }
+
+    // R3: the startup path above awaited seconds of git + agent work. A
+    // cancel() that landed inside that window already settled the execution
+    // (cancelled + task back to todo) — with nothing registered in `runs`,
+    // it could not dispose the agent this path was about to create. Re-verify
+    // INSIDE the queue (after any enqueued cancel committed) BEFORE injecting:
+    // a cancelled card must not gain a zombie session that burns tokens and
+    // edits files while the task sits in todo, re-runnable by anyone.
+    const stillRunning = await this.deps.store.read(ledger =>
+      ledger.tasks.some(t => t.executions.some(e => e.id === executionId && e.outcome === 'running')))
+    if (!stillRunning) {
+      await handle.dispose().catch(() => { /* best effort */ })
+      // S1: do not leave the startup artifacts behind a cancelled run either.
+      if (prepared !== undefined && this.deps.git !== undefined) {
+        try { await this.deps.git.removeWorktree(workspace.path, prepared.worktreePath) } catch { /* best effort */ }
+      }
+      return { ok: false, error: 'cancelled during startup' }
     }
 
     // 3. Attach the session to the workspace (GUI project session list).
@@ -491,9 +552,16 @@ export class ExecutionService {
       void this.settleExecution(executionId, sessionId, prepared)
     }
     this.runs.set(executionId, { sessionId, ...(prepared !== undefined ? { prepared } : {}), settle, dispose: () => handle.dispose() })
+    // R2: the rejection path owns its state transition EXCLUSIVELY — the old
+    // code also called settle() here, racing two evidence collections whose
+    // mutations both checked outcome === 'running': whoever committed first
+    // won, so a run that never reached quiescence could be recorded as
+    // succeeded (and auto-moved to in_review). Now only the failure
+    // settlement writes, and the run entry is released after it commits.
     void handle.agent.whenIdle().then(settle, () => {
       this.noteFailure(sessionId, 'agent did not reach quiescence')
-      settle()
+        .then(() => { this.runs.delete(executionId) })
+        .catch(() => { this.runs.delete(executionId) })
     })
 
     return { ok: true, executionId, sessionId }
@@ -534,7 +602,7 @@ export class ExecutionService {
             })
             t.status = 'in_review'
             t.updatedAt = now
-            t.updatedBy = { kind: 'user' }
+            t.updatedBy = { kind: 'system' }
           }
           return [t]
         }
@@ -627,11 +695,13 @@ export class ExecutionService {
     // The cancelled session may already have committed work — keep the
     // evidence (best effort) so the user can inspect or 续跑 (0.3.1).
     const facts = await this.collectEvidence(entry?.prepared)
+    let settled = false
     await this.deps.store.mutate('execution-recorded', (ledger) => {
       const target = ledger.tasks.find(t => t.id === taskId)
       if (target === undefined) return undefined
       const execution = target.executions.find(e => e.id === running.id)
       if (execution === undefined || execution.outcome !== 'running') return undefined
+      settled = true
       execution.outcome = 'cancelled'
       execution.endedAt = this.deps.now()
       this.applyFacts(execution, facts)
@@ -643,6 +713,10 @@ export class ExecutionService {
       }
       return [target]
     })
+    // The execution may have settled (succeeded/failed) between the stale
+    // read above and this mutation — a no-op cancel must NOT report success
+    // (the GUI used to show 取消成功 for an already-succeeded run, review P1).
+    if (!settled) return { ok: false, error: 'execution already settled' }
     return { ok: true, executionId: running.id }
   }
 
@@ -733,7 +807,7 @@ export class ExecutionService {
     const lastExec = [...task.executions].reverse().find(e => e.outcome !== 'running')
     const lastExecText = lastExec === undefined
       ? '（无）'
-      : `${lastExec.trigger} · ${lastExec.outcome}${lastExec.error !== undefined ? ` · ${lastExec.error.slice(0, 200)}` : ''} · ${new Date(lastExec.startedAt ?? 0).toISOString()}`
+      : `${lastExec.trigger} · ${lastExec.outcome}${lastExec.error !== undefined ? ` · ${lastExec.error.slice(0, 200)}` : ''} · ${lastExec.startedAt !== undefined ? new Date(lastExec.startedAt).toISOString() : '?'}`
     const lastCommentsText = task.comments.slice(-3)
       .map(c => `[${c.threadId !== undefined ? 'agent' : 'user'}] ${c.body}`)
       .join('\n') || '（无）'

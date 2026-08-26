@@ -3,56 +3,75 @@
  * wired to the real handler, driven with fetch — envelope shape, optimistic
  * versions, the user-only done move, purge semantics, and the SSE change
  * stream.
+ *
+ * Isolation model: the routes are registered ONCE (one server, one handler
+ * set), but every test runs against a FRESH TaskStore/TemplateStore. The
+ * registration is handed stable forwarding faces whose target is swapped in
+ * beforeEach — so any test here can run alone, in any order, or sharded.
  */
 import { createServer, type Server } from 'node:http'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { registerTaskboardRoutes } from '../src/host/routes.ts'
-import { TaskStore } from '../src/host/store.ts'
+import { TaskStore, type LedgerChange } from '../src/host/store.ts'
 import { TemplateStore } from '../src/host/templates.ts'
 import type { GitFace } from '../src/host/git.ts'
 import type { WorkspaceFace } from '../src/host/tools.ts'
+import type { TaskTemplate } from '../src/shared/api.ts'
+import type { TaskLedger, TaskRecord } from '../src/shared/protocol.ts'
 
 let server: Server
 let base: string
 let disposeRoutes: () => void
+/** The live store behind the forwarding face; swapped fresh in beforeEach. */
 let store: InstanceType<typeof TaskStore>
+/** The live template store behind the forwarding face; swapped in beforeEach. */
 let templates: InstanceType<typeof TemplateStore>
 let cancelCalls: string[]
 let runCalls: Array<{ id: string; runOptions?: { reuseWorktree?: boolean } }>
 let dir: string
+/** Per-test store file counter (unique names keep a fresh store from ever
+ *  reading a previous test's ledger file). */
+let storeSeq = 0
 
-// Mutable workspace list + mutable git behavior (0.3.0 tests swap these).
-const wsList: Array<{ id: string; path: string; title: string }> = [
+// Mutable workspace list + mutable git behavior (tests swap these).
+const WS_BASE: Array<{ id: string; path: string; title: string }> = [
   { id: 'ws-a', path: '/proj/a', title: 'A' },
   { id: 'ws-b', path: '/proj/b', title: 'B' },
 ]
+const wsList: Array<{ id: string; path: string; title: string }> = []
 const workspaces: WorkspaceFace = {
   resolveByPath: async path => (path === '/proj/a' ? { id: 'ws-a' } : path === '/proj/b' ? { id: 'ws-b' } : undefined),
   get: id => wsList.find(w => w.id === id),
   list: () => wsList.slice(),
 }
 
-/** Swappable git behavior for the routes under test. */
-const gitBehavior = {
-  mergeError: undefined as string | undefined,
-  removeError: undefined as undefined | ((path: string) => string | undefined),
-  branchDeleteError: undefined as string | undefined,
-  /** When true, isAncestor reports "branch already merged" (no-op merge). */
-  noop: false,
-  detect: async (_root: string) => false,
-  merged: [] as Array<{ root: string; branch: string }>,
-  removed: [] as string[],
-  deletedBranches: [] as string[],
-  /** Diff viewer: commit hash → patch text (undefined = fail-soft miss). */
-  showCommit: undefined as string | undefined,
-  /** Diff viewer: path → patch text (undefined = fail-soft miss). */
-  showPath: undefined as string | undefined,
-  showCommitCalls: [] as Array<{ cwd: string; hash: string }>,
-  showPathCalls: [] as Array<{ cwd: string; path: string; base?: string }>,
+/** Factory defaults for the swappable git behavior (reset in beforeEach). */
+function freshGitBehavior() {
+  return {
+    mergeError: undefined as string | undefined,
+    removeError: undefined as undefined | ((path: string) => string | undefined),
+    removeUnregistered: undefined as boolean | undefined,
+    branchDeleteError: undefined as string | undefined,
+    /** When true, isAncestor reports "branch already merged" (no-op merge). */
+    noop: false,
+    detect: async (_root: string) => false,
+    merged: [] as Array<{ root: string; branch: string }>,
+    removed: [] as string[],
+    deletedBranches: [] as string[],
+    /** Diff viewer: commit hash → patch text (undefined = fail-soft miss). */
+    showCommit: undefined as string | undefined,
+    /** Diff viewer: path → patch text (undefined = fail-soft miss). */
+    showPath: undefined as string | undefined,
+    showCommitCalls: [] as Array<{ cwd: string; hash: string }>,
+    showPathCalls: [] as Array<{ cwd: string; path: string; base?: string }>,
+  }
 }
+
+/** Swappable git behavior for the routes under test (fields reset per test). */
+const gitBehavior = freshGitBehavior()
 const gitFace: GitFace = {
   detect: root => gitBehavior.detect(root),
   binaryAvailable: async () => true,
@@ -67,6 +86,8 @@ const gitFace: GitFace = {
     gitBehavior.removed.push(path)
     const error = gitBehavior.removeError?.(path)
     if (error !== undefined) throw new Error(error)
+    if (gitBehavior.removeUnregistered === true) return 'unregistered' as const
+    return 'removed' as const
   },
   deleteBranch: async (_root, branch) => {
     gitBehavior.deletedBranches.push(branch)
@@ -82,13 +103,56 @@ const gitFace: GitFace = {
   },
 }
 
+// ---------------------------------------------------------------------------
+// Stable forwarding faces: routes are registered ONCE against these; each
+// test swaps the live store behind them (mutating the SAME face objects, so
+// the once-destructured references inside the routes keep working).
+// ---------------------------------------------------------------------------
+
+/** Subscribers registered through the face; re-hung on every store swap. */
+const liveSubscribers = new Map<(change: LedgerChange) => void, () => void>()
+
+/** Make `next` the live store: drop the old broadcast subscription and
+ *  re-register every live subscriber on the new instance. */
+function installLiveStores(next: InstanceType<typeof TaskStore>, nextTemplates: InstanceType<typeof TemplateStore>): void {
+  for (const unsub of liveSubscribers.values()) unsub()
+  store = next
+  templates = nextTemplates
+  for (const fn of liveSubscribers.keys()) liveSubscribers.set(fn, store.subscribe(fn))
+}
+
+const storeFace = {
+  load: () => store.load(),
+  snapshot: () => store.snapshot(),
+  get: (id: string) => store.get(id),
+  subscribe: (fn: (change: LedgerChange) => void) => {
+    const unsub = store.subscribe(fn)
+    liveSubscribers.set(fn, unsub)
+    return () => {
+      liveSubscribers.delete(fn)
+      unsub()
+    }
+  },
+  backup: () => store.backup(),
+  mutate: (kind: LedgerChange['kind'], mutator: (ledger: TaskLedger) => TaskRecord[] | undefined) => store.mutate(kind, mutator),
+  read: <T>(fn: (ledger: TaskLedger) => T) => store.read<T>(fn),
+}
+
+const templatesFace = {
+  list: () => templates.list(),
+  upsert: (input: { id?: string; name: string; task: TaskTemplate['task'] }) => templates.upsert(input),
+  remove: (id: string) => templates.remove(id),
+}
+
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'tb-routes-'))
-  server = createServer()
-  store = new TaskStore({ file: join(dir, 'ledger.json') })
-  templates = new TemplateStore(join(dir, 'templates.json'))
+  installLiveStores(
+    new TaskStore({ file: join(dir, 'ledger-0.json') }),
+    new TemplateStore(join(dir, 'templates-0.json')),
+  )
   cancelCalls = []
   runCalls = []
+  server = createServer()
   const routes: Array<{ kind: string; path: string; handler: (req: never, res: never) => void }> = []
   const ctxFace = {
     webServer: {
@@ -99,14 +163,14 @@ beforeAll(async () => {
     },
   }
   disposeRoutes = registerTaskboardRoutes(ctxFace as never, {
-    store,
+    store: storeFace as unknown as InstanceType<typeof TaskStore>,
     workspaces,
     now: () => 5_000,
     run: async (id, runOptions) => { runCalls.push({ id, runOptions }); return { ok: true, executionId: 'e-x', sessionId: 's-x' } },
     cancel: async id => { cancelCalls.push(id); return { ok: true, executionId: 'e-x' } },
     modelProviders: () => ['prov-a'],
     git: gitFace,
-    templates,
+    templates: templatesFace as unknown as InstanceType<typeof TemplateStore>,
   })
   server.on('request', (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
@@ -117,6 +181,21 @@ beforeAll(async () => {
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+})
+
+beforeEach(async () => {
+  // Fresh ledger + template file per test: nothing leaks in from a previous
+  // test's writes, and no test needs to "restore state for later tests".
+  storeSeq += 1
+  installLiveStores(
+    new TaskStore({ file: join(dir, `ledger-${storeSeq}.json`) }),
+    new TemplateStore(join(dir, `templates-${storeSeq}.json`)),
+  )
+  cancelCalls.length = 0
+  runCalls.length = 0
+  Object.assign(gitBehavior, freshGitBehavior())
+  wsList.length = 0
+  wsList.push(...WS_BASE.map(w => ({ ...w })))
 })
 
 afterAll(async () => {
@@ -253,6 +332,46 @@ describe('taskboard routes', () => {
     expect(full.value.workspaceId).toBe('ws-b')
     const bad = await post(`/dsh-taskboard/tasks/${id}/update`, { ifVersion: 2, workspaceId: 'nope' })
     expect(bad.status).toBe(404)
+  })
+
+  it('archived tasks are immutable: update and comment both refuse with 400 invalid_transition', async () => {
+    const created = await post('/dsh-taskboard/tasks', { title: '已归档', workspaceId: 'ws-a', urgency: 'normal' })
+    const id = created.json.value.id as string
+    await store.mutate('task-updated', ledger => {
+      const target = ledger.tasks.find(t => t.id === id)!
+      target.status = 'archived'
+      target.version += 1
+      return [target]
+    })
+    const full = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+
+    const upd = await post(`/dsh-taskboard/tasks/${id}/update`, { ifVersion: full.value.version, title: '不该改' })
+    expect(upd.status).toBe(400)
+    expect(upd.json.error.code).toBe('invalid_transition')
+    expect(upd.json.error.message).toContain('archived tasks are immutable')
+
+    const comment = await post(`/dsh-taskboard/tasks/${id}/comment`, { body: '迟到的评论' })
+    expect(comment.status).toBe(400)
+    expect(comment.json.error.code).toBe('invalid_transition')
+
+    // Nothing slipped through: title/version/comments all frozen.
+    const after = await (await fetch(`${base}/dsh-taskboard/tasks/${id}`)).json()
+    expect(after.value.title).toBe('已归档')
+    expect(after.value.version).toBe(full.value.version)
+    expect(after.value.comments).toEqual([])
+  })
+
+  it('POST /tasks rejects non-initial statuses (backlog/todo only)', async () => {
+    const bad = await post('/dsh-taskboard/tasks', { title: '不能直接进行中', workspaceId: 'ws-a', urgency: 'normal', status: 'in_progress' })
+    expect(bad.status).toBe(400)
+    expect(bad.json.error.code).toBe('invalid_transition')
+    expect(bad.json.error.message).toContain('a new task must start as backlog or todo')
+    expect(store.snapshot().tasks).toHaveLength(0) // nothing was created
+
+    // backlog is a legal starting status (未授权 backlog column).
+    const backlog = await post('/dsh-taskboard/tasks', { title: '储备', workspaceId: 'ws-a', urgency: 'relaxed', status: 'backlog' })
+    expect(backlog.status).toBe(201)
+    expect(backlog.json.value.status).toBe('backlog')
   })
 
   it('keeps an agent claim alive across user edits; a user move releases it', async () => {
@@ -497,14 +616,31 @@ describe('taskboard routes', () => {
       const orphan = diag.value.orphanWorktrees.find((o: { taskId: string }) => o.taskId === 't-ghost')
       expect(orphan).toEqual({ workspaceId: 'ws-tmp', workspacePath: dir, taskId: 't-ghost', path: ghostPath.replaceAll('\\', '/') })
 
-      // Cleanup with git reporting "not a working tree" → fs fallback.
-      gitBehavior.removeError = () => 'fatal: not a working tree: ' + ghostPath
+      // Cleanup with git reporting an unregistered leftover → fs fallback
+      // (S3: structured outcome from the face, not a parsed stderr message).
+      gitBehavior.removeUnregistered = true
       const clean = await post('/dsh-taskboard/worktree-cleanup', { workspaceId: 'ws-tmp', taskId: 't-ghost' })
       expect(clean.status).toBe(200)
       expect(clean.json.value.cleaned).toBe(true)
 
       diag = await (await fetch(`${base}/dsh-taskboard/diagnostics`)).json()
       expect(diag.value.orphanWorktrees.find((o: { taskId: string }) => o.taskId === 't-ghost')).toBeUndefined()
+
+      // R4: cleanup with traversal-shaped taskIds must never reach the fs
+      // layer (the old flow rm -rf'd whatever worktreePathOf joined).
+      const victim = join(dir, 'victim-project')
+      await mkdir(victim, { recursive: true })
+      await writeFile(join(victim, 'important.txt'), 'keep me')
+      try {
+        for (const taskId of ['../victim-project', '..\\victim-project', '../../elsewhere', 'a/b', '.dsh-worktrees-evil']) {
+          const attack = await post('/dsh-taskboard/worktree-cleanup', { workspaceId: 'ws-tmp', taskId })
+          expect(attack.status).toBe(400)
+          expect(attack.json.error.code).toBe('invalid_input')
+        }
+        expect(await readFile(join(victim, 'important.txt'), 'utf8')).toBe('keep me')
+      } finally {
+        await rm(victim, { recursive: true, force: true })
+      }
 
       // Cleanup refuses a task that still exists in the ledger.
       const created = await post('/dsh-taskboard/tasks', { title: 'Live', workspaceId: 'ws-a', urgency: 'normal' })
@@ -524,7 +660,6 @@ describe('taskboard routes', () => {
         let diag2 = await (await fetch(`${base}/dsh-taskboard/diagnostics`)).json()
         expect(diag2.value.gitIgnoreSuggestions).toEqual([{ workspaceId: 'ws-gi', workspacePath: gitDir }])
 
-        const { writeFile } = await import('node:fs/promises')
         await writeFile(join(gitDir, '.gitignore'), 'node_modules\n.dsh-worktrees/\n', 'utf8')
         diag2 = await (await fetch(`${base}/dsh-taskboard/diagnostics`)).json()
         expect(diag2.value.gitIgnoreSuggestions.find((s: { workspaceId: string }) => s.workspaceId === 'ws-gi')).toBeUndefined()
@@ -733,7 +868,6 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
     expect(store.get('t-imported')!.title).toBe('新导入')
 
     // Replace: whole-ledger swap with an automatic backup file written.
-    const before = store.snapshot()
     const tinyFile = { schemaVersion: 1, tasks: [{ id: 't-only', title: '唯一', workspaceId: 'ws-a', urgency: 'normal', comments: [], executions: [] }] }
     const replaced = await post('/dsh-taskboard/import', { mode: 'replace', ledger: tinyFile })
     expect(replaced.status).toBe(200)
@@ -744,12 +878,6 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
     // Replace with zero importable tasks is refused (would wipe for nothing).
     const refused = await post('/dsh-taskboard/import', { mode: 'replace', ledger: { schemaVersion: 1, tasks: [{ id: 'z', title: '', workspaceId: 'x', urgency: 'normal', comments: [], executions: [] }] } })
     expect(refused.status).toBe(400)
-
-    // Restore the pre-replace ledger (merge the snapshot back) for later tests.
-    await store.mutate('task-created', ledger => {
-      ledger.tasks = structuredClone(before.tasks)
-      return ledger.tasks
-    })
   })
 
   // ------------------------------------------------------------------ diff
@@ -830,8 +958,11 @@ describe('taskboard routes 0.5.0 (board settings → default isolation)', () => 
   })
 
   it('create materializes the board default on omitted isolation; explicit wins; earlier tasks unaffected', async () => {
-    // Board setting is 'worktree' from the previous test. Create responses
-    // are SUMMARIES (no isolation field) — assertions read the full record.
+    // Self-contained precondition: pin the board default to worktree here.
+    const pinned = await post('/dsh-taskboard/settings/update', { defaultIsolation: 'worktree' })
+    expect(pinned.status).toBe(200)
+    // Create responses are SUMMARIES (no isolation field) — assertions read
+    // the full record.
     const wt = await post('/dsh-taskboard/tasks', { title: 'Settings default wt', workspaceId: 'ws-a', urgency: 'normal' })
     expect(wt.status).toBe(201)
     const wtId = wt.json.value.id as string
@@ -879,11 +1010,5 @@ describe('taskboard routes 0.5.0 (board settings → default isolation)', () => 
     const badFile = { ...ledgerFile, settings: { defaultIsolation: 'docker' } }
     const refused = await post('/dsh-taskboard/import/preview', badFile)
     expect(refused.status).toBe(400)
-
-    // Leave the board at the factory default for any later readers.
-    await store.mutate('settings-updated', ledger => {
-      delete ledger.settings
-      return []
-    })
   })
 })

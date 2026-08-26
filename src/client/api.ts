@@ -39,11 +39,19 @@ async function unwrap<T>(pending: Response | Promise<Response>): Promise<T> {
   return body.value
 }
 
+/** Request timeout (S15: a hung fetch must never pin refreshInFlight forever). */
+const TIMEOUT_MS = 10_000
+
+async function get<T>(path: string): Promise<T> {
+  return unwrap<T>(fetch(path, { signal: AbortSignal.timeout(TIMEOUT_MS) }))
+}
+
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
   })
   return unwrap<T>(res)
 }
@@ -95,10 +103,10 @@ export interface TaskboardClient {
 /** Build the client over fetch + EventSource. */
 export function createClient(): TaskboardClient {
   return {
-    state: () => unwrap<StateResponse>(fetch('/dsh-taskboard/state')),
-    workspaces: () => unwrap<WorkspaceView[]>(fetch('/dsh-taskboard/workspaces')),
+    state: () => get<StateResponse>('/dsh-taskboard/state'),
+    workspaces: () => get<WorkspaceView[]>('/dsh-taskboard/workspaces'),
     create: body => post('/dsh-taskboard/tasks', body),
-    get: id => unwrap<TaskRecord>(fetch(`/dsh-taskboard/tasks/${encodeURIComponent(id)}`)),
+    get: id => get<TaskRecord>(`/dsh-taskboard/tasks/${encodeURIComponent(id)}`),
     update: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/update`, body),
     move: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/move`, body),
     reject: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/reject`, body),
@@ -108,31 +116,33 @@ export function createClient(): TaskboardClient {
     cancel: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/cancel`, {}),
     mergeBranch: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/merge`, {}),
     worktreeRemove: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/worktree-remove`, body),
-    diagnostics: () => unwrap<DiagnosticsResponse>(fetch('/dsh-taskboard/diagnostics')),
+    diagnostics: () => get<DiagnosticsResponse>('/dsh-taskboard/diagnostics'),
     worktreeCleanup: (workspaceId, taskId) => post('/dsh-taskboard/worktree-cleanup', { workspaceId, taskId }),
     diff: (taskId, query) => {
       const params = new URLSearchParams({ execution: query.execution })
       if (query.commit !== undefined) params.set('commit', query.commit)
       if (query.path !== undefined) params.set('path', query.path)
-      return unwrap<DiffResponse>(fetch(`/dsh-taskboard/tasks/${encodeURIComponent(taskId)}/diff?${params.toString()}`))
+      return get<DiffResponse>(`/dsh-taskboard/tasks/${encodeURIComponent(taskId)}/diff?${params.toString()}`)
     },
     importPreview: file => post('/dsh-taskboard/import/preview', file),
     importCommit: (mode, ledger) => post('/dsh-taskboard/import', { mode, ledger }),
-    templates: () => unwrap<TemplatesResponse>(fetch('/dsh-taskboard/templates')),
+    templates: () => get<TemplatesResponse>('/dsh-taskboard/templates'),
     templateUpsert: body => post('/dsh-taskboard/templates', body),
     templateDelete: id => post('/dsh-taskboard/templates/delete', { id }),
-    settings: () => unwrap<SettingsResponse>(fetch('/dsh-taskboard/settings')),
+    settings: () => get<SettingsResponse>('/dsh-taskboard/settings'),
     updateSettings: body => post('/dsh-taskboard/settings/update', body),
     stream(onChange, onGap) {
       const es = new EventSource('/dsh-taskboard/events')
       let revision: number | undefined
       const hello = (event: MessageEvent): void => {
-        const payload = JSON.parse(event.data) as { revision: number }
+        let payload: { revision: number }
+        try { payload = JSON.parse(event.data) as { revision: number } } catch { return } // malformed frame → ignore
         if (revision !== undefined && payload.revision !== revision) onGap()
         revision = payload.revision
       }
       const change = (event: MessageEvent): void => {
-        const payload = JSON.parse(event.data) as ChangeEvent
+        let payload: ChangeEvent
+        try { payload = JSON.parse(event.data) as ChangeEvent } catch { return } // malformed frame → ignore
         // A gap means we missed frames while disconnected: reconcile fully.
         if (revision !== undefined && payload.revision !== revision + 1) onGap()
         revision = payload.revision

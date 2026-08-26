@@ -22,7 +22,8 @@
  *
  * @module dsh-taskboard/host/git
  */
-import type { CommitInfo } from '../shared/protocol.ts'
+import { resolve } from 'node:path'
+import { isValidTaskId, type CommitInfo } from '../shared/protocol.ts'
 
 /** Timeout for quick read-only queries (rev-parse / status / log / diff). */
 const QUICK_TIMEOUT_MS = 2_000
@@ -123,8 +124,12 @@ export interface GitFace {
   merge(root: string, branch: string): Promise<void>
   /** Whether `branch` is already an ancestor of HEAD (a merge would be a no-op). */
   isAncestor(root: string, branch: string): Promise<boolean>
-  /** Remove a worktree; THROWS when it still has uncommitted changes. */
-  removeWorktree(root: string, worktreePath: string): Promise<void>
+  /**
+   * Remove a worktree. Resolves 'removed' on success, 'unregistered' when git
+   * no longer knows the path (an orphaned directory). THROWS when it still
+   * has uncommitted changes, or on any other git failure (readable reason).
+   */
+  removeWorktree(root: string, worktreePath: string): Promise<'removed' | 'unregistered'>
   /** Delete a branch; THROWS (e.g. still checked out in a worktree). */
   deleteBranch(root: string, branch: string): Promise<void>
   /**
@@ -162,8 +167,16 @@ export function sanitizeBranchName(title: string, taskId: string): string {
   return head.length === 0 ? `task/${taskId}` : `task/${head}+${taskId}`
 }
 
-/** The canonical worktree path of a task inside its workspace (forward slashes). */
+/**
+ * The canonical worktree path of a task inside its workspace (forward
+ * slashes). R4②: the id is validated HERE so every present and future call
+ * site is covered — a traversal-shaped id must never ride into a filesystem
+ * path (the cleanup/purge flows `rm -rf` what this returns).
+ */
 export function worktreePathOf(workspacePath: string, taskId: string): string {
+  if (!isValidTaskId(taskId)) {
+    throw new Error(`Error: invalid_input: illegal task id ${JSON.stringify(taskId.slice(0, 40))}`)
+  }
   const root = workspacePath.replace(/[\\/]+$/, '').replaceAll('\\', '/')
   return `${root}/${WORKTREE_DIR}/${taskId}`
 }
@@ -219,10 +232,15 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
       // worktree's own HEAD so evidence covers only the new run.
       if (mode === 'reuse') {
         const wtHead = await quick(['rev-parse', 'HEAD'], path)
-        if (wtHead.ok && wtHead.stdout.trim().length > 0) {
+        // S14: a readable HEAD is not enough — the worktree must be on OUR
+        // branch, otherwise a user-created repo at the path would be silently
+        // taken over. Foreign or detached → fall through to fresh preparation.
+        const wtBranch = wtHead.ok ? await quick(['rev-parse', '--abbrev-ref', 'HEAD'], path) : undefined
+        if (wtHead.ok && wtHead.stdout.trim().length > 0
+          && wtBranch !== undefined && wtBranch.ok && wtBranch.stdout.trim() === branch) {
           return { path, branch, baseCommit: wtHead.stdout.trim(), reused: true }
         }
-        // No live worktree → fall through to a fresh preparation.
+        // No live worktree on our branch → fall through to a fresh preparation.
       }
 
       // Baseline: the main worktree's current HEAD (also validates the repo).
@@ -302,7 +320,8 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
             return path !== WORKTREE_DIR && !path.startsWith(`${WORKTREE_DIR}/`)
           })
         if (dirtyLines.length > 0) {
-          throw new Error(`主工作区有 ${dirtyLines.length} 处未提交修改，请先提交或暂存后再合并`)
+          // Machine-readable tag: callers classify without parsing zh-CN text.
+          throw Object.assign(new Error(`主工作区有 ${dirtyLines.length} 处未提交修改，请先提交或暂存后再合并`), { code: 'dirty-tree' })
         }
       }
       const merged = await heavy(['merge', '--no-ff', '--no-edit', branch], root)
@@ -320,14 +339,24 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
       return r.ok
     },
 
-    removeWorktree: (root, worktreePath) => withRootLock(root, async () => {
+    removeWorktree: (root, worktreePath) => withRootLock(root, async (): Promise<'removed' | 'unregistered'> => {
       const status = await quick(['status', '--porcelain'], worktreePath)
       if (status.ok && status.stdout.trim().length > 0) {
         const lines = status.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0)
-        throw new Error(`worktree 有 ${lines.length} 处未提交修改，拒绝删除：\n${lines.slice(0, 10).join('\n')}`)
+        // Machine-readable tag: purge flows classify without parsing zh-CN text.
+        throw Object.assign(new Error(`worktree 有 ${lines.length} 处未提交修改，拒绝删除：\n${lines.slice(0, 10).join('\n')}`), { code: 'dirty-worktree' })
       }
       const removed = await heavy(['worktree', 'remove', worktreePath], root)
-      if (!removed.ok) throw new Error(`删除 worktree 失败：${(removed.stderr.trim() || removed.stdout.trim()).slice(0, 300)}`)
+      if (removed.ok) return 'removed'
+      // S3: classify the failure WITHOUT parsing git's (localizable) stderr —
+      // a path absent from `worktree list` is an unregistered leftover, not
+      // an error the caller should relay verbatim.
+      const list = await quick(['worktree', 'list', '--porcelain'], root)
+      const registered = list.ok && list.stdout.split('\n')
+        .some(l => l.startsWith('worktree ')
+          && resolve(l.slice('worktree '.length).trim()).toLowerCase() === resolve(worktreePath).toLowerCase())
+      if (!registered) return 'unregistered'
+      throw new Error(`删除 worktree 失败：${(removed.stderr.trim() || removed.stdout.trim()).slice(0, 300)}`)
     }),
 
     deleteBranch: (root, branch) => withRootLock(root, async () => {

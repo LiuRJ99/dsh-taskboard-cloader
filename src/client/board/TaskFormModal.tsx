@@ -14,8 +14,8 @@ import type { TaskTemplateSpec } from '../../shared/api.ts'
 import type { ChecklistItem, IsolationMode, PermissionMode, TaskSpeed, Urgency } from '../../shared/protocol.ts'
 import { MAX_CHECKLIST_ITEMS, defaultIsolationOf, nextCronTime, parseCron } from '../../shared/protocol.ts'
 import { supportsTaskFastSpeed } from '../../shared/model-capabilities.ts'
-import { fmtTime } from './TaskBoard.tsx'
 import { isTaskModelSupported } from '../model-catalog.ts'
+import { fmtTime } from './format.ts'
 
 /** One row of the configured model catalog (from llm.models). */
 export interface CatalogModel {
@@ -190,6 +190,10 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
       : (prefill?.checklist ?? []).map(text => ({ text, checked: false })),
   )
   const titleRef = useRef<HTMLInputElement>(null)
+  // One in-flight write at a time: the foot buttons disable while a
+  // create/update/run round-trip is pending — a double click used to fire
+  // duplicate creates (and runs) before the first one returned (review P0).
+  const [busy, setBusy] = useState(false)
 
   // Focus the title and close on Esc while the dialog is open.
   useEffect(() => {
@@ -201,9 +205,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     return () => document.removeEventListener('keydown', onKey)
   }, [controller])
 
-  // Model catalog: the plugin face provides it when the runtime is up.
+  // Model catalog: the controller exposes the installed face when the runtime is up.
   useEffect(() => {
-    const face = (controller as unknown as { modelCatalog?: () => Promise<CatalogModel[]> }).modelCatalog
+    const face = controller.modelCatalog
     if (face === undefined) return
     void face().then(rows => setCatalog(rows.filter(isTaskModelSupported))).catch(() => setCatalog([]))
   }, [controller])
@@ -227,14 +231,18 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   // create mode (unless a template pinned one) so executions run with a
   // real tool set out of the box.
   useEffect(() => {
-    const face = (controller as unknown as { presetCatalog?: () => Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }> }).presetCatalog
+    const face = controller.presetCatalog
     if (face === undefined) return
     void face().then(roster => {
       setPresets(roster.presets)
       setPresetDefault(roster.defaultId)
-      if (task?.presetId === undefined && initialPreset === '' && roster.defaultId !== undefined) setPresetId(roster.defaultId)
+      // CREATE mode only (review P1): pre-selecting in edit mode would
+      // silently pin the deployment default onto tasks that deliberately
+      // follow it. In create mode `task` is undefined, so checking
+      // `initialPreset` (template pin) alone is sufficient.
+      if (!editing && initialPreset === '' && roster.defaultId !== undefined) setPresetId(roster.defaultId)
     }).catch(() => setPresets([]))
-  }, [controller, task?.presetId, initialPreset])
+  }, [controller, editing, task?.presetId, initialPreset])
 
   // Live cron validation + next-run preview (same math as the host).
   const cronMatch = mode === 'scheduled' ? parseCron(cron.trim()) : null
@@ -321,13 +329,14 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const filledRows = (): CheckRow[] => checkRows.map(r => ({ ...r, text: r.text.trim() })).filter(r => r.text.length > 0)
 
   const submit = (): void => {
-    if (!valid) return
+    if (!valid || busy) return
     const picked = model !== '' ? (JSON.parse(model) as { provider: string; model: string; reasoningEffort?: string }) : undefined
     const isolationOut = isolationPayload()
     const presetOut = presetPayload()
     const rows = filledRows()
-    if (editing) {
-      void controller.update(task.id, task.version, {
+    setBusy(true)
+    const action = editing
+      ? controller.update(task.id, task.version, {
         title,
         description,
         prompt,
@@ -343,8 +352,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         // [] clears the checklist (host deletes the field on empty).
         checklist: rows.length > 0 ? rows : null,
       })
-    } else {
-      void controller.create({
+      : controller.create({
         title,
         workspaceId,
         urgency,
@@ -358,18 +366,19 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         ...(presetOut !== undefined ? { presetId: presetOut } : {}),
         ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
       })
-    }
+    void action.catch(() => undefined).finally(() => setBusy(false))
   }
 
   /** Save the form, then immediately trigger a manual run of the task. */
   const submitAndRun = (): void => {
-    if (!valid || runBlocked) return
+    if (!valid || runBlocked || busy) return
     const picked = model !== '' ? (JSON.parse(model) as { provider: string; model: string; reasoningEffort?: string }) : undefined
     const isolationOut = isolationPayload()
     const presetOut = presetPayload()
     const rows = filledRows()
-    if (editing) {
-      void (async () => {
+    setBusy(true)
+    void (async () => {
+      if (editing) {
         const saved = await controller.update(task.id, task.version, {
           title,
           description,
@@ -385,9 +394,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           checklist: rows.length > 0 ? rows : null,
         })
         if (saved) await controller.run(task.id)
-      })()
-    } else {
-      void (async () => {
+      } else {
         const id = await controller.create({
           title,
           workspaceId,
@@ -403,8 +410,8 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
         })
         if (id !== undefined) await controller.run(id)
-      })()
-    }
+      }
+    })().catch(() => undefined).finally(() => setBusy(false))
   }
 
   const hint = !valid
@@ -598,13 +605,13 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
             <button
               type="button"
               className="dsh-atb-btn"
-              disabled={!valid || runBlocked}
-              title={runBlocked ? '任务正在执行中，不能重复发起' : '保存后立即发起执行（新会话）'}
+              disabled={!valid || runBlocked || busy}
+              title={runBlocked ? '任务正在执行中，不能重复发起' : busy ? '正在提交…' : '保存后立即发起执行（新会话）'}
               onClick={submitAndRun}
             >
               ⚡ 立即执行
             </button>
-            <button type="button" className="dsh-atb-btn" data-primary="true" disabled={!valid} onClick={submit}>
+            <button type="button" className="dsh-atb-btn" data-primary="true" disabled={!valid || busy} onClick={submit}>
               {editing ? '保存修改' : '创建任务'}
             </button>
           </span>

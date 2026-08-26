@@ -1,7 +1,7 @@
 /**
  * Host loader entry for dsh-taskboard.
  *
- * Wiring: the ledger store (one JSON file under the DSH home), the eight
+ * Wiring: the ledger store (one JSON file under the DSH home), the ten
  * `taskboard_*` agent tools, the agent workflow-protocol system-prompt
  * section, the /taskboard JSON+SSE routes (when a webServer is served),
  * the host execution service (fresh in-project sessions, pinned models), and
@@ -71,6 +71,12 @@ function installTaskModelOptions(agentCtx: unknown, selection: TaskModel | undef
 export function apply(ctx: Context): void {
   const store = new TaskStore({ file: dshHomePath(LEDGER_FILE) })
   const templates = new TemplateStore(dshHomePath(TEMPLATES_FILE))
+  // Eager first load: the tools and most routes read snapshot()/get() without
+  // triggering the lazy load, so a fresh boot used to serve an EMPTY board to
+  // taskboard_list/get until the scheduler catchup tick or the first
+  // GET /state happened to load the file (review P0). load() never throws —
+  // a corrupt ledger is quarantined instead.
+  void store.load()
   const now = () => Date.now()
   // Global execution concurrency cap (DSH_TASKBOARD_MAX_CONCURRENT overrides).
   const maxConcurrent = Math.max(1, Number.parseInt(process.env.DSH_TASKBOARD_MAX_CONCURRENT ?? '', 10) || DEFAULT_MAX_CONCURRENT)
@@ -222,6 +228,9 @@ export function apply(ctx: Context): void {
       const scheduler = new SchedulerService({ store, execution, now, maxConcurrent })
       scheduler.start()
       disposers.push(() => scheduler.dispose())
+      // Detach the settlement listener with the plugin — a hot reload must
+      // not leave stale services reacting to turn/end errors (review P1).
+      disposers.push(() => execution.dispose())
 
       return () => {
         disposeRoutes?.()

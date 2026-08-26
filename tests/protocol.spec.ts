@@ -31,7 +31,9 @@ import {
   normalizeModel,
   parseCron,
   summarize,
+  validateImportedTask,
   validateLedgerImport,
+  isValidTaskId,
   type TaskRecord,
 } from '../src/shared/protocol.ts'
 import { TASKBOARD_PROTOCOL } from '../src/host/protocol-text.ts'
@@ -405,6 +407,29 @@ describe('TaskStore', () => {
     expect(store.get('t-f')!.title).toBe('ok')
   })
 
+  it('a no-op mutate returns a frozen clone of the ledger, never the live one (S9)', async () => {
+    const file = join(dir, 'noop.json')
+    const store = new TaskStore({ file })
+    await store.mutate('task-created', ledger => {
+      ledger.tasks.push(makeTask('t-noop'))
+      return ledger.tasks
+    })
+    const revisionBefore = store.snapshot().revision
+    const result = await store.mutate('task-updated', () => undefined)
+    // Aborted write: nothing changed, nothing persisted.
+    expect(result.changed).toHaveLength(0)
+    expect(store.snapshot().revision).toBe(revisionBefore)
+    // S9 parity: even the no-op path hands out a deep-frozen clone — writing
+    // through it throws instead of touching internal state.
+    expect(Object.isFrozen(result.ledger)).toBe(true)
+    expect(Object.isFrozen(result.ledger.tasks[0])).toBe(true)
+    expect(() => { result.ledger.tasks.push(makeTask('t-nope')) }).toThrow()
+    // And it is never the same object a fresh snapshot/get hands out.
+    expect(result.ledger).not.toBe(store.snapshot())
+    expect(result.ledger.tasks[0]).not.toBe(store.get('t-noop'))
+    expect(result.ledger).toEqual(store.snapshot())
+  })
+
   it('prunes execution records to the retention cap on every mutation', async () => {
     const file = join(dir, 'prune.json')
     const store = new TaskStore({ file })
@@ -499,34 +524,39 @@ function fakeWorkspaces(): WorkspaceFace {
   }
 }
 
-/** Build a registered tool set over a temp store; returns name → tool. */
-async function toolSet(cwd: string): Promise<Map<string, { execute(args: unknown, exec: unknown): Promise<unknown> }>> {
-  const dir = await mkdtemp(join(tmpdir(), 'taskboard-tools-'))
-  const store = new TaskStore({ file: join(dir, 'ledger.json') })
-  await store.mutate('task-created', ledger => {
-    ledger.tasks.push(makeTask('t-1'), makeTask('t-2', { workspaceId: 'ws-b' }))
-    return ledger.tasks
-  })
-  const deps: ToolDeps = { store, workspaces: fakeWorkspaces(), now: () => 1_000 }
-  const tools = new Map<string, { execute(args: unknown, exec: unknown): Promise<unknown> }>()
-  const ctx = {
-    tools: {
-      register(tool: { name: string; execute(args: unknown, exec: unknown): Promise<unknown> }) {
-        tools.set(tool.name, tool)
-        return () => tools.delete(tool.name)
-      },
-    },
-  }
-  registerTaskboardTools(ctx as never, deps)
-  ;(tools as { __dir?: string }).__dir = dir
-  ;(tools as { __store?: typeof store }).__store = store
-  return tools
-}
-
 /** The exec face for a calling agent session in cwd. */
 const agentExec = (cwd: string) => ({ agent: { id: 'sess-1', session: { header: { cwd } } } })
 
 describe('taskboard tools', () => {
+  // One shared temp dir for the whole describe (removed in afterAll); each
+  // toolSet() call stores its ledger in a uniquely named file inside it —
+  // same discipline as the TaskStore describe above (no per-call dirs leak).
+  let dir: string
+  beforeAll(async () => { dir = await mkdtemp(join(tmpdir(), 'taskboard-tools-')) })
+  afterAll(async () => { await rm(dir, { recursive: true, force: true }) })
+
+  /** Build a registered tool set over the shared dir; returns name → tool. */
+  async function toolSet(cwd: string): Promise<Map<string, { execute(args: unknown, exec: unknown): Promise<unknown> }>> {
+    const store = new TaskStore({ file: join(dir, `led-${Math.random().toString(36).slice(2)}.json`) })
+    await store.mutate('task-created', ledger => {
+      ledger.tasks.push(makeTask('t-1'), makeTask('t-2', { workspaceId: 'ws-b' }))
+      return ledger.tasks
+    })
+    const deps: ToolDeps = { store, workspaces: fakeWorkspaces(), now: () => 1_000 }
+    const tools = new Map<string, { execute(args: unknown, exec: unknown): Promise<unknown> }>()
+    const ctx = {
+      tools: {
+        register(tool: { name: string; execute(args: unknown, exec: unknown): Promise<unknown> }) {
+          tools.set(tool.name, tool)
+          return () => tools.delete(tool.name)
+        },
+      },
+    }
+    registerTaskboardTools(ctx as never, deps)
+    ;(tools as { __store?: typeof store }).__store = store
+    return tools
+  }
+
   it('list returns compact summaries with filters', async () => {
     const tools = await toolSet('/proj/a')
     const result = await tools.get('taskboard_list')!.execute({ workspaceId: 'ws-a' }, agentExec('/proj/a'))
@@ -726,5 +756,112 @@ describe('taskboard tools', () => {
 
     // Invalid payload shape.
     await expect(tools.get('taskboard_execution_report')!.execute({ changedFiles: ['a'] }, exec)).rejects.toThrow('summary')
+  })
+
+  it('create only accepts backlog/todo as the initial status', async () => {
+    const tools = await toolSet('/proj/a')
+    const exec = agentExec('/proj/a')
+    for (const status of ['in_progress', 'in_review', 'done', 'canceled', 'archived']) {
+      await expect(tools.get('taskboard_create')!.execute(
+        { title: 'x', workspaceId: 'ws-a', urgency: 'normal', status }, exec,
+      )).rejects.toThrow('a new task must start as backlog or todo')
+    }
+    // backlog IS a legal starting status (未授权 backlog column).
+    const backlog = await tools.get('taskboard_create')!.execute(
+      { title: '储备事项', workspaceId: 'ws-a', urgency: 'relaxed', status: 'backlog' }, exec,
+    ) as { task: { status: string } }
+    expect(backlog.task.status).toBe('backlog')
+    // The rejected calls created nothing: seeded t-1/t-2 plus the backlog one.
+    const list = await tools.get('taskboard_list')!.execute({}, exec) as { tasks: unknown[] }
+    expect(list.tasks).toHaveLength(3)
+  })
+
+  it('comment_add refuses archived tasks: archived tasks are immutable', async () => {
+    const tools = await toolSet('/proj/a')
+    const store = (tools as { __store?: TaskStore }).__store!
+    await store.mutate('task-updated', ledger => {
+      const target = ledger.tasks.find(t => t.id === 't-1')!
+      target.status = 'archived'
+      return [target]
+    })
+    await expect(tools.get('taskboard_comment_add')!.execute(
+      { id: 't-1', body: '不应落下的评论' }, agentExec('/proj/a'),
+    )).rejects.toThrow('archived tasks are immutable')
+    await expect(tools.get('taskboard_comment_add')!.execute(
+      { id: 't-1', body: 'x' }, agentExec('/proj/a'),
+    )).rejects.toThrow(ERR.invalidTransition)
+    // Nothing landed on the archived card.
+    expect(store.get('t-1')!.comments).toHaveLength(0)
+  })
+
+  it("execution_report back-submits onto the session's latest succeeded execution (review follow-up)", async () => {
+    const tools = await toolSet('/proj/a')
+    const exec = agentExec('/proj/a') // sess-1
+    const store = (tools as { __store?: TaskStore }).__store!
+    // A settled review handoff: the run succeeded but no report was filed.
+    await store.mutate('task-updated', ledger => {
+      const target = ledger.tasks.find(t => t.id === 't-1')!
+      target.status = 'in_review'
+      target.executions.push({ id: 'e-x', trigger: 'manual', startedAt: 1, endedAt: 2, outcome: 'succeeded', sessionId: 'sess-1' })
+      return [target]
+    })
+
+    // (a) The owning session back-submits: the report lands on e-x.
+    const back = await tools.get('taskboard_execution_report')!.execute(
+      { summary: '补交：修复完成', checks: ['npm test 通过'] }, exec,
+    ) as { taskId: string; executionId: string }
+    expect(back.taskId).toBe('t-1')
+    expect(back.executionId).toBe('e-x')
+    expect(store.get('t-1')!.executions[0]!.report!.summary).toBe('补交：修复完成')
+
+    // (b) A later submission overwrites the previous report.
+    await tools.get('taskboard_execution_report')!.execute({ summary: '补交：覆盖后的报告' }, exec)
+    expect(store.get('t-1')!.executions[0]!.report!.summary).toBe('补交：覆盖后的报告')
+
+    // (c) An unrelated session may not back-submit onto someone else's run.
+    await expect(tools.get('taskboard_execution_report')!.execute(
+      { summary: 'x' }, { agent: { id: 'sess-9', session: { header: { cwd: '/proj/a' } } } },
+    )).rejects.toThrow('back-submit onto your latest succeeded one while you hold the task')
+
+    // A running execution of the SAME session still wins (path-1 precedence):
+    // the report attaches to the live run, not the settled one.
+    await store.mutate('execution-recorded', ledger => {
+      const target = ledger.tasks.find(t => t.id === 't-1')!
+      target.executions.push({ id: 'e-run', trigger: 'manual', startedAt: 3, outcome: 'running', sessionId: 'sess-1' })
+      return [target]
+    })
+    const live = await tools.get('taskboard_execution_report')!.execute({ summary: '运行中提交' }, exec) as { executionId: string }
+    expect(live.executionId).toBe('e-run')
+    expect(store.get('t-1')!.executions.find(e => e.id === 'e-x')!.report!.summary).toBe('补交：覆盖后的报告')
+
+    // Archived tasks (with nothing running) sit outside the back-submit path.
+    await store.mutate('execution-recorded', ledger => {
+      const target = ledger.tasks.find(t => t.id === 't-1')!
+      target.status = 'archived'
+      const running = target.executions.find(e => e.id === 'e-run')!
+      running.outcome = 'failed'
+      return [target]
+    })
+    await expect(tools.get('taskboard_execution_report')!.execute({ summary: 'x' }, exec)).rejects.toThrow(ERR.forbidden)
+  })
+})
+
+describe('R4: task id charset gate (import + path building)', () => {
+  it('isValidTaskId accepts minted ids and rejects traversal-shaped ones', () => {
+    expect(isValidTaskId('t-mfx9-ab12cd')).toBe(true)
+    expect(isValidTaskId('T_long-1')).toBe(true)
+    for (const bad of ['../../x', '..\\..\\x', 'a/b', 'a b', '.hidden', 'x'.repeat(101), '', 'a$b']) {
+      expect(isValidTaskId(bad)).toBe(false)
+    }
+  })
+
+  it('validateImportedTask rejects traversal-shaped ids at the protocol boundary', () => {
+    const base = { title: 'T', workspaceId: 'ws-a', status: 'todo', comments: [], executions: [] }
+    // Length alone (the old check) let these into the ledger — they ride
+    // straight into join(ws, '.dsh-worktrees', id) downstream.
+    for (const id of ['../../victim', '..\\..\\victim', 'a/b', '.ssh']) {
+      expect(validateImportedTask({ ...base, id }, 0)).toMatchObject({ ok: false })
+    }
+    expect(validateImportedTask({ ...base, id: 't-abc-def' }, 0)).toMatchObject({ ok: true })
   })
 })

@@ -1,6 +1,8 @@
 [![npm version](https://img.shields.io/npm/v/dsh-taskboard.svg)](https://www.npmjs.com/package/dsh-taskboard)
 [![License](https://img.shields.io/npm/l/dsh-taskboard.svg)](https://github.com/cloader/dsh-taskboard/blob/main/LICENSE)
 
+[English](./README_en.md) | 简体中文
+
 # dsh-taskboard
 
 DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、人验收。任务挂项目（workspace）、可指定模型与 preset、支持手动与定时执行，全流程双向协作。
@@ -219,6 +221,21 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 - **任务详情 Markdown 预览**：描述、执行 Prompt、评论正文、执行报告摘要与剩余风险支持 GFM Markdown（表格、删除线、列表、围栏代码块与聊天式单换行）；任务标题、清单/证据、meta 芯片等短文本仍保持纯文本
 - **安全契约**：由 `marked@18` 解析原始 Markdown，仅在 renderer 中转义原始 HTML token；链接与图片仅放行 `http` / `https` / `mailto` / `#`，http/https/mailto 外链使用 `target="_blank" rel="noopener noreferrer"`，fragment 链接保留当前页跳转，所有 HTML 注入集中在受保护的 `<Markdown>` 组件出口
 - **原文对比**：详情预览右上角提供「原文 / 渲染」切换，覆盖描述、Prompt、评论、报告摘要与剩余风险；原文模式使用安全的 React 文本节点保留 Markdown 标记与换行，便于定位转换差异
+
+### 0.5.1
+
+这一版主要来自一次全面的代码体检：看板更防手滑、更稳，行为上有几处小变化。
+
+- **详情页不再「串卡」**：以前在任务 A 点开「确认清除」后再点开任务 B，B 会直接停在待确认状态，手快就误删了。现在每次打开详情页都是干净状态
+- **按钮防连点**：「创建任务」「立即执行」「复制」这些按钮在提交过程中会变灰。以前手快双击会建出两张一样的卡，甚至同时启动两个执行会话白烧 token
+- **DSH 重启后马上能正常查板**：以前刚重启的几秒里 AI 查到的是一块空板，可能照流程重复建卡；现在不会了
+- **归档的任务真正封存**：以前归档后还能从部分入口继续编辑、评论；现在彻底只读
+- **新建任务只能落在 待规划 / 待办**：想开工请正常认领，不会再出现一张没有归属人的「进行中」
+- **取消已结束的任务会给明确提示**：以前对已经跑完的任务点「停止」显示取消成功，其实什么都没发生；现在会如实告诉你没取消成
+- **执行报告可以补交**：会话结束了才发现忘交报告？现在还能补上（限自己名下最近一次成功执行的任务）
+- **复制长标题任务不再报错**：标题太长会自动截断再加（副本）后缀
+- **编辑任务不再被偷偷改设置**：以前打开编辑器再保存，会把「跟随部署默认预设」悄悄固化成具体值；现在保持原样
+- 内部质量：定时调度出错只记日志不再惊动整个进程、一批测试与构建卫生改进
 
 ### 0.5.0
 

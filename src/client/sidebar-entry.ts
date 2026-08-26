@@ -196,7 +196,11 @@ interface AtbDebug { attempts: number; found: boolean; placed: boolean }
 export function mountSidebarEntry(controller: BoardController): () => void {
   const entry = createEntry(controller)
   const debug: AtbDebug = { attempts: 0, found: false, placed: false }
-  ;(window as unknown as { __atbDebug?: AtbDebug }).__atbDebug = debug
+  // Debug handle only where the GUI runs locally; never on remote origins.
+  const host = globalThis.location?.hostname
+  if (host === 'localhost' || host === '127.0.0.1') {
+    ;(window as unknown as { __atbDebug?: AtbDebug }).__atbDebug = debug
+  }
   let root: HTMLElement | undefined
   let placed = false
 

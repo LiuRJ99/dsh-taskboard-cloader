@@ -11,7 +11,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the webServer Context merge (ctx.webServer).
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -37,6 +37,7 @@ import {
   summarize,
   syncClaim,
   validateLedgerImport,
+  type TaskLedger,
   type TaskModel,
   type TaskRecord,
 } from '../shared/protocol.ts'
@@ -45,10 +46,19 @@ import type { TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
 import type { TaskStore } from './store.ts'
+import { ERR, ToolError } from './tools.ts'
 import type { WorkspaceFace } from './tools.ts'
 
 /** Heartbeat cadence for the SSE stream. */
 const HEARTBEAT_MS = 20_000
+
+/** Max accepted JSON body bytes (S8: unbounded buffering is a local OOM vector). */
+const MAX_BODY_BYTES = 5 * 1024 * 1024
+
+/** Route shapes (T2: compiled once at module load, not on every request). */
+const TASK_DIFF_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/diff$`)
+const TASK_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)$`)
+const TASK_ACTION_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/([\\w-]+)$`)
 
 /** How long a workspace git-detection result stays cached (fail-soft). */
 const GIT_DETECT_TTL_MS = 60_000
@@ -77,7 +87,7 @@ export interface TaskboardRoutesOptions {
 }
 
 /** Validate a template's task spec (routes-side, unknown → invalid_input). */
-function normalizeTemplateSpec(raw: unknown): TaskTemplate['task'] {
+function normalizeTemplateSpec(raw: unknown, now: number): TaskTemplate['task'] {
   if (typeof raw !== 'object' || raw === null) throw new Error('Error: invalid_input: task must be an object')
   const e = raw as Record<string, unknown>
   const spec: TaskTemplate['task'] = {}
@@ -104,7 +114,7 @@ function normalizeTemplateSpec(raw: unknown): TaskTemplate['task'] {
   if (isolation !== undefined) spec.isolation = asIsolation(isolation)
   if (presetId !== undefined && presetId.trim().length > 0) spec.presetId = presetId.trim()
   if (e.execution !== undefined) {
-    spec.execution = normalizeExecution(e.execution as { mode?: string; cron?: string }, Date.now())
+    spec.execution = normalizeExecution(e.execution as { mode?: string; cron?: string }, now)
   }
   if (e.model !== undefined) spec.model = normalizeModel(e.model)
   if (e.checklist !== undefined) {
@@ -144,10 +154,19 @@ function fail(code: ApiFail['error']['code'], message: string): { res: ApiFail; 
   return { res: { ok: false, error: { code, message } }, status }
 }
 
-/** Read one JSON body (null on parse failure). */
+/**
+ * Read one JSON body (null on parse failure). S8: rejects bodies over
+ * MAX_BODY_BYTES by throwing — the local, unauthenticated HTTP surface must
+ * not be an unbounded memory sink.
+ */
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
   const chunks: Buffer[] = []
-  for await (const chunk of req) chunks.push(chunk as Buffer)
+  let total = 0
+  for await (const chunk of req) {
+    total += (chunk as Buffer).length
+    if (total > MAX_BODY_BYTES) throw new Error('body too large')
+    chunks.push(chunk as Buffer)
+  }
   if (chunks.length === 0) return {}
   try {
     const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
@@ -170,6 +189,13 @@ function num(body: Record<string, unknown>, key: string): number | undefined | n
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
+/** Find a live task INSIDE a mutator (R1: guards run on the fresh draft). */
+function liveTaskAt(ledger: TaskLedger, id: string): { index: number; task: TaskRecord } {
+  const index = ledger.tasks.findIndex(t => t.id === id)
+  if (index < 0 || ledger.tasks[index]!.trashedAt !== undefined) throw new Error('Error: not_found: no such task')
+  return { index, task: ledger.tasks[index]! }
+}
+
 /** Normalize an agent preset id: trimmed, non-empty; empty string → undefined. */
 function normalizePresetId(raw: string | null): string | undefined {
   const t = (raw ?? '').trim()
@@ -179,9 +205,18 @@ function normalizePresetId(raw: string | null): string | undefined {
 /** Map a thrown domain error to the envelope. */
 function toFail(error: unknown): { res: ApiFail; status: number } {
   const message = error instanceof Error ? error.message : String(error)
+  // Structured path first (review P2): ToolError carries its code — no need
+  // to parse the 'Error: <code>: …' prefix it also renders into the message.
+  if (error instanceof ToolError) {
+    const mapped = error.code === ERR.workspaceMismatch ? 'forbidden' : error.code
+    const known: ApiFail['error']['code'][] = ['invalid_input', 'not_found', 'version_conflict', 'invalid_transition', 'forbidden', 'internal']
+    if ((known as string[]).includes(mapped)) {
+      return fail(mapped as ApiFail['error']['code'], message.slice(7 + error.code.length + 2))
+    }
+  }
   const code = message.startsWith('Error: ') ? message.slice(7).split(':')[0] : undefined
-  const known: ApiFail['error']['code'][] = ['invalid_input', 'not_found', 'version_conflict', 'invalid_transition', 'forbidden', 'internal']
-  if (code !== undefined && (known as string[]).includes(code)) {
+  const known2: ApiFail['error']['code'][] = ['invalid_input', 'not_found', 'version_conflict', 'invalid_transition', 'forbidden', 'internal']
+  if (code !== undefined && (known2 as string[]).includes(code)) {
     return fail(code as ApiFail['error']['code'], message.slice(7 + code.length + 2))
   }
   if (code === 'workspace_mismatch') return fail('forbidden', message.slice(7 + code.length + 2))
@@ -199,11 +234,18 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
   const subscribers = new Set<ServerResponse>()
   let heartbeat: NodeJS.Timeout | undefined
 
+  /** R4③: a cleanup/purge target must resolve INSIDE <ws>/.dsh-worktrees — string joining alone is never trusted with an rm. */
+  const insideWorktreeScope = (wsPath: string, target: string): boolean => {
+    const scope = resolve(wsPath, WORKTREE_DIR)
+    const resolved = resolve(target)
+    return resolved === scope || resolved.startsWith(scope + sep)
+  }
+
   const broadcast = (change: { revision: number; kind: string; tasks: readonly TaskRecord[] }): void => {
     const frame = `event: change\ndata: ${JSON.stringify({ revision: change.revision, kind: change.kind, tasks: change.tasks.map(summarize) })}\n\n`
     for (const res of subscribers) res.write(frame)
   }
-  store.subscribe(broadcast)
+  const unsubscribeBroadcast = store.subscribe(broadcast)
 
   // Workspace git detection, TTL-cached and fail-soft (false on any error):
   // feeds the create-form isolation toggle and the diagnostics panel.
@@ -313,7 +355,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         // Diff viewer (0.4.0): read-only git show/diff for one execution's
         // commit or changed path. Prefers the live worktree (uncommitted
         // view), falls back to the main repo.
-        const diffMatch = pathname.match(new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/diff$`))
+        const diffMatch = pathname.match(TASK_DIFF_RE)
         if (diffMatch !== null) {
           try {
             if (options.git === undefined) {
@@ -371,7 +413,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           return
         }
 
-        const taskMatch = pathname.match(new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)$`))
+        const taskMatch = pathname.match(TASK_RE)
         if (taskMatch !== null) {
           const task = store.get(taskMatch[1]!)
           if (task === undefined) { const f = fail('not_found', 'no such task'); json(res, f.res, f.status); return }
@@ -384,7 +426,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
       }
 
       if (req.method !== 'POST') {
-        res.writeHead(405)
+        res.writeHead(405, { allow: 'GET, POST' })
         res.end()
         return
       }
@@ -395,7 +437,14 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         json(res, f.res, 415)
         return
       }
-      const body = await readBody(req)
+      let body: Record<string, unknown> | null
+      try {
+        body = await readBody(req)
+      } catch {
+        const f = fail('invalid_input', `request body exceeds ${MAX_BODY_BYTES} bytes`)
+        json(res, f.res, 413)
+        return
+      }
       if (body === null) {
         const f = fail('invalid_input', 'body is not a JSON object')
         json(res, f.res, 400)
@@ -410,6 +459,9 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           if (workspaces.get(workspaceId) === undefined) throw new Error('Error: not_found: unknown workspace')
           const urgency = asUrgency(str(body, 'urgency') ?? '')
           const status = str(body, 'status') === null ? 'todo' as const : asStatus(str(body, 'status')!)
+          if (status !== 'backlog' && status !== 'todo') {
+            throw new Error('Error: invalid_transition: a new task must start as backlog or todo')
+          }
           const execution = normalizeExecution((body.execution as { mode?: string; cron?: string } | undefined) ?? {}, options.now())
           const model = body.model === undefined ? undefined : checkModel(body.model, options.modelProviders)
           const speed = body.speed === undefined ? undefined : asTaskSpeed(str(body, 'speed') ?? '')
@@ -467,8 +519,8 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
 
       // ------------------------------------------- POST /tasks/:id/{action}
       // (\w+ after the id would not match hyphenated actions like
-      // worktree-remove, hence the explicit class.)
-      const actionMatch = pathname.match(new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/([\\w-]+)$`))
+      // worktree-remove, hence the explicit class in the hoisted pattern.)
+      const actionMatch = pathname.match(TASK_ACTION_RE)
       if (actionMatch !== null) {
         const id = actionMatch[1]!
         const action = actionMatch[2]!
@@ -478,82 +530,86 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           if (action === 'update') {
             const ifVersion = num(body, 'ifVersion')
             if (ifVersion === undefined || ifVersion === null) throw new Error('Error: version_conflict: ifVersion required')
-            if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
-            const next = structuredClone(task)
-            const title = str(body, 'title')
-            if (title !== null) next.title = normalizeTitle(title)
-            const description = str(body, 'description')
-            if (description !== null) next.description = description.trim()
-            const prompt = str(body, 'prompt')
-            if (prompt !== null) next.prompt = normalizePrompt(prompt)
-            const urgency = str(body, 'urgency')
-            if (urgency !== null) next.urgency = asUrgency(urgency)
-            // GUI-only rebind to another project; validated against the workspace registry.
-            const workspaceId = str(body, 'workspaceId')
-            if (workspaceId !== null) {
-              if (workspaces.get(workspaceId) === undefined) throw new Error('Error: not_found: unknown workspace')
-              next.workspaceId = workspaceId
-            }
-            if (typeof body.blocked === 'boolean') next.blocked = body.blocked
-            // The GUI (task owner surface) may edit model/execution; null clears the model.
-            if (body.execution !== undefined) next.execution = normalizeExecution(body.execution as { mode?: string; cron?: string }, options.now())
-            if (body.model === null) next.model = undefined
-            else if (body.model !== undefined) next.model = checkModel(body.model, options.modelProviders)
-            if (body.speed === null) delete next.speed
-            else if (body.speed !== undefined) next.speed = asTaskSpeed(str(body, 'speed') ?? '')
-            if (body.permissionMode === null) delete next.permissionMode
-            else if (body.permissionMode !== undefined) next.permissionMode = asPermissionMode(str(body, 'permissionMode') ?? '')
-            // Isolation may change only before the first execution (分支与基线
-            // 取决于该选择 — plan §3.1: 执行开始后锁定).
-            const isolationRaw = str(body, 'isolation')
-            if (isolationRaw !== null) {
-              if (task.executions.length > 0 || task.status === 'in_progress') {
-                throw new Error('Error: invalid_input: isolation 已锁定（任务已有执行记录），不可修改')
-              }
-              next.isolation = asIsolation(isolationRaw)
-            }
-            // Preset may change any time: each run composes fresh.
-            if (body.presetId === null) delete next.presetId
-            else if (body.presetId !== undefined) next.presetId = normalizePresetId(str(body, 'presetId'))!
-            // Checklist (0.4.0): the GUI replaces the whole list; null clears.
-            if (body.checklist === null) delete next.checklist
-            else if (body.checklist !== undefined) {
-              const items = normalizeChecklist(body.checklist)
-              if (items.length > 0) next.checklist = items
-              else delete next.checklist
-            }
-            next.version = task.version + 1
-            next.updatedAt = options.now()
-            next.updatedBy = { kind: 'user' }
+            // R1: version guard + write inside the mutation, on the fresh draft.
+            let next: TaskRecord | undefined
             await store.mutate('task-updated', ledger => {
-              const i = ledger.tasks.findIndex(t => t.id === id)
-              ledger.tasks[i] = next
+              const { index, task } = liveTaskAt(ledger, id)
+              if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
+              if (task.status === 'archived') throw new Error('Error: invalid_transition: archived tasks are immutable')
+              next = structuredClone(task)
+              const title = str(body, 'title')
+              if (title !== null) next.title = normalizeTitle(title)
+              const description = str(body, 'description')
+              if (description !== null) next.description = description.trim()
+              const prompt = str(body, 'prompt')
+              if (prompt !== null) next.prompt = normalizePrompt(prompt)
+              const urgency = str(body, 'urgency')
+              if (urgency !== null) next.urgency = asUrgency(urgency)
+              // GUI-only rebind to another project; validated against the workspace registry.
+              const workspaceId = str(body, 'workspaceId')
+              if (workspaceId !== null) {
+                if (workspaces.get(workspaceId) === undefined) throw new Error('Error: not_found: unknown workspace')
+                next.workspaceId = workspaceId
+              }
+              if (typeof body.blocked === 'boolean') next.blocked = body.blocked
+              // The GUI (task owner surface) may edit model/execution; null clears the model.
+              if (body.execution !== undefined) next.execution = normalizeExecution(body.execution as { mode?: string; cron?: string }, options.now())
+              if (body.model === null) next.model = undefined
+              else if (body.model !== undefined) next.model = checkModel(body.model, options.modelProviders)
+              if (body.speed === null) delete next.speed
+              else if (body.speed !== undefined) next.speed = asTaskSpeed(str(body, 'speed') ?? '')
+              if (body.permissionMode === null) delete next.permissionMode
+              else if (body.permissionMode !== undefined) next.permissionMode = asPermissionMode(str(body, 'permissionMode') ?? '')
+              // Isolation may change only before the first execution (分支与基线
+              // 取决于该选择 — plan §3.1: 执行开始后锁定).
+              const isolationRaw = str(body, 'isolation')
+              if (isolationRaw !== null) {
+                if (task.executions.length > 0 || task.status === 'in_progress') {
+                  throw new Error('Error: invalid_input: isolation 已锁定（任务已有执行记录），不可修改')
+                }
+                next.isolation = asIsolation(isolationRaw)
+              }
+              // Preset may change any time: each run composes fresh.
+              if (body.presetId === null) delete next.presetId
+              else if (body.presetId !== undefined) next.presetId = normalizePresetId(str(body, 'presetId'))!
+              // Checklist (0.4.0): the GUI replaces the whole list; null clears.
+              if (body.checklist === null) delete next.checklist
+              else if (body.checklist !== undefined) {
+                const items = normalizeChecklist(body.checklist)
+                if (items.length > 0) next.checklist = items
+                else delete next.checklist
+              }
+              next.version = task.version + 1
+              next.updatedAt = options.now()
+              next.updatedBy = { kind: 'user' }
+              ledger.tasks[index] = next
               return [next]
             })
-            json(res, { ok: true, value: summarize(next) })
+            json(res, { ok: true, value: summarize(next!) })
             return
           }
           if (action === 'move') {
             const ifVersion = num(body, 'ifVersion')
             const status = str(body, 'status') ?? ''
             if (ifVersion === undefined || ifVersion === null) throw new Error('Error: version_conflict: ifVersion required')
-            if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
             const to = asStatus(status)
-            if (!canTransition(task.status, to)) throw new Error(`Error: invalid_transition: illegal transition ${task.status} → ${to}`)
-            const next = structuredClone(task)
-            next.status = to
-            next.version = task.version + 1
-            next.updatedAt = options.now()
-            next.updatedBy = { kind: 'user' }
-            if (task.status === 'todo' && to === 'in_progress') next.blocked = false
-            // A user move records no holder; leaving in_progress releases any hold.
-            syncClaim(next, to, options.now())
+            let next: TaskRecord | undefined
             await store.mutate('task-moved', ledger => {
-              const i = ledger.tasks.findIndex(t => t.id === id)
-              ledger.tasks[i] = next
+              const { index, task } = liveTaskAt(ledger, id)
+              if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
+              if (!canTransition(task.status, to)) throw new Error(`Error: invalid_transition: illegal transition ${task.status} → ${to}`)
+              next = structuredClone(task)
+              next.status = to
+              next.version = task.version + 1
+              next.updatedAt = options.now()
+              next.updatedBy = { kind: 'user' }
+              if (task.status === 'todo' && to === 'in_progress') next.blocked = false
+              // A user move records no holder; leaving in_progress releases any hold.
+              syncClaim(next, to, options.now())
+              ledger.tasks[index] = next
               return [next]
             })
-            json(res, { ok: true, value: summarize(next) })
+            json(res, { ok: true, value: summarize(next!) })
             return
           }
           if (action === 'reject') {
@@ -561,36 +617,38 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             // atomic mutation (a failed move never strands an orphan comment).
             const ifVersion = num(body, 'ifVersion')
             if (ifVersion === undefined || ifVersion === null) throw new Error('Error: version_conflict: ifVersion required')
-            if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
-            if (!canTransition(task.status, 'todo')) throw new Error(`Error: invalid_transition: illegal transition ${task.status} → todo`)
-            const next = structuredClone(task)
-            next.status = 'todo'
-            next.version = task.version + 1
-            next.updatedAt = options.now()
-            next.updatedBy = { kind: 'user' }
-            syncClaim(next, 'todo', options.now())
             const commentText = str(body, 'body') ?? ''
-            if (commentText.trim().length > 0) {
-              next.comments.push({ id: newCommentId(), body: normalizeBody(commentText), version: 1, createdAt: options.now() })
-            }
+            let next: TaskRecord | undefined
             await store.mutate('task-moved', ledger => {
-              const i = ledger.tasks.findIndex(t => t.id === id)
-              ledger.tasks[i] = next
+              const { index, task } = liveTaskAt(ledger, id)
+              if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
+              if (!canTransition(task.status, 'todo')) throw new Error(`Error: invalid_transition: illegal transition ${task.status} → todo`)
+              next = structuredClone(task)
+              next.status = 'todo'
+              next.version = task.version + 1
+              next.updatedAt = options.now()
+              next.updatedBy = { kind: 'user' }
+              syncClaim(next, 'todo', options.now())
+              if (commentText.trim().length > 0) {
+                next.comments.push({ id: newCommentId(), body: normalizeBody(commentText), version: 1, createdAt: options.now() })
+              }
+              ledger.tasks[index] = next
               return [next]
             })
-            json(res, { ok: true, value: summarize(next) })
+            json(res, { ok: true, value: summarize(next!) })
             return
           }
           if (action === 'comment') {
             const bodyText = str(body, 'body') ?? ''
             const comment = { id: newCommentId(), body: normalizeBody(bodyText), version: 1, createdAt: options.now() }
-            const next = structuredClone(task)
-            next.comments.push(comment)
-            next.version = task.version + 1
-            next.updatedAt = options.now()
             await store.mutate('comment-added', ledger => {
-              const i = ledger.tasks.findIndex(t => t.id === id)
-              ledger.tasks[i] = next
+              const { index, task } = liveTaskAt(ledger, id)
+              if (task.status === 'archived') throw new Error('Error: invalid_transition: archived tasks are immutable')
+              const next = structuredClone(task)
+              next.comments.push(comment)
+              next.version = task.version + 1
+              next.updatedAt = options.now()
+              ledger.tasks[index] = next
               return [next]
             })
             json(res, { ok: true, value: comment }, 201)
@@ -607,19 +665,25 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
                 const ws = workspaces.get(task.workspaceId)
                 if (ws !== undefined) {
                   const path = worktreePathOf(ws.path, id)
+                  if (!insideWorktreeScope(ws.path, path)) {
+                    throw new Error('Error: invalid_input: 非法的清除路径（不在任务工作目录范围内）')
+                  }
                   try {
-                    await options.git.removeWorktree(ws.path, path)
-                  } catch (error) {
-                    const message = error instanceof Error ? error.message : String(error)
-                    if (message.includes('未提交修改')) {
-                      throw new Error(`Error: invalid_input: ${message}；请先处理这些改动（提交、续跑或手动保存）再物理清除任务`)
-                    }
-                    if (/not a working tree|not a working-tree/i.test(message)) {
+                    // S3: 'unregistered' (an orphaned dir git forgot) is a
+                    // structured outcome, not a parsed stderr message.
+                    if (await options.git.removeWorktree(ws.path, path) === 'unregistered') {
                       // An unregistered leftover dir: plain fs removal.
                       await rm(path, { recursive: true, force: true })
-                    } else {
-                      throw new Error(`Error: invalid_input: ${message}`)
                     }
+                  } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    // Structured classification (review P2): git tags its dirty
+                    // rejections with a code; the keyword stays as a fallback.
+                    const dirty = (error as { code?: string }).code === 'dirty-worktree' || message.includes('未提交修改')
+                    if (dirty) {
+                      throw new Error(`Error: invalid_input: ${message}；请先处理这些改动（提交、续跑或手动保存）再物理清除任务`)
+                    }
+                    throw new Error(`Error: invalid_input: ${message}`)
                   }
                   if (task.branch !== undefined) {
                     try {
@@ -637,13 +701,21 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             }
             const ifVersion = num(body, 'ifVersion')
             if (ifVersion === undefined || ifVersion === null) throw new Error('Error: version_conflict: ifVersion required')
-            if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
-            const next = structuredClone(task)
-            next.trashedAt = options.now()
-            next.version = task.version + 1
             await store.mutate('task-deleted', ledger => {
-              const i = ledger.tasks.findIndex(t => t.id === id)
-              ledger.tasks[i] = next
+              const { index, task } = liveTaskAt(ledger, id)
+              if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
+              // S5: a running execution keeps writing to the task — refuse the
+              // soft-delete until it is cancelled or settled. T8: clear residue.
+              if (task.executions.some(e => e.outcome === 'running')) {
+                throw new Error('Error: invalid_input: 任务有正在运行的执行，请先取消或等它结束再删除')
+              }
+              const next = structuredClone(task)
+              next.trashedAt = options.now()
+              next.version = task.version + 1
+              delete next.claimedBy
+              delete next.claimedAt
+              next.blocked = false
+              ledger.tasks[index] = next
               return [next]
             })
             json(res, { ok: true, value: { trashed: true } })
@@ -710,13 +782,15 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               throw new Error(`Error: invalid_input: ${error instanceof Error ? error.message : String(error)}`)
             }
             const mergedComment = { id: newCommentId(), body: normalizeBody(`[系统] 分支 ${task.branch} 已合并到主工作区（--no-ff）。`), version: 1, createdAt: options.now() }
-            const next = structuredClone(task)
-            next.comments.push(mergedComment)
-            next.version = task.version + 1
-            next.updatedAt = options.now()
+            // R1: the git merge above is slow — re-find the FRESH task inside
+            // the mutation so a concurrent comment is never overwritten.
             await store.mutate('comment-added', ledger => {
-              const i = ledger.tasks.findIndex(t => t.id === id)
-              ledger.tasks[i] = next
+              const { index, task: fresh } = liveTaskAt(ledger, id)
+              const next = structuredClone(fresh)
+              next.comments.push(mergedComment)
+              next.version = fresh.version + 1
+              next.updatedAt = options.now()
+              ledger.tasks[index] = next
               return [next]
             })
             json(res, { ok: true, value: { merged: true, branch: task.branch } })
@@ -734,8 +808,15 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             const ws = workspaces.get(task.workspaceId)
             if (ws === undefined) throw new Error('Error: not_found: unknown workspace')
             const path = worktreePathOf(ws.path, id)
+            if (!insideWorktreeScope(ws.path, path)) {
+              throw new Error('Error: invalid_input: 非法的清除路径（不在任务工作目录范围内）')
+            }
             try {
-              await options.git.removeWorktree(ws.path, path)
+              // S3: an unregistered leftover at the task's own path is
+              // removed from the filesystem directly.
+              if (await options.git.removeWorktree(ws.path, path) === 'unregistered') {
+                await rm(path, { recursive: true, force: true })
+              }
             } catch (error) {
               throw new Error(`Error: invalid_input: ${error instanceof Error ? error.message : String(error)}`)
             }
@@ -776,19 +857,21 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           // Only dirs owned by NO ledger task may be cleaned here; live tasks
           // remove their worktree from the detail page.
           if (store.get(taskId) !== undefined) throw new Error('Error: invalid_input: 任务仍在看板中，请从任务详情页删除其 worktree')
+          // worktreePathOf throws on an illegal id charset (R4②); the resolved
+          // target must additionally stay inside the plugin's own worktree
+          // scope — the taskId is fully attacker-controlled body input (R4③).
           const path = worktreePathOf(ws.path, taskId)
+          if (!insideWorktreeScope(ws.path, path)) {
+            throw new Error('Error: invalid_input: 非法的清除路径（不在任务工作目录范围内）')
+          }
           try {
-            await options.git.removeWorktree(ws.path, path)
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            // An unregistered leftover (git no longer knows this worktree):
-            // fall back to direct fs removal — the dir lives inside the
-            // plugin's own .dsh-worktrees scope.
-            if (/not a working tree|not a working-tree/i.test(message)) {
+            // S3: 'unregistered' = git no longer knows this worktree; remove
+            // the leftover dir directly (scope-verified above).
+            if (await options.git.removeWorktree(ws.path, path) === 'unregistered') {
               await rm(path, { recursive: true, force: true })
-            } else {
-              throw new Error(`Error: invalid_input: ${message}`)
             }
+          } catch (error) {
+            throw new Error(`Error: invalid_input: ${error instanceof Error ? error.message : String(error)}`)
           }
           json(res, { ok: true, value: { cleaned: true, path } })
         } catch (error) {
@@ -841,8 +924,13 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             backupFile = await store.backup()
           }
           let replacedTotal: number | undefined
-          await store.mutate('task-created', ledger => {
+          await store.mutate('ledger-replaced', ledger => {
             if (mode === 'replace') {
+              // S6: a whole-ledger swap must not strand live executions — the
+              // running sessions keep working with no task to settle into.
+              if (ledger.tasks.some(t => t.executions.some(e => e.outcome === 'running'))) {
+                throw new Error('Error: invalid_input: 有任务正在执行，不能整册替换（请先取消或等待结束）')
+              }
               replacedTotal = ledger.tasks.length
               ledger.tasks = structuredClone(imported)
               // Replace is a whole-ledger swap (0.5.0): board settings ride
@@ -852,7 +940,15 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               return ledger.tasks
             }
             const byId = new Map(ledger.tasks.map(t => [t.id, t]))
-            for (const task of imported) byId.set(task.id, structuredClone(task))
+            for (const task of imported) {
+              // S6: merging over a task whose execution is live would orphan
+              // that run the same way — refuse the overwrite.
+              const existing = byId.get(task.id)
+              if (existing !== undefined && existing.executions.some(e => e.outcome === 'running')) {
+                throw new Error(`Error: invalid_input: 任务 ${task.id} 正在执行，不能被导入覆盖`)
+              }
+              byId.set(task.id, structuredClone(task))
+            }
             ledger.tasks = [...byId.values()]
             return structuredClone(imported)
           })
@@ -894,7 +990,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             id: str(body, 'id') ?? undefined,
             name,
             category: normalizeTemplateCategory(body.category),
-            task: normalizeTemplateSpec(body.task),
+            task: normalizeTemplateSpec(body.task, options.now()),
           })
           json(res, { ok: true, value: template }, 201)
         } catch (error) {
@@ -940,6 +1036,10 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
     // Baseline frame: the client reconciles by revision and refetches state on gaps.
     res.write(`event: hello\ndata: ${JSON.stringify({ revision: store.snapshot().revision })}\n\n`)
     subscribers.add(res)
+    // S2: a socket that dies between 'close' detection and the next write
+    // would emit 'error' on the response — unhandled, that escalates to an
+    // uncaughtException. Drop the subscriber instead.
+    res.on('error', () => { subscribers.delete(res) })
     if (heartbeat === undefined) {
       heartbeat = setInterval(() => {
         for (const current of subscribers) current.write(': ping\n\n')
@@ -959,6 +1059,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
     ctx.webServer.register({ kind: 'exact', path: SSE_PATH, handler: sse }),
   ]
   return () => {
+    unsubscribeBroadcast()
     for (const dispose of disposers) dispose()
     if (heartbeat !== undefined) clearInterval(heartbeat)
     for (const res of subscribers) res.end()

@@ -14,10 +14,8 @@
 import { useState } from 'react'
 import type { BoardController } from '../controller.ts'
 import type { TaskRecord } from '../../shared/protocol.ts'
-import { fmtTime, isStaleClaim } from './TaskBoard.tsx'
-
-const URGENCY_LABEL: Record<TaskRecord['urgency'], string> = { urgent: '紧急', normal: '一般', relaxed: '不急' }
-const OUTCOME_LABEL: Record<string, string> = { running: '执行中', succeeded: '成功', failed: '失败', cancelled: '已取消' }
+import { fmtTime, isStaleClaim } from './format.ts'
+import { OUTCOME_LABEL, URGENCY_LABEL } from './labels.ts'
 
 /** dataTransfer type carrying the dragged task id. */
 export const DRAG_TYPE = 'application/x-dsh-atb-task'
@@ -57,7 +55,7 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
         // Block drag if a session is still executing this task
         if (running !== undefined) {
           e.preventDefault()
-          const msg = `该任务正在由【${task.title}】会话执行，不能拖动`
+          const msg = `该任务正由会话执行中（${task.title}），不能拖动`
           if (onAlert !== undefined) onAlert(msg)
           else alert(msg)
           return

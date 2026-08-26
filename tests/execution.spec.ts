@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ExecutionService, type AgentsFace, type EventsFace } from '../src/host/execution.ts'
+import { waitFor } from './wait-for.ts'
 import { SchedulerService } from '../src/host/scheduler.ts'
 import { TaskStore } from '../src/host/store.ts'
 import { normalizeExecution, type TaskRecord } from '../src/shared/protocol.ts'
@@ -174,7 +175,7 @@ describe('ExecutionService', () => {
 
     // Quiescence settles the execution as succeeded.
     agents.idle()
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
     t = store.get('t-run')!
     expect(t.executions[0]!.outcome).toBe('succeeded')
     expect(t.executions[0]!.endedAt).toBe(1_000)
@@ -311,7 +312,7 @@ describe('ExecutionService', () => {
       type: 'turn/end',
       data: { turn: 1, reason: { kind: 'error', error: { message: 'boom: quota exceeded' } } },
     })
-    await new Promise(r => setTimeout(r, 25))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'failed')
     const t = store.get('t-run')!
     expect(t.executions[0]!.outcome).toBe('failed')
     expect(t.executions[0]!.error).toContain('quota exceeded')
@@ -334,7 +335,10 @@ describe('ExecutionService', () => {
       type: 'turn/end',
       data: { reason: { kind: 'error', error: { message: 'quota exceeded' } } },
     })
-    await new Promise(r => setTimeout(r, 25))
+    await waitFor(() => {
+      const cur = store.get('t-run')!
+      return cur.status === 'todo' && cur.executions[0]!.outcome === 'failed'
+    })
     // Failure no longer strands the card in in_progress.
     t = store.get('t-run')!
     expect(t.status).toBe('todo')
@@ -349,7 +353,7 @@ describe('ExecutionService', () => {
     const result = await svc.run('t-run', 'manual')
     if (!result.ok) throw new Error('run failed')
     agents.idle()
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
     const t = store.get('t-run')!
     expect(t.executions[0]!.outcome).toBe('succeeded')
     expect(t.claimedBy).toBeUndefined()
@@ -370,7 +374,7 @@ describe('ExecutionService', () => {
     const result = await svc.run('t-run', 'manual')
     if (!result.ok) throw new Error('run failed')
     agents.idle('session-worker')
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.status === 'in_review')
     const t = store.get('t-run')!
     expect(t.status).toBe('in_review')
     const sysComment = t.comments.find(c => c.body.includes('[系统]'))
@@ -388,7 +392,7 @@ describe('ExecutionService', () => {
       type: 'turn/end',
       data: { reason: { kind: 'error', error: { message: 'quota exceeded' } } },
     })
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.status === 'todo')
     const t = store.get('t-run')!
     expect(t.status).toBe('todo')
     const sysComment = t.comments.find(c => c.body.includes('[系统]'))
@@ -410,7 +414,7 @@ describe('ExecutionService', () => {
     expect(svc.inFlight()).toBe(3)
     // Settling one execution frees a slot.
     agents.idle(agents.created[0]!.sessionId)
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => svc.inFlight() === 2)
     expect(svc.inFlight()).toBe(2)
     expect((await svc.run('t-4', 'manual')).ok).toBe(true)
   })
@@ -465,9 +469,99 @@ describe('ExecutionService', () => {
     // Nothing left to cancel.
     expect((await svc.cancel('t-run')).ok).toBe(false)
     // A late settlement after cancel no-ops (the record is no longer running).
+    // Deterministic drain: give the whenIdle microtask chain room to enqueue
+    // the late settle mutation, then wait behind it on the store's serial
+    // queue before asserting the outcome survived.
     agents.idle()
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(async () => {
+      await new Promise(r => setTimeout(r, 0))
+      await store.read(() => undefined)
+      return true
+    })
     expect(store.get('t-run')!.executions[0]!.outcome).toBe('cancelled')
+  })
+
+  it('cancel after the execution settled reports failure instead of fake success', async () => {
+    const store = await storeWith(task())
+    const disposed: string[] = []
+    // Gate the agent dispose so a cancel in flight parks there while the
+    // run's success settlement commits first (the stale-read race that used
+    // to report 取消成功 for an already-succeeded run).
+    let releaseDispose: (() => void) | undefined
+    const disposeGate = new Promise<void>(resolve => { releaseDispose = resolve })
+    let idle: (() => void) | undefined
+    const agents: AgentsFace = {
+      async create(options: { sessionId: string }) {
+        return {
+          agent: {
+            id: options.sessionId,
+            followup: () => {},
+            inject: () => {},
+            whenIdle: () => new Promise<void>(resolve => { idle = resolve }),
+          },
+          dispose: async () => { disposed.push(options.sessionId); await disposeGate },
+        }
+      },
+    } as never
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    const result = await svc.run('t-run', 'manual')
+    if (!result.ok) throw new Error('run failed')
+
+    // Settle the run (quiescence) and start the cancel BEFORE that settlement
+    // commits: cancel's synchronous read still sees 'running', then parks on
+    // the gated dispose while the success settlement wins the store queue.
+    idle!()
+    const cancelling = svc.cancel('t-run')
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
+    releaseDispose!()
+    const cancelled = await cancelling
+    expect(cancelled.ok).toBe(false)
+    if (!cancelled.ok) expect(cancelled.error).toContain('already settled')
+    // The committed settlement survived intact — no fabricated cancel state.
+    const t = store.get('t-run')!
+    expect(t.executions[0]!.outcome).toBe('succeeded')
+    expect(t.status).toBe('in_review')
+    // The cancel really reached the dispose step (it was just too late).
+    expect(disposed).toEqual([result.sessionId])
+  })
+
+  it('dispose() detaches the turn/end listener: late failures write nothing', async () => {
+    // A live-looking execution gives an attached listener something to write.
+    const store = await storeWith(task({
+      status: 'in_progress',
+      claimedBy: 'session-live',
+      claimedAt: 1,
+      executions: [{ id: 'e-live', sessionId: 'session-live', trigger: 'manual', startedAt: 1, outcome: 'running' }],
+    }))
+    const events = fakeEvents()
+    const unsubCalls: string[] = []
+    const innerOn = events.onSessionEvent
+    // Recording events face: the unsubscribe spy ALSO removes the listener
+    // (real bus semantics), so a post-dispose dispatch reaches nobody.
+    const recording: EventsFace = {
+      onSessionEvent: listener => {
+        const off = innerOn(listener)
+        return () => { unsubCalls.push('unsubscribe'); off() }
+      },
+    }
+    const svc = new ExecutionService({ store, agents: fakeAgents(), workspaces, events: recording, now: () => 1_000 })
+
+    svc.dispose()
+    expect(unsubCalls).toEqual(['unsubscribe'])
+
+    // A late turn/end error for the live session: no listener is attached,
+    // so noteFailure never runs and the ledger is untouched.
+    const revisionBefore = store.snapshot().revision
+    events.dispatch('session-live', { type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'late failure' } } } })
+    // Deterministic drain: let any would-be settlement enqueue, then wait
+    // behind the store's serial queue before asserting nothing happened.
+    await new Promise(r => setTimeout(r, 0))
+    await store.read(() => undefined)
+    const t = store.get('t-run')!
+    expect(t.executions[0]!.outcome).toBe('running')
+    expect(t.status).toBe('in_progress')
+    expect(t.comments).toHaveLength(0)
+    expect(store.snapshot().revision).toBe(revisionBefore)
   })
 
   it('reconciles stale running executions after a host restart', async () => {
@@ -541,7 +635,7 @@ function fakeGit(behavior: {
     },
     isAncestor: async () => false,
     merge: async () => {},
-    removeWorktree: async () => {},
+    removeWorktree: async () => 'removed' as const,
     deleteBranch: async () => {},
     showCommit: async () => undefined,
     showPathDiff: async () => undefined,
@@ -627,7 +721,7 @@ describe('ExecutionService worktree isolation', () => {
 
     // Settlement collects the worktree evidence into the ledger.
     agents.idle(result.sessionId)
-    await new Promise(r => setTimeout(r, 20))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
     const settled = store.get('t-run')!
     const execution = settled.executions[0]!
     expect(execution.outcome).toBe('succeeded')
@@ -697,7 +791,7 @@ describe('ExecutionService worktree isolation', () => {
 
     const result = await svc.run('t-run', 'manual')
     agents.idle(result.ok ? result.sessionId : '')
-    await new Promise(r => setTimeout(r, 20))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
     const execution = store.get('t-run')!.executions[0]!
     expect(execution.outcome).toBe('succeeded')
     expect(execution.commits).toBeUndefined()
@@ -746,7 +840,10 @@ describe('ExecutionService worktree isolation', () => {
     expect(result.ok).toBe(true)
     // The turn errors out mid-flight.
     events.dispatch(result.ok ? result.sessionId : '', { type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'quota exceeded' } } } })
-    await new Promise(r => setTimeout(r, 20))
+    await waitFor(() => {
+      const cur = store.get('t-run')!
+      return cur.status === 'todo' && cur.executions[0]!.outcome === 'failed'
+    })
 
     const t = store.get('t-run')!
     const execution = t.executions[0]!
@@ -770,7 +867,7 @@ describe('ExecutionService worktree isolation', () => {
 
     expect((await svc.run('t-run', 'manual')).ok).toBe(true)
     expect((await svc.cancel('t-run')).ok).toBe(true)
-    await new Promise(r => setTimeout(r, 10))
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'cancelled')
 
     const execution = store.get('t-run')!.executions[0]!
     expect(execution.outcome).toBe('cancelled')
@@ -965,5 +1062,83 @@ describe('SchedulerService', () => {
     await scheduler.tick()
     expect(runs).toEqual(['t-due'])
     expect(store.get('t-due')!.execution.nextRunAt).toBeGreaterThan(now)
+  })
+})
+
+describe('R2/R3 settlement race regressions', () => {
+  it('R2: a whenIdle rejection settles the execution as failed — never succeeded/in_review', async () => {
+    const store = await storeWith(task())
+    const agents: AgentsFace = {
+      async create(options: { sessionId: string }) {
+        return {
+          agent: {
+            id: options.sessionId,
+            followup: () => {},
+            inject: () => {},
+            whenIdle: () => Promise.reject(new Error('driver died')),
+          },
+          dispose: async () => {},
+        }
+      },
+    } as never
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+    // The old code raced noteFailure against settle() and could commit the
+    // SUCCESS settlement first: outcome 'succeeded' + auto-move to in_review
+    // for a run that never reached quiescence. Now only the failure path
+    // writes. Let its evidence+mutation chain commit.
+    await waitFor(() => {
+      const cur = store.get('t-run')!
+      return cur.executions[0]!.outcome === 'failed' && cur.executions[0]!.error?.includes('quiescence') === true
+    })
+
+    const t = store.get('t-run')!
+    expect(t.executions[0]!.outcome).toBe('failed')
+    expect(t.executions[0]!.error).toContain('quiescence')
+    expect(t.status).toBe('todo') // handed back, not auto-moved to in_review
+    expect(t.comments.some(c => c.body.includes('执行失败'))).toBe(true)
+  })
+
+  it('R3: cancel during the startup window disposes the fresh agent and submits no work', async () => {
+    const store = await storeWith(task())
+    const disposed: string[] = []
+    const followups: unknown[] = []
+    let releaseCreate: (() => void) | undefined
+    const createGate = new Promise<void>(resolve => { releaseCreate = resolve })
+    const agents: AgentsFace = {
+      async create(options: { sessionId: string }) {
+        await createGate
+        return {
+          agent: {
+            id: options.sessionId,
+            followup: (message: unknown) => { followups.push(message) },
+            inject: () => {},
+            whenIdle: () => new Promise<void>(() => { /* never settles */ }),
+          },
+          dispose: async () => { disposed.push(options.sessionId) },
+        }
+      },
+    } as never
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+
+    const running = svc.run('t-run', 'manual') // parks inside agents.create
+    await waitFor(() => store.get('t-run')!.status === 'in_progress') // gate committed
+
+    // A cancel inside the startup window: no runs entry exists yet, so the
+    // old code had nothing to dispose — the soon-to-be-created agent became a
+    // zombie working a cancelled card.
+    const cancelResult = await svc.cancel('t-run')
+    expect(cancelResult.ok).toBe(true)
+
+    releaseCreate!()
+    const result = await running
+    expect(result.ok).toBe(false) // 'cancelled during startup'
+    expect(disposed).toHaveLength(1) // the fresh agent WAS disposed
+    expect(followups).toHaveLength(0) // no work was ever submitted
+    const t = store.get('t-run')!
+    expect(t.status).toBe('todo')
+    expect(t.executions[0]!.outcome).toBe('cancelled')
   })
 })

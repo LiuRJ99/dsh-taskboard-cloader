@@ -9,6 +9,8 @@ import type { BoardController, ControllerState } from '../controller.ts'
 import type { TaskRecord, TaskStatus, Urgency } from '../../shared/protocol.ts'
 import { MAIN_STATUSES, canTransition } from '../../shared/protocol.ts'
 import { PLUGIN_VERSION } from '../../shared/version.ts'
+import { COLUMN_LABELS, URGENCY_LABEL } from './labels.ts'
+import { fmtTime, isStaleClaim } from './format.ts'
 import { DRAG_TYPE, TaskCard } from './TaskCard.tsx'
 import { TaskDetail } from './TaskDetail.tsx'
 import { TaskFormModal } from './TaskFormModal.tsx'
@@ -17,41 +19,6 @@ import { ImportModal } from './ImportModal.tsx'
 import { TemplateManager } from './TemplateManager.tsx'
 import { useAlert } from './AlertModal.tsx'
 import { matchesTemplateCategory } from '../template-categories.ts'
-
-/** Column labels. */
-const COLUMN_LABELS: Readonly<Record<TaskStatus, string>> = {
-  backlog: '待规划',
-  todo: '待办',
-  in_progress: '进行中',
-  in_review: '待验收',
-  done: '已完成',
-  canceled: '已取消',
-  archived: '已归档',
-}
-
-
-/** Urgency chip labels. */
-const URGENCY_LABELS: Readonly<Record<Urgency, string>> = {
-  urgent: '紧急',
-  normal: '一般',
-  relaxed: '不急',
-}
-
-/** Format an epoch ms as a short local stamp. */
-export function fmtTime(ms: number | undefined): string {
-  if (ms === undefined) return ''
-  const d = new Date(ms)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-/** A claim idle for longer than this is highlighted as stale (ms). */
-export const STALE_CLAIM_MS = 30 * 60_000
-
-/** Whether the task's claim is stale (in_progress, held, idle too long). */
-export function isStaleClaim(task: TaskRecord, now: number): boolean {
-  return task.status === 'in_progress' && task.claimedAt !== undefined && now - task.claimedAt > STALE_CLAIM_MS
-}
 
 /** Urgency sort rank (urgent first). */
 const URGENCY_RANK: Record<Urgency, number> = { urgent: 0, normal: 1, relaxed: 2 }
@@ -200,7 +167,7 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
             onClick={() => controller.toggleUrgency(u)}
           >
             <span className="dsh-atb-dot" data-urgency={u} />
-            {URGENCY_LABELS[u]}
+            {URGENCY_LABEL[u]}
           </button>
         ))}
         <button type="button" className="dsh-atb-btn" onClick={() => controller.toggleSecondary()}>

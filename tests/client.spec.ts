@@ -6,6 +6,7 @@
  * jsdom document without throwing.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { waitFor } from './wait-for.ts'
 
 /** Stub a route payload. */
 function routeResponse(path: string): unknown {
@@ -29,9 +30,19 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 class EventSourceMock {
   static instances: EventSourceMock[] = []
   onerror: (() => void) | null = null
+  closed = false
+  private readonly listeners = new Map<string, Array<(event: { data: string }) => void>>()
   constructor(public url: string) { EventSourceMock.instances.push(this) }
-  addEventListener(): void { /* frames not exercised here */ }
-  close(): void { /* no-op */ }
+  addEventListener(type: string, listener: (event: { data: string }) => void): void {
+    const list = this.listeners.get(type) ?? []
+    list.push(listener)
+    this.listeners.set(type, list)
+  }
+  /** Test-side frame dispatch — the payload is JSON.stringify'd like a real SSE data frame. */
+  dispatch(type: string, payload: unknown): void {
+    for (const listener of [...this.listeners.get(type) ?? []]) listener({ data: JSON.stringify(payload) })
+  }
+  close(): void { this.closed = true }
 }
 
 describe('client half', () => {
@@ -191,9 +202,10 @@ describe('client half', () => {
     disposers.push(dispose)
     controller.start()
     // Initial mount renders 0|0|0; the refresh then rolls each slot to the
-    // live counts. jsdom never fires transitionend, so the animation settles
-    // through the 400ms fallback — wait past it before asserting final text.
-    await new Promise(r => setTimeout(r, 460))
+    // live counts. jsdom never fires transitionend, so each slot settles via
+    // the 400ms fallback — poll the DOM until the strip reaches its final
+    // text (no fixed sleep racing the animation constant).
+    await waitFor(() => document.querySelector<HTMLElement>('.dsh-atb-entry-stats')?.textContent === '2|1|3', 3_000)
 
     const stats = document.querySelector<HTMLElement>('.dsh-atb-entry-stats')
     expect(stats).not.toBeNull()
@@ -457,9 +469,9 @@ describe('client half', () => {
       create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
     }
     const controller = new BoardController(client as never)
-    ;(controller as unknown as { modelCatalog: () => Promise<unknown[]> }).modelCatalog = async () => [{
+    controller.installModelCatalog(async () => [{
       provider: 'test-provider', model: 'gpt-5.6-luna', name: 'Fast test model', serviceTiers: [{ id: 'priority' }],
-    }]
+    }])
     controller.start()
     await new Promise(r => setTimeout(r, 10))
 
@@ -834,11 +846,11 @@ describe('client half', () => {
       create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
     }
     const controller = new BoardController(client as never)
-    // presetCatalog face: 标准 is the deployment default, 梁神 also available.
-    ;(controller as unknown as { presetCatalog?: () => Promise<unknown> }).presetCatalog = async () => ({
+    // preset roster face (T13: formal installer): 标准 is the deployment default, 梁神 also available.
+    controller.installPresetRoster(async () => ({
       presets: [{ id: 'standard', name: '标准模式' }, { id: 'liangshen', name: '梁神模式' }],
       defaultId: 'standard',
-    })
+    }))
     controller.start()
     await new Promise(r => setTimeout(r, 10))
 
@@ -1677,5 +1689,180 @@ describe('client half', () => {
     const expanded = document.createElement('div')
     expanded.className = 'hHd-Xa_root'
     expect(expanded.matches('[class*="_collapsed"]')).toBe(false)
+  })
+
+  it('SSE 帧对账：hello/change 按 api.ts 的 revision 规则触发 onGap/onChange', async () => {
+    localStorage.clear()
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { createClient } = await import('../src/client/api.ts')
+    const onChange = vi.fn()
+    const onGap = vi.fn()
+    const stop = createClient().stream(onChange, onGap)
+    const es = EventSourceMock.instances.at(-1)!
+
+    // First hello establishes the baseline revision — never a gap.
+    es.dispatch('hello', { revision: 5 })
+    expect(onGap).not.toHaveBeenCalled()
+    // In-order change (5 → 6): the normal path — onChange only, no onGap.
+    es.dispatch('change', { revision: 6, kind: 'task-updated', tasks: [] })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onGap).not.toHaveBeenCalled()
+    // Duplicate frame (6 again): revision did not advance by 1 → gap.
+    es.dispatch('change', { revision: 6, kind: 'task-updated', tasks: [] })
+    expect(onGap).toHaveBeenCalledTimes(1)
+    // Regressed frame (6 → 4): gap again.
+    es.dispatch('change', { revision: 4, kind: 'task-updated', tasks: [] })
+    expect(onGap).toHaveBeenCalledTimes(2)
+    expect(onChange).toHaveBeenCalledTimes(3)
+    // Reconnect hello at the SAME revision: nothing missed → stays quiet.
+    es.dispatch('hello', { revision: 4 })
+    expect(onGap).toHaveBeenCalledTimes(2)
+    // Reconnect hello after missed frames (4 → 9): gap → full refetch.
+    es.dispatch('hello', { revision: 9 })
+    expect(onGap).toHaveBeenCalledTimes(3)
+    // Disposing the subscription closes the stream.
+    stop()
+    expect(es.closed).toBe(true)
+  })
+
+  it('SSE 帧驱动控制器：in-order change 恰好一次 state refetch；重复 hello 不再拉取', async () => {
+    localStorage.clear()
+    let revision = 3
+    let stateFetches = 0
+    const dynFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/dsh-taskboard/state') {
+        stateFetches += 1
+        return new Response(JSON.stringify({ ok: true, value: { schemaVersion: 1, revision, tasks: [] } }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (path === '/dsh-taskboard/workspaces') {
+        return new Response(JSON.stringify({ ok: true, value: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      throw new Error(`unexpected fetch ${path}`)
+    })
+    vi.stubGlobal('fetch', dynFetch)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { createClient } = await import('../src/client/api.ts')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const controller = new BoardController(createClient())
+    controller.start()
+    const es = EventSourceMock.instances.at(-1)!
+    await waitFor(() => stateFetches === 1)
+
+    // Reconnect hello echoing the current revision: nothing was missed —
+    // the controller does NOT refetch.
+    es.dispatch('hello', { revision: 3 })
+    await new Promise(r => setTimeout(r, 30))
+    expect(stateFetches).toBe(1)
+
+    // In-order change frame: exactly ONE refetch lands (no gap duplicate).
+    revision = 4
+    es.dispatch('change', { revision: 4, kind: 'task-updated', tasks: [] })
+    await waitFor(() => stateFetches === 2)
+    await new Promise(r => setTimeout(r, 30))
+    expect(stateFetches).toBe(2)
+    expect(controller.getSnapshot().ledger.revision).toBe(4)
+
+    // Duplicate frame (revision did not advance): the gap path fires — one
+    // deduped (in-flight) reconciliation refetch, not a storm.
+    es.dispatch('change', { revision: 4, kind: 'task-updated', tasks: [] })
+    await waitFor(() => stateFetches === 3)
+    await new Promise(r => setTimeout(r, 30))
+    expect(stateFetches).toBe(3)
+
+    controller.dispose()
+    expect(es.closed).toBe(true)
+  })
+
+  it('编辑模式不预选部署默认 preset：任务自身的 preset 选择不被改写', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskFormModal } = await import('../src/client/board/TaskFormModal.tsx')
+
+    const updates: unknown[] = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      update: async (_id: string, body: unknown) => { updates.push(body); return { id: 't' } },
+    }
+    const controller = new BoardController(client as never)
+    controller.installPresetRoster(async () => ({
+      presets: [{ id: 'standard', name: '标准模式' }, { id: 'liangshen', name: '梁神模式' }],
+      defaultId: 'standard',
+    }))
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const mkTask = (presetId?: string) => ({
+      id: 't-edit', title: '编辑我', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'todo' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 4, createdAt: 0, updatedAt: 0,
+      ...(presetId !== undefined ? { presetId } : {}),
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    })
+    const presetSelectOf = (host: HTMLElement) => Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
+      .find(s => Array.from(s.options).some(o => o.value === 'standard'))!
+
+    // Follow-default task (no presetId): the roster's deployment default must
+    // NOT be pre-selected in edit mode — the select stays on 跟随部署默认.
+    let host = document.createElement('div')
+    document.body.append(host)
+    let root = createRoot(host)
+    root.render(React.createElement(TaskFormModal, { controller, task: mkTask() as never }))
+    await new Promise(r => setTimeout(r, 30))
+    expect(presetSelectOf(host).value).toBe('')
+    // Saving keeps following the deployment default (presetId: null).
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '保存修改'))!.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(updates[0]).toMatchObject({ presetId: null })
+    root.unmount()
+    host.remove()
+
+    // Pinned task (presetId 'liangshen'): the pinned choice survives the
+    // roster load instead of being flipped to the deployment default.
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    root.render(React.createElement(TaskFormModal, { controller, task: mkTask('liangshen') as never }))
+    await new Promise(r => setTimeout(r, 30))
+    expect(presetSelectOf(host).value).toBe('liangshen')
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('duplicate()：200 字标题截断到 196 再加（副本），create payload 不超 200 字', async () => {
+    localStorage.clear()
+    const { BoardController } = await import('../src/client/controller.ts')
+    const creates: unknown[] = []
+    const task = {
+      id: 't-dup', title: '标'.repeat(200), description: '跟随描述', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'todo' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    }
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [task] }),
+      workspaces: async () => [],
+      stream: () => () => {},
+      create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
+    }
+    const controller = new BoardController(client as never)
+    await controller.duplicate(task as never)
+    expect(creates).toHaveLength(1)
+    const payload = creates[0] as { title: string; workspaceId: string }
+    // 196 chars + （副本）(4 chars) = exactly the host's 200-char cap.
+    expect(payload.title.length).toBeLessThanOrEqual(200)
+    expect(payload.title.endsWith('（副本）')).toBe(true)
+    expect(payload.title.length).toBe(200)
+    expect(payload.workspaceId).toBe('ws-a')
+    controller.dispose()
+    localStorage.clear()
   })
 })

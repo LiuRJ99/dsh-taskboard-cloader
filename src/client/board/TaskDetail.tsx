@@ -12,22 +12,15 @@ import type { BoardController } from '../controller.ts'
 import type { ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
 import { canTransition, checklistProgress } from '../../shared/protocol.ts'
 import { useAlert } from './AlertModal.tsx'
-import { fmtTime, isStaleClaim } from './TaskBoard.tsx'
 import { Markdown } from '../markdown.tsx'
+import { fmtTime, isStaleClaim } from './format.ts'
+import { MOVE_LABEL, OUTCOME_LABEL, STATUS_LABEL, URGENCY_LABEL } from './labels.ts'
 
 /** Statuses a user may move this task to, per the state machine. */
 function moveTargets(task: TaskRecord): TaskRecord['status'][] {
   const all: TaskRecord['status'][] = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'canceled', 'archived']
   return all.filter(to => canTransition(task.status, to))
 }
-
-const MOVE_LABEL: Record<string, string> = {
-  backlog: '待规划', todo: '待办', in_progress: '进行中', in_review: '待验收',
-  done: '完成', canceled: '取消', archived: '归档',
-}
-const STATUS_LABEL: Record<string, string> = { ...MOVE_LABEL }
-const URGENCY_LABEL: Record<string, string> = { urgent: '紧急', normal: '一般', relaxed: '不急' }
-const OUTCOME_LABEL: Record<string, string> = { running: '执行中', succeeded: '成功', failed: '失败', cancelled: '已取消' }
 
 /** Compact session-id display (execution sessions carry the taskboard infix). */
 function shortId(id: string | undefined): string {
@@ -398,6 +391,10 @@ export function TaskDetail({
   const [confirmDone, setConfirmDone] = useState(false)
   const [confirmPurge, setConfirmPurge] = useState(false)
   const [confirmCancel, setConfirmCancel] = useState(false)
+  // Top action buttons (duplicate / save-as-template / run / reuse-run)
+  // share one in-flight guard: a double click used to fire duplicate runs or
+  // copies while the first round-trip was still pending (review P0).
+  const [actionBusy, setActionBusy] = useState(false)
   const { alert: showAlert, el: alertEl } = useAlert()
   const ws = controller.getSnapshot().workspaces.find(w => w.id === task.workspaceId)
   const canRun = task.status !== 'in_progress' && task.status !== 'done' && task.status !== 'archived'
@@ -405,6 +402,13 @@ export function TaskDetail({
   const holder = task.status === 'in_progress' ? task.claimedBy : undefined
   const stale = now !== undefined && isStaleClaim(task, now)
   const unchecked = (task.checklist ?? []).filter(i => !i.checked).length
+
+  /** Fire one top action under the shared busy guard; re-enable on settle. */
+  const runAction = (action: () => Promise<unknown>): void => {
+    if (actionBusy) return
+    setActionBusy(true)
+    void action().catch(() => undefined).finally(() => setActionBusy(false))
+  }
 
   /** Jump to an execution's session; prompt precisely when it cannot open. */
   const jumpToSession = (sessionId: string): void => {
@@ -452,7 +456,7 @@ export function TaskDetail({
             <Chip>v{task.version}</Chip>
           </div>
           <div className="dsh-atb-detail-sub">
-            更新 {fmtTime(task.updatedAt)} · 最近操作 {task.updatedBy.kind === 'agent' ? `🤖 ${shortId(task.updatedBy.sessionId)}` : '👤 用户'}
+            更新 {fmtTime(task.updatedAt)} · 最近操作 {task.updatedBy.kind === 'agent' ? `🤖 ${shortId(task.updatedBy.sessionId)}` : task.updatedBy.kind === 'system' ? '⚙️ 系统' : '👤 用户'}
           </div>
         </div>
         <div className="dsh-atb-detail-topbtns">
@@ -472,7 +476,8 @@ export function TaskDetail({
             type="button"
             className="dsh-atb-detail-edit"
             title="复制此任务的全部配置为一张新卡（待办列）"
-            onClick={() => void controller.duplicate(task)}
+            disabled={actionBusy}
+            onClick={() => runAction(() => controller.duplicate(task))}
           >
             ⧉ 复制
           </button>
@@ -480,11 +485,11 @@ export function TaskDetail({
             type="button"
             className="dsh-atb-detail-edit"
             title="把此任务的配置（含清单）保存为模板，新建任务时可用"
-            onClick={() => {
-              void controller.saveAsTemplate(task).then(ok => {
-                if (ok) showAlert('已存为模板（新建任务 ▼ 下拉可用，可在模板管理中改名）')
-              })
-            }}
+            disabled={actionBusy}
+            onClick={() => runAction(async () => {
+              const ok = await controller.saveAsTemplate(task)
+              if (ok) showAlert('已存为模板（新建任务 ▼ 下拉可用，可在模板管理中改名）')
+            })}
           >
             ⌗ 存为模板
           </button>
@@ -504,7 +509,8 @@ export function TaskDetail({
               type="button"
               className="dsh-atb-detail-run"
               title="续跑：保留现有 worktree 与分支（上次的改动和提交都在原处），在其上继续执行；默认「立即执行」会重置为全新基线"
-              onClick={() => void controller.run(task.id, true)}
+              disabled={actionBusy}
+              onClick={() => runAction(() => controller.run(task.id, true))}
             >
               ↻ 续跑
             </button>
@@ -514,7 +520,8 @@ export function TaskDetail({
               type="button"
               className="dsh-atb-detail-run"
               title={task.model !== undefined ? `新会话执行（${task.model.model}）` : '新会话执行（默认模型）'}
-              onClick={() => void controller.run(task.id)}
+              disabled={actionBusy}
+              onClick={() => runAction(() => controller.run(task.id))}
             >
               ▶ 立即执行
             </button>
@@ -626,8 +633,8 @@ export function TaskDetail({
             onChange={e => setComment(e.target.value)}
             onKeyDown={e => {
               if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && comment.trim().length > 0) {
-                void controller.comment(task.id, comment)
-                setComment('')
+                // T13: keep the draft when the post fails (reject 表单同样保留).
+                void controller.comment(task.id, comment).then(ok => { if (ok) setComment('') })
               }
             }}
           />
@@ -635,7 +642,9 @@ export function TaskDetail({
             type="button"
             className="dsh-atb-composer-send"
             disabled={comment.trim().length === 0}
-            onClick={() => { void controller.comment(task.id, comment); setComment('') }}
+            onClick={() => {
+              void controller.comment(task.id, comment).then(ok => { if (ok) setComment('') })
+            }}
           >
             发表
           </button>
