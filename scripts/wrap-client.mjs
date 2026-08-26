@@ -21,10 +21,9 @@ const out = `window.__ModuleLoader__.load({
 \t\tvar module = { exports: {} };
 \t\tvar exports = module.exports;
 \t\tObject.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-${cjs
-  .split('\n')
-  .map(line => (line === '' ? '' : `\t\t${line}`))
-  .join('\n')}
+// Keep the generated CJS body byte-for-byte intact. Prefixing every line
+// would alter template-literal newlines used by marked's block lexer.
+${cjs}
 \t\treturn module.exports;
 \t}
 });

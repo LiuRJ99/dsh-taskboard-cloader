@@ -14,6 +14,12 @@ export default defineConfig({
   clean: false,
   sourcemap: false,
   external: [/^@deepseek-ai\//, /^react(-dom)?(\/.*)?$/, /^schemastery$/],
+  deps: {
+    // marked is the one display-layer runtime dependency and must travel in
+    // the lazy client bundle rather than require a second host package.
+    alwaysBundle: ['marked'],
+    onlyBundle: ['marked'],
+  },
   target: 'chrome120',
   minify: false,
   outExtensions: () => ({ js: '.cjs' }),

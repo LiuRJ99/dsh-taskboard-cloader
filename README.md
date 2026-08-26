@@ -214,6 +214,12 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 
 ## 升级日志
 
+### 0.6.0
+
+- **任务详情 Markdown 预览**：描述、执行 Prompt、评论正文、执行报告摘要与剩余风险支持 GFM Markdown（表格、删除线、列表、围栏代码块与聊天式单换行）；任务标题、清单/证据、meta 芯片等短文本仍保持纯文本
+- **安全契约**：由 `marked@18` 解析原始 Markdown，仅在 renderer 中转义原始 HTML token；链接与图片仅放行 `http` / `https` / `mailto` / `#`，http/https/mailto 外链使用 `target="_blank" rel="noopener noreferrer"`，fragment 链接保留当前页跳转，所有 HTML 注入集中在受保护的 `<Markdown>` 组件出口
+- **原文对比**：详情预览右上角提供「原文 / 渲染」切换，覆盖描述、Prompt、评论、报告摘要与剩余风险；原文模式使用安全的 React 文本节点保留 Markdown 标记与换行，便于定位转换差异
+
 ### 0.5.0
 
 - **新增「看板设置」**：看板顶栏多了个「🛠 设置」按钮，可以选择新建任务默认怎么执行——在独立分支里隔离着干，或者直接在项目文件夹里干。保存后，新建的任务都按这个来；已经建好的任务不受影响

@@ -313,6 +313,7 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
       {selected !== undefined && (
         <div className="dsh-atb-detailpanel" data-fullscreen={detailFullScreen ? 'true' : undefined}>
           <TaskDetail
+            key={selected.id}
             task={selected}
             controller={controller}
             now={now}

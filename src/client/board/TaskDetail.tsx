@@ -13,6 +13,7 @@ import type { ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
 import { canTransition, checklistProgress } from '../../shared/protocol.ts'
 import { useAlert } from './AlertModal.tsx'
 import { fmtTime, isStaleClaim } from './TaskBoard.tsx'
+import { Markdown } from '../markdown.tsx'
 
 /** Statuses a user may move this task to, per the state machine. */
 function moveTargets(task: TaskRecord): TaskRecord['status'][] {
@@ -149,10 +150,20 @@ function ChecklistBlock({ task, controller }: { task: TaskRecord; controller: Bo
 }
 
 /**
+ * Render one of the task's long-text fields either as Markdown or as the
+ * original source. Raw mode deliberately uses React text children, never the
+ * HTML sink, so reviewers can compare the stored Markdown safely.
+ */
+function PreviewText({ text, className, raw }: { text: string; className: string; raw: boolean }): ReactNode {
+  if (raw) return <div className={`${className} dsh-atb-raw`}>{text}</div>
+  return <Markdown className={className} text={text} />
+}
+
+/**
  * The structured execution report block (0.4.0): the newest execution that
  * carries one, rendered section by section for the reviewer.
  */
-function ReportBlock({ task }: { task: TaskRecord }) {
+function ReportBlock({ task, raw }: { task: TaskRecord; raw: boolean }) {
   const execution = [...task.executions].reverse().find(e => e.report !== undefined)
   const report = execution?.report
   if (execution === undefined || report === undefined) return null
@@ -167,14 +178,14 @@ function ReportBlock({ task }: { task: TaskRecord }) {
   return (
     <div className="dsh-atb-fieldcard" data-kind="report">
       <div className="dsh-atb-fieldcard-label">执行报告<span className="dsh-atb-cl-progress">由执行会话提交 · {fmtTime(execution.endedAt ?? execution.startedAt)}</span></div>
-      <div className="dsh-atb-rpt-summary">{report.summary}</div>
+      <PreviewText className="dsh-atb-rpt-summary" text={report.summary} raw={raw} />
       {section('改动文件', report.changedFiles)}
       {section('自验情况', report.checks)}
       {section('产物', report.artifacts)}
       {report.risk.length > 0 && (
         <div className="dsh-atb-rpt-sec">
           <div className="dsh-atb-rpt-label">剩余风险</div>
-          <div className="dsh-atb-rpt-risk">{report.risk}</div>
+          <PreviewText className="dsh-atb-rpt-risk" text={report.risk} raw={raw} />
         </div>
       )}
     </div>
@@ -383,6 +394,7 @@ export function TaskDetail({
   onToggleFullScreen?: () => void
 }) {
   const [comment, setComment] = useState('')
+  const [showRawMarkdown, setShowRawMarkdown] = useState(false)
   const [confirmDone, setConfirmDone] = useState(false)
   const [confirmPurge, setConfirmPurge] = useState(false)
   const [confirmCancel, setConfirmCancel] = useState(false)
@@ -444,6 +456,17 @@ export function TaskDetail({
           </div>
         </div>
         <div className="dsh-atb-detail-topbtns">
+          <button
+            type="button"
+            className="dsh-atb-detail-edit"
+            data-active={showRawMarkdown ? 'true' : undefined}
+            aria-pressed={showRawMarkdown}
+            aria-label={showRawMarkdown ? '切换为 Markdown 渲染预览' : '切换为原文，查看 Markdown 标记'}
+            title={showRawMarkdown ? '切换为 Markdown 渲染预览' : '切换为原文，查看 Markdown 标记'}
+            onClick={() => setShowRawMarkdown(value => !value)}
+          >
+            {showRawMarkdown ? '渲染' : '原文'}
+          </button>
           <button type="button" className="dsh-atb-detail-edit" onClick={() => controller.openEditor(task.id)}>✎ 编辑</button>
           <button
             type="button"
@@ -522,20 +545,20 @@ export function TaskDetail({
       {task.description.length > 0 && (
         <div className="dsh-atb-fieldcard">
           <div className="dsh-atb-fieldcard-label">描述</div>
-          <div className="dsh-atb-desc">{task.description}</div>
+          <PreviewText className="dsh-atb-desc" text={task.description} raw={showRawMarkdown} />
         </div>
       )}
 
       {task.prompt.length > 0 && (
         <div className="dsh-atb-fieldcard" data-kind="prompt">
           <div className="dsh-atb-fieldcard-label">执行 Prompt</div>
-          <div className="dsh-atb-promptbox">{task.prompt}</div>
+          <PreviewText className="dsh-atb-promptbox" text={task.prompt} raw={showRawMarkdown} />
         </div>
       )}
 
       <IsolationBlock task={task} controller={controller} />
 
-      <ReportBlock task={task} />
+      <ReportBlock task={task} raw={showRawMarkdown} />
 
       <ChecklistBlock task={task} controller={controller} />
 
@@ -589,7 +612,7 @@ export function TaskDetail({
                         <b>{c.threadId !== undefined ? `agent ${shortId(c.threadId)}` : '用户'}</b>
                         <span>{fmtTime(c.createdAt)}</span>
                       </div>
-                      <div className="dsh-atb-bubble-body">{c.body}</div>
+                      <PreviewText className="dsh-atb-bubble-body" text={c.body} raw={showRawMarkdown} />
                     </div>
                   </div>
                 ))}

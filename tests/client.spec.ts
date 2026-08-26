@@ -94,7 +94,6 @@ describe('client half', () => {
     // Board settings use the modal body's two-column grid; the settings
     // section must span both columns so its options fill the modal.
     expect(style.textContent).toContain('.dsh-atb-set .dsh-atb-diag-sec { grid-column: 1 / -1; }')
-
     // DOM-idempotent: a second call neither duplicates nor recreates.
     injectStyles()
     expect(document.querySelectorAll('#dsh-taskboard-styles')).toHaveLength(1)
@@ -1154,6 +1153,120 @@ describe('client half', () => {
     doneBtn.click()
     await new Promise(r => setTimeout(r, 10))
     expect(host.querySelector('.dsh-atb-confirm-label')!.textContent).toContain('仍有 1 项清单未勾选')
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('detail: upper-right source toggle compares all Markdown preview fields', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
+
+    const task = {
+      id: 't-md-toggle', title: 'Markdown toggle', description: '**描述**\n第二行', prompt: '`npm test`', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'in_review' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [{ id: 'c1', body: '**评论**', version: 1, createdAt: 2 }],
+      executions: [{
+        id: 'e1', trigger: 'manual' as const, startedAt: 0, endedAt: 3, outcome: 'succeeded' as const,
+        report: { summary: '**摘要**', changedFiles: [], checks: [], artifacts: [], risk: '`风险`' },
+      }],
+    }
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [task] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskDetail, { task: task as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+
+    const sourceToggle = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-detail-topbtns .dsh-atb-detail-edit'))
+      .find(button => button.getAttribute('aria-label')?.includes('原文'))
+    expect(sourceToggle()?.getAttribute('aria-pressed')).toBe('false')
+    expect(host.querySelector('.dsh-atb-desc strong')).not.toBeNull()
+    expect(host.querySelector('.dsh-atb-promptbox code')).not.toBeNull()
+    expect(host.querySelector('.dsh-atb-bubble-body strong')).not.toBeNull()
+    expect(host.querySelector('.dsh-atb-rpt-summary strong')).not.toBeNull()
+    expect(host.querySelector('.dsh-atb-rpt-risk code')).not.toBeNull()
+
+    sourceToggle()!.click()
+    await new Promise(r => setTimeout(r, 10))
+    const rawToggle = host.querySelector<HTMLButtonElement>('.dsh-atb-detail-topbtns button[aria-pressed="true"]')!
+    expect(rawToggle.textContent).toBe('渲染')
+    for (const selector of ['.dsh-atb-desc', '.dsh-atb-promptbox', '.dsh-atb-bubble-body', '.dsh-atb-rpt-summary', '.dsh-atb-rpt-risk']) {
+      expect(host.querySelector(selector)!.classList.contains('dsh-atb-raw')).toBe(true)
+    }
+    expect(host.querySelector('.dsh-atb-desc strong')).toBeNull()
+    expect(host.querySelector('.dsh-atb-desc')!.textContent).toContain('**描述**')
+    expect(host.querySelector('.dsh-atb-promptbox')!.textContent).toBe('`npm test`')
+    expect(host.querySelector('.dsh-atb-bubble-body')!.textContent).toBe('**评论**')
+    expect(host.querySelector('.dsh-atb-rpt-summary')!.textContent).toBe('**摘要**')
+    expect(host.querySelector('.dsh-atb-rpt-risk')!.textContent).toBe('`风险`')
+
+    rawToggle.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(host.querySelector('.dsh-atb-desc strong')).not.toBeNull()
+    expect(host.querySelector('.dsh-atb-detail-topbtns button[aria-pressed="false"]')?.textContent).toBe('原文')
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('detail: selecting another task resets the Markdown source toggle', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskBoard } = await import('../src/client/board/TaskBoard.tsx')
+
+    const makeTask = (id: string, label: string) => ({
+      id, title: label, description: `**${label}**`, prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'todo' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    })
+    const tasks = [makeTask('t-md-a', 'Task A'), makeTask('t-md-b', 'Task B')]
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskBoard, { controller }))
+    controller.start()
+    await new Promise(r => setTimeout(r, 20))
+
+    controller.select('t-md-a')
+    await new Promise(r => setTimeout(r, 10))
+    const sourceToggle = () => host.querySelector<HTMLButtonElement>('.dsh-atb-detail-topbtns button[aria-pressed="false"]')!
+    sourceToggle().click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(host.querySelector('.dsh-atb-desc')!.classList.contains('dsh-atb-raw')).toBe(true)
+
+    controller.select('t-md-b')
+    await new Promise(r => setTimeout(r, 10))
+    expect(host.querySelector<HTMLButtonElement>('.dsh-atb-detail-topbtns button[aria-pressed="false"]')).not.toBeNull()
+    expect(host.querySelector('.dsh-atb-desc')!.classList.contains('dsh-atb-raw')).toBe(false)
+    expect(host.querySelector('.dsh-atb-desc strong')?.textContent).toBe('Task B')
 
     root.unmount()
     host.remove()
