@@ -89,6 +89,78 @@ describe('client half', () => {
     for (const fn of disposers) (fn as () => void)()
   })
 
+  it('Better Sidebar service exists时注册原生 Tab，并跳过旧 DOM 双挂载', async () => {
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { apply } = await import('../src/client/index.ts')
+    const registered: Array<{ id: string; component: (props: never) => unknown }> = []
+    const tabDisposer = vi.fn()
+    const service = {
+      registerTab: vi.fn((descriptor: { id: string; component: (props: never) => unknown }) => {
+        registered.push(descriptor)
+        return tabDisposer
+      }),
+      features: ['openFile'],
+      openFile: vi.fn(),
+    }
+    const effectDisposers: Array<() => void> = []
+    const ctx = {
+      get: (name: string) => name === 'betterSidebar' ? service : undefined,
+      effect: (fn: () => unknown) => {
+        const disposer = fn()
+        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
+      },
+    }
+    apply(ctx as never)
+    await new Promise(r => setTimeout(r, 20))
+
+    expect(service.registerTab).toHaveBeenCalledTimes(1)
+    expect(registered[0]!.id).toBe('dsh-taskboard:board')
+    expect(document.querySelector('[data-dsh-atb-entry]')).toBeNull()
+    expect(document.querySelector('.dsh-atb-view')).toBeNull()
+
+    for (const disposer of effectDisposers) disposer()
+    expect(tabDisposer).toHaveBeenCalledTimes(1)
+  })
+
+  it('Better Sidebar 后激活时也会把旧挂载升级为原生 Tab', async () => {
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { apply } = await import('../src/client/index.ts')
+    const tabDisposer = vi.fn()
+    const service = {
+      registerTab: vi.fn(() => tabDisposer),
+      features: ['openFile'] as const,
+      openFile: vi.fn(),
+    }
+    let currentService: typeof service | undefined
+    const statusListeners: Array<(...args: unknown[]) => unknown> = []
+    const effectDisposers: Array<() => void> = []
+    const ctx = {
+      get: (name: string) => name === 'betterSidebar' ? currentService : undefined,
+      effect: (fn: () => unknown) => {
+        const disposer = fn()
+        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
+      },
+      on: (event: string, listener: (...args: unknown[]) => unknown) => {
+        if (event === 'internal/status') statusListeners.push(listener)
+        return () => undefined
+      },
+    }
+    apply(ctx as never)
+    await new Promise(r => setTimeout(r, 20))
+    expect(service.registerTab).not.toHaveBeenCalled()
+    expect(statusListeners).toHaveLength(1)
+
+    currentService = service
+    for (const listener of [...statusListeners]) listener()
+    await new Promise(r => setTimeout(r, 0))
+    expect(service.registerTab).toHaveBeenCalledTimes(1)
+
+    for (const disposer of effectDisposers) disposer()
+    expect(tabDisposer).toHaveBeenCalledTimes(1)
+  })
+
   it('stylesheet is ownership-tagged, idempotent, and re-attaches after removal', async () => {
     const { injectStyles } = await import('../src/client/styles.ts')
     document.getElementById('dsh-taskboard-styles')?.remove()

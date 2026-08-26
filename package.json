@@ -44,6 +44,14 @@
     "kanban",
     "agent"
   ],
+  "peerDependencies": {
+    "dsh-better-sidebar": "^0.16.1"
+  },
+  "peerDependenciesMeta": {
+    "dsh-better-sidebar": {
+      "optional": true
+    }
+  },
   "scripts": {
     "build": "node scripts/clean-lib.mjs && npm run build:host && npm run build:client",
     "build:host": "tsdown -c tsdown.host.config.ts",

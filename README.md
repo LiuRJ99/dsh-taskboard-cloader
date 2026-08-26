@@ -12,6 +12,7 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 - **执行**：手动或 cron 定时（host 侧调度，浏览器关了照跑）；每次执行在任务项目内开全新会话，可指定模型与 preset
 - **Git Worktree 隔离**：每次执行独立 worktree + 任务分支，验收时一键合并；非 git 项目自动降级
 - **验收效率**：DoD 验收清单（agent 勾选附证据）、结构化执行报告（摘要/改动文件/自验/产物/风险）、看板内 diff 查看器
+- **Better Sidebar 适配**：检测到 `dsh-better-sidebar`（≥ 0.16.1）时注册为原生 Tab，支持面板/自由窗口、当前会话 `@` 引用、受会话 workspace 边界保护的文件打开；未安装时保留旧版 DOM 看板回退
 - **实时看板**：SSE 实时刷新、五列流转、筛选排序持久化、JSON 导入导出、任务模板
 
 **零配置**：安装即用——无需 Token、无需 API Key、无需额外服务或数据库。
@@ -53,7 +54,7 @@ dsh plugin --profile web add dsh-taskboard
 dsh plugin --profile web add github:cloader/dsh-taskboard
 ```
 
-安装后**重启 `dsh web` 并刷新页面**：侧边栏出现「任务看板」入口即成功。无需任何后续配置。
+安装后**重启 `dsh web` 并刷新页面**：若已安装 `dsh-better-sidebar`，在侧栏「+」菜单中会出现「任务看板」Tab；否则保留旧版侧栏入口。无需任何后续配置。
 
 <details>
 <summary>GitHub 源安装卡在 prepare / allowBuilds？</summary>

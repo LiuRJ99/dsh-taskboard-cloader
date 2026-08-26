@@ -5,6 +5,7 @@
  * @module dsh-taskboard/client/board/TaskBoard
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
+import type { SessionScope } from 'dsh-better-sidebar/client/service'
 import type { BoardController, ControllerState } from '../controller.ts'
 import type { TaskRecord, TaskStatus, Urgency } from '../../shared/protocol.ts'
 import { MAIN_STATUSES, canTransition } from '../../shared/protocol.ts'
@@ -38,11 +39,24 @@ export function filterTasks(state: ControllerState, tasks: TaskRecord[]): TaskRe
   return sorted
 }
 
+/** Props shared by the legacy center-column board and the sidebar tab. */
+export interface TaskBoardProps {
+  controller: BoardController
+  /** Better Sidebar's session context; absent for the legacy DOM mount. */
+  scope?: SessionScope
+  /** Whether the registered tab is currently visible. */
+  visible?: boolean
+  /** Better Sidebar's @-reference callback. */
+  onReferenceFile?: (path: string) => void
+  /** Open a validated absolute path in Better Sidebar's editor. */
+  onOpenFile?: (path: string) => void
+}
+
 /**
  * The board view root.
- * @param controller - the controller.
+ * @param props - controller plus optional Better Sidebar integration callbacks.
  */
-export function TaskBoard({ controller }: { controller: BoardController }) {
+export function TaskBoard({ controller, scope, visible, onReferenceFile, onOpenFile }: TaskBoardProps) {
   const state = useSyncExternalStore(
     cb => controller.subscribe(cb),
     () => controller.getSnapshot(),
@@ -84,7 +98,11 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
   const closeExport = (): void => setExportOpen(false)
 
   return (
-    <div className="dsh-atb-board">
+    <div
+      className="dsh-atb-board"
+      data-dsh-atb-board=""
+      data-dsh-atb-visible={visible === false ? 'false' : 'true'}
+    >
       <div className="dsh-atb-toolbar">
         <h2 className="dsh-atb-title">Agent 任务看板</h2>
         <span className="dsh-atb-count">{live.length} 任务 · rev {state.ledger.revision}</span>
@@ -286,6 +304,9 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
             now={now}
             fullScreen={detailFullScreen}
             onToggleFullScreen={() => setDetailFullScreen(value => !value)}
+            scope={scope}
+            onReferenceFile={onReferenceFile}
+            onOpenFile={onOpenFile}
           />
         </div>
       )}

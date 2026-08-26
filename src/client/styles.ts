@@ -98,8 +98,17 @@ html[data-dsh-atb-active] [data-pane="conversation"] > *:not([data-dsh-atb-view]
 html[data-dsh-atb-active] [class*="centerCol"] > *:not([data-dsh-atb-view]) { display: none !important; }
 .dsh-atb-view { display: none; }
 html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-
-.dsh-atb-board { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 12px 16px; gap: 10px; box-sizing: border-box; }
+/* Better Sidebar owns the outer panel/free-window geometry. Keep the board
+ * inside that slot and make its own width the responsive query container. */
+.dsh-atb-sidebar-tab { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.dsh-atb-board { position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 12px 16px; gap: 10px; box-sizing: border-box; container: dsh-atb-board / inline-size; }
+.dsh-atb-sidebar-tab .dsh-atb-modal-backdrop,
+.dsh-atb-sidebar-tab .dsh-atb-alert-backdrop,
+.dsh-atb-sidebar-tab .dsh-atb-newmenu-backdrop { position: absolute; inset: 0; }
+.dsh-atb-sidebar-tab .dsh-atb-modal { width: min(560px, calc(100% - 24px)); max-height: calc(100% - 24px); }
+.dsh-atb-sidebar-tab .dsh-atb-diag,
+.dsh-atb-sidebar-tab .dsh-atb-imp,
+.dsh-atb-sidebar-tab .dsh-atb-set { width: min(520px, calc(100% - 24px)); }
 .dsh-atb-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .dsh-atb-title { font-size: 15px; font-weight: 600; margin: 0; }
 .dsh-atb-count { font-size: 12px; color: var(--dsw-text-secondary, gray); }
@@ -710,6 +719,16 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-rpt-sec { margin-bottom: 8px; }
 .dsh-atb-rpt-label { font-size: 11px; color: var(--dsw-alias-label-tertiary, gray); margin-bottom: 4px; }
 .dsh-atb-rpt-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.55; word-break: break-all; }
+.dsh-atb-file-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dsh-atb-file-path { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
+.dsh-atb-file-actions { display: inline-flex; align-items: center; gap: 4px; flex: none; white-space: nowrap; }
+.dsh-atb-file-action {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3)); border-radius: 5px;
+  background: var(--dsw-alias-bg-layer-1, transparent); color: var(--dsw-alias-label-secondary, inherit);
+  cursor: pointer; font: inherit; font-size: 10.5px; line-height: 1.2; padding: 2px 6px;
+}
+.dsh-atb-file-action:hover { color: var(--dsw-alias-state-business-primary, #3e63dd); border-color: var(--dsw-alias-state-business-primary, #3e63dd); }
+.dsh-atb-file-unavailable { flex: none; color: var(--dsw-alias-label-tertiary, gray); font-size: 10.5px; cursor: help; }
 .dsh-atb-rpt-risk {
   font-size: 12px; line-height: 1.55; word-break: break-word;
   color: var(--dsw-alias-state-warn-primary, #f5a524);
@@ -738,7 +757,10 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 }
 .dsh-atb-iso-dirty-toggle { border: none; background: none; cursor: pointer; padding: 0; text-align: left; color: inherit; font-size: inherit; }
 .dsh-atb-iso-dirty-files { display: flex; flex-direction: column; gap: 2px; }
+.dsh-atb-iso-dirty-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dsh-atb-iso-dirty-row .dsh-atb-file-actions { margin-left: auto; }
 .dsh-atb-iso-dirty-file {
+  flex: 1 1 auto; min-width: 0;
   border: none; background: none; cursor: pointer; text-align: left; padding: 1px 2px;
   font-size: 11px; color: var(--dsw-alias-label-secondary, inherit); border-radius: 4px; word-break: break-all;
 }
@@ -841,6 +863,32 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
   background: var(--dsw-alias-bg-layer-1, transparent); color: inherit; font-size: 12px;
 }
 .dsh-atb-set .dsh-atb-isolation-note { margin-top: 10px; }
+
+/* The sidebar panel and free window are often narrower than the browser
+ * viewport. Container queries keep the board usable in both placements. */
+@container dsh-atb-board (max-width: 720px) {
+  .dsh-atb-board { padding: 8px; gap: 8px; }
+  .dsh-atb-toolbar { gap: 6px; }
+  .dsh-atb-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dsh-atb-count { white-space: nowrap; }
+  .dsh-atb-spacer { display: none; }
+  .dsh-atb-search { order: 10; width: 100%; flex: 1 1 100%; }
+  .dsh-atb-select { min-width: 0; flex: 1 1 120px; }
+  .dsh-atb-chip { flex: 1 1 auto; min-width: 0; padding-inline: 6px; }
+  .dsh-atb-columns {
+    grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); grid-auto-columns: auto;
+    overflow-x: hidden; overflow-y: auto; min-height: 120px;
+  }
+  .dsh-atb-column { min-width: 0; min-height: 120px; }
+  .dsh-atb-cards { max-height: 240px; }
+  .dsh-atb-detailpanel { max-height: 50%; min-height: 160px; padding: 8px; }
+  .dsh-atb-detail-topbtns { flex-wrap: wrap; }
+  .dsh-atb-file-row { align-items: flex-start; flex-wrap: wrap; }
+  .dsh-atb-file-actions { margin-left: auto; }
+  .dsh-atb-iso-dirty-row { align-items: flex-start; flex-wrap: wrap; }
+  .dsh-atb-iso-dirty-row .dsh-atb-file-actions { margin-left: auto; }
+  .dsh-atb-modal-body { grid-template-columns: 1fr; }
+}
 `
 
 /** Style element id (stable since 0.1.x: hook for tests and debugging). */

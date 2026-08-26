@@ -16,6 +16,7 @@ import { BoardController } from './controller.ts'
 import { injectStyles } from './styles.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
+import { registerBetterSidebarTab } from './sidebar-tab.tsx'
 import { createSessionJumper, type SessionsServiceFace, type WorkspacesServiceFace } from './session-jump.ts'
 import { isTaskModelSupported } from './model-catalog.ts'
 import { MODEL_CAPABILITY_SERVICE, type ModelCapability, type ModelCapabilityProvider } from '../shared/model-capabilities.ts'
@@ -42,6 +43,8 @@ interface ConnectionFace {
 interface ClientContextFace {
   get?(name: string): unknown
   effect?(fn: () => unknown, label?: string): void
+  /** Cordis lifecycle notifications let optional peers register after us. */
+  on?(event: string, listener: (...args: unknown[]) => unknown, options?: { global?: boolean }): () => unknown
 }
 
 /**
@@ -119,12 +122,68 @@ export function apply(ctx: ClientContextFace): void {
 
     controller.start()
     const disposers: Array<() => void> = []
+    let sidebarTabActive = false
+    let registeredSidebarService: unknown
+    let legacyDisposers: Array<() => void> = []
+
+    const disposeLegacyMounts = (): void => {
+      for (const disposer of legacyDisposers.splice(0)) disposer()
+    }
+    const mountLegacy = (): void => {
+      if (legacyDisposers.length > 0) return
+      try {
+        legacyDisposers = [mountSidebarEntry(controller), mountBoard(controller)]
+      } catch (error) {
+        // DOM failures degrade the board, never the GUI.
+        console.error('[dsh-taskboard] mount failed:', error)
+      }
+    }
+    const syncSidebarRegistration = (): void => {
+      try {
+        // Better Sidebar is an optional peer. When its client service is
+        // present, the board lives inside the registered tab (and can therefore
+        // use the panel/free-window lifecycle); otherwise keep the legacy DOM
+        // mount for shells that do not install the companion plugin.
+        const registration = registerBetterSidebarTab(ctx, controller)
+        if (registration.available) {
+          // The service is recreated on Better Sidebar HMR/reload. Identity
+          // tracking prevents duplicate registration on ordinary status events
+          // while allowing the new service instance to register cleanly.
+          if (registeredSidebarService === registration.service) return
+          disposeLegacyMounts()
+          sidebarTabActive = true
+          registeredSidebarService = registration.service
+          if (registration.disposer !== undefined) disposers.push(registration.disposer)
+          return
+        }
+
+        if (registeredSidebarService !== undefined) {
+          registeredSidebarService = undefined
+          sidebarTabActive = false
+        }
+        if (!sidebarTabActive) mountLegacy()
+      } catch (error) {
+        // A registration failure must not remove the legacy board fallback.
+        console.error('[dsh-taskboard] Better Sidebar registration failed:', error)
+        sidebarTabActive = false
+        mountLegacy()
+      }
+    }
+    syncSidebarRegistration()
+
+    // Cordis may activate sibling client plugins in a different order even
+    // when the profile bundle order is correct. Observe lifecycle transitions
+    // so a service that appears after this plugin still upgrades the legacy
+    // mount to a native tab instead of requiring another restart.
     try {
-      disposers.push(mountSidebarEntry(controller))
-      disposers.push(mountBoard(controller))
+      const unsubscribe = ctx.on?.(
+        'internal/status',
+        () => { syncSidebarRegistration() },
+        { global: true },
+      )
+      if (typeof unsubscribe === 'function') disposers.push(unsubscribe as () => void)
     } catch (error) {
-      // DOM failures degrade the board, never the GUI.
-      console.error('[dsh-taskboard] mount failed:', error)
+      console.warn('[dsh-taskboard] Better Sidebar readiness watcher unavailable:', error)
     }
     // cordis effect semantics: the callback runs immediately and its RETURN
     // VALUE is the disposer (family-plugin precedent: () => () => {...}).
@@ -134,6 +193,7 @@ export function apply(ctx: ClientContextFace): void {
     // race a same-lifetime re-apply); its rules are dsh-atb-* scoped, so a
     // leftover tag after a full disable is inert.
     ctx.effect?.(() => () => {
+      disposeLegacyMounts()
       for (const d of disposers.splice(0)) d()
       controller.dispose()
     }, 'dsh-taskboard: client mount')

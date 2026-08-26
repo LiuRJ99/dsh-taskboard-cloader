@@ -8,8 +8,11 @@
  * @module dsh-taskboard/client/board/TaskDetail
  */
 import { useEffect, useState, type ReactNode } from 'react'
+import type { SessionScope } from 'dsh-better-sidebar/client/service'
+import type { WorkspaceView } from '../../shared/api.ts'
 import type { BoardController } from '../controller.ts'
 import type { ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
+import { cleanReportedPath, isAbsolutePath, resolveTaskFilePath, type TaskFileTarget } from '../file-paths.ts'
 import { canTransition, checklistProgress } from '../../shared/protocol.ts'
 import { useAlert } from './AlertModal.tsx'
 import { Markdown } from '../markdown.tsx'
@@ -59,6 +62,107 @@ function porcelainPath(line: string): string {
   if (arrow >= 0) p = p.slice(arrow + 4)
   if (p.startsWith('"') && p.endsWith('"') && p.length > 1) p = p.slice(1, -1)
   return p
+}
+
+/** Do not reinterpret URLs or prose labels in report.artifacts as files. */
+function isLocalFileCandidate(raw: string, assumePath: boolean): boolean {
+  const value = cleanReportedPath(raw)
+  if (value === '' || /^(?:[A-Za-z][A-Za-z0-9+.-]*:)?\/\//.test(value)) return false
+  if (/^(?:https?|mailto|data):/i.test(value)) return false
+  if (!assumePath && (/(?:https?|file):\/\//i.test(value) || /:\s/.test(value))) return false
+  if (!assumePath && /\s/.test(value) && !isAbsolutePath(value) && !value.startsWith('./') && !value.startsWith('../')) return false
+  return assumePath
+    || isAbsolutePath(value)
+    || value.includes('/')
+    || value.includes(String.fromCharCode(92))
+    || /^[^:]+\.[^:]+$/.test(value)
+}
+
+/** Copy a displayed path without giving it any additional filesystem authority. */
+function copyPath(path: string): void {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText !== undefined) {
+    void navigator.clipboard.writeText(path).catch(() => {})
+    return
+  }
+  if (typeof document === 'undefined') return
+  const input = document.createElement('textarea')
+  input.value = path
+  input.setAttribute('readonly', '')
+  input.style.position = 'fixed'
+  input.style.opacity = '0'
+  document.body.append(input)
+  input.select()
+  try { document.execCommand('copy') } catch { /* clipboard is best-effort */ }
+  input.remove()
+}
+
+/** Compact action buttons shared by report and dirty-file rows. */
+function FileActions({
+  target,
+  onOpenFile,
+  onReferenceFile,
+}: {
+  target: TaskFileTarget | undefined
+  onOpenFile?: (path: string) => void
+  onReferenceFile?: (path: string) => void
+}): ReactNode {
+  if (onOpenFile === undefined && onReferenceFile === undefined) return null
+  if (target === undefined || !target.available) {
+    const reason = target?.reason === 'outside-session-workspace'
+      ? '当前会话 workspace 外，暂不可打开或引用'
+      : target?.reason === 'missing-session-cwd'
+        ? '当前会话路径尚未就绪'
+        : '无法解析文件路径'
+    return (
+      <span className="dsh-atb-file-actions" onClick={event => event.stopPropagation()}>
+        <span className="dsh-atb-file-unavailable" title={target?.path ?? reason}>不可访问</span>
+        {target !== undefined && (
+          <button type="button" className="dsh-atb-file-action" onClick={() => copyPath(target.path)}>复制</button>
+        )}
+      </span>
+    )
+  }
+  return (
+    <span className="dsh-atb-file-actions" onClick={event => event.stopPropagation()}>
+      <button type="button" className="dsh-atb-file-action" onClick={() => copyPath(target.path)}>复制</button>
+      {onOpenFile !== undefined && (
+        <button type="button" className="dsh-atb-file-action" onClick={() => onOpenFile(target.path)}>打开</button>
+      )}
+      {onReferenceFile !== undefined && (
+        <button type="button" className="dsh-atb-file-action" onClick={() => onReferenceFile(target.path)}>引用</button>
+      )}
+    </span>
+  )
+}
+
+/** Render one local report path with controlled sidebar actions. */
+function ReportFileRow({
+  raw,
+  task,
+  execution,
+  workspaces,
+  scope,
+  assumePath,
+  onOpenFile,
+  onReferenceFile,
+}: {
+  raw: string
+  task: TaskRecord
+  execution: ExecutionRecord
+  workspaces: readonly WorkspaceView[]
+  scope?: SessionScope
+  assumePath: boolean
+  onOpenFile?: (path: string) => void
+  onReferenceFile?: (path: string) => void
+}): ReactNode {
+  if (!isLocalFileCandidate(raw, assumePath)) return raw
+  const target = resolveTaskFilePath(raw, task, workspaces, execution, scope)
+  return (
+    <span className="dsh-atb-file-row">
+      <code className="dsh-atb-file-path">{raw}</code>
+      <FileActions target={target} onOpenFile={onOpenFile} onReferenceFile={onReferenceFile} />
+    </span>
+  )
 }
 
 /**
@@ -156,15 +260,46 @@ function PreviewText({ text, className, raw }: { text: string; className: string
  * The structured execution report block (0.4.0): the newest execution that
  * carries one, rendered section by section for the reviewer.
  */
-function ReportBlock({ task, raw }: { task: TaskRecord; raw: boolean }) {
+function ReportBlock({
+  task,
+  raw,
+  workspaces,
+  scope,
+  onOpenFile,
+  onReferenceFile,
+}: {
+  task: TaskRecord
+  raw: boolean
+  workspaces: readonly WorkspaceView[]
+  scope?: SessionScope
+  onOpenFile?: (path: string) => void
+  onReferenceFile?: (path: string) => void
+}) {
   const execution = [...task.executions].reverse().find(e => e.report !== undefined)
   const report = execution?.report
   if (execution === undefined || report === undefined) return null
-  const section = (label: string, rows: string[] | undefined): ReactNode => rows !== undefined && rows.length > 0
+  const section = (label: string, rows: string[] | undefined, fileKind?: 'changed' | 'artifact'): ReactNode => rows !== undefined && rows.length > 0
     ? (
         <div className="dsh-atb-rpt-sec">
           <div className="dsh-atb-rpt-label">{label}</div>
-          <ul className="dsh-atb-rpt-list">{rows.map((row, i) => <li key={i}>{row}</li>)}</ul>
+          <ul className="dsh-atb-rpt-list">
+            {rows.map((row, i) => (
+              <li key={i}>
+                {fileKind !== undefined
+                  ? <ReportFileRow
+                      raw={row}
+                      task={task}
+                      execution={execution}
+                      workspaces={workspaces}
+                      scope={scope}
+                      assumePath={fileKind === 'changed'}
+                      onOpenFile={onOpenFile}
+                      onReferenceFile={onReferenceFile}
+                    />
+                  : row}
+              </li>
+            ))}
+          </ul>
         </div>
       )
     : null
@@ -172,9 +307,9 @@ function ReportBlock({ task, raw }: { task: TaskRecord; raw: boolean }) {
     <div className="dsh-atb-fieldcard" data-kind="report">
       <div className="dsh-atb-fieldcard-label">执行报告<span className="dsh-atb-cl-progress">由执行会话提交 · {fmtTime(execution.endedAt ?? execution.startedAt)}</span></div>
       <PreviewText className="dsh-atb-rpt-summary" text={report.summary} raw={raw} />
-      {section('改动文件', report.changedFiles)}
+      {section('改动文件', report.changedFiles, 'changed')}
       {section('自验情况', report.checks)}
-      {section('产物', report.artifacts)}
+      {section('产物', report.artifacts, 'artifact')}
       {report.risk.length > 0 && (
         <div className="dsh-atb-rpt-sec">
           <div className="dsh-atb-rpt-label">剩余风险</div>
@@ -190,7 +325,21 @@ function ReportBlock({ task, raw }: { task: TaskRecord; raw: boolean }) {
  * uncommitted-changes warning, plus the user-only git actions (merge /
  * remove worktree — plan §3.3).
  */
-function IsolationBlock({ task, controller }: { task: TaskRecord; controller: BoardController }) {
+function IsolationBlock({
+  task,
+  controller,
+  workspaces,
+  scope,
+  onOpenFile,
+  onReferenceFile,
+}: {
+  task: TaskRecord
+  controller: BoardController
+  workspaces: readonly WorkspaceView[]
+  scope?: SessionScope
+  onOpenFile?: (path: string) => void
+  onReferenceFile?: (path: string) => void
+}) {
   const { alert: showAlert, el: alertEl } = useAlert()
   const [confirmMerge, setConfirmMerge] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState<'wt' | 'wtb' | null>(null)
@@ -283,16 +432,19 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
             <div className="dsh-atb-iso-dirty-files">
               {dirty.slice(0, 30).map((line, index) => {
                 const filePath = porcelainPath(line)
+                const target = resolveTaskFilePath(filePath, task, workspaces, execution, scope)
                 return (
-                  <button
-                    key={`${line}-${index}`}
-                    type="button"
-                    className="dsh-atb-iso-dirty-file"
-                    title="点击查看该文件的未提交 diff"
-                    onClick={() => setOpenDiff(openDiff?.path === filePath ? null : { path: filePath })}
-                  >
-                    <code>{line.slice(0, 2)}</code> {filePath}
-                  </button>
+                  <div key={`${line}-${index}`} className="dsh-atb-iso-dirty-row">
+                    <button
+                      type="button"
+                      className="dsh-atb-iso-dirty-file"
+                      title="点击查看该文件的未提交 diff"
+                      onClick={() => setOpenDiff(openDiff?.path === filePath ? null : { path: filePath })}
+                    >
+                      <code>{line.slice(0, 2)}</code> {filePath}
+                    </button>
+                    <FileActions target={target} onOpenFile={onOpenFile} onReferenceFile={onReferenceFile} />
+                  </div>
                 )
               })}
               {dirtyTotal > 30 && <div className="dsh-atb-iso-more">… 共 {dirtyTotal} 处（完整列表见任务台账）</div>}
@@ -379,12 +531,18 @@ export function TaskDetail({
   now,
   fullScreen = false,
   onToggleFullScreen,
+  scope,
+  onReferenceFile,
+  onOpenFile,
 }: {
   task: TaskRecord
   controller: BoardController
   now?: number
   fullScreen?: boolean
   onToggleFullScreen?: () => void
+  scope?: SessionScope
+  onReferenceFile?: (path: string) => void
+  onOpenFile?: (path: string) => void
 }) {
   const [comment, setComment] = useState('')
   const [showRawMarkdown, setShowRawMarkdown] = useState(false)
@@ -396,7 +554,8 @@ export function TaskDetail({
   // copies while the first round-trip was still pending (review P0).
   const [actionBusy, setActionBusy] = useState(false)
   const { alert: showAlert, el: alertEl } = useAlert()
-  const ws = controller.getSnapshot().workspaces.find(w => w.id === task.workspaceId)
+  const workspaces = controller.getSnapshot().workspaces
+  const ws = workspaces.find(w => w.id === task.workspaceId)
   const canRun = task.status !== 'in_progress' && task.status !== 'done' && task.status !== 'archived'
   const runningExecution = task.executions.find(e => e.outcome === 'running')
   const holder = task.status === 'in_progress' ? task.claimedBy : undefined
@@ -563,9 +722,23 @@ export function TaskDetail({
         </div>
       )}
 
-      <IsolationBlock task={task} controller={controller} />
+      <IsolationBlock
+        task={task}
+        controller={controller}
+        workspaces={workspaces}
+        scope={scope}
+        onOpenFile={onOpenFile}
+        onReferenceFile={onReferenceFile}
+      />
 
-      <ReportBlock task={task} raw={showRawMarkdown} />
+      <ReportBlock
+        task={task}
+        raw={showRawMarkdown}
+        workspaces={workspaces}
+        scope={scope}
+        onOpenFile={onOpenFile}
+        onReferenceFile={onReferenceFile}
+      />
 
       <ChecklistBlock task={task} controller={controller} />
 
