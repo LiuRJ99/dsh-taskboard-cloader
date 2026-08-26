@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import { marked, Renderer, type Tokens } from 'marked'
 
 /** Escape every character that can introduce or alter an HTML fragment. */
@@ -124,69 +125,119 @@ function normalizeMarkdown(text: string): string {
  * Raw HTML is escaped by the html renderer; URL checks are an independent
  * safety boundary for link and image tokens.
  */
+export type ResolveFileMention = (value: string) => string | undefined
+
+export interface MarkdownOptions {
+  /** Resolve an inline-code token to a validated absolute file path. */
+  resolveFileMention?: ResolveFileMention
+}
+
 const defaultRenderer = new Renderer()
-const renderer = new Renderer()
-renderer.html = function ({ text }: Tokens.HTML | Tokens.Tag) {
-  return escapeHtml(text)
-}
-renderer.code = function ({ text, lang }: Tokens.Code) {
-  const language = lang !== undefined && lang.length > 0
-    ? ` class="language-${escapeHtml(lang)}"`
-    : ''
-  return `<pre><code${language}>${escapeHtml(text)}\n</code></pre>\n`
-}
-renderer.codespan = function ({ text }: Tokens.Codespan) {
-  return `<code>${escapeHtml(text)}</code>`
-}
-renderer.table = function (token: Tokens.Table) {
-  // Keep table layout semantics intact and put scrolling on a wrapper. A
-  // block-level <table> makes the browser split column sizing across thead /
-  // tbody, which is the source of clipped or apparently missing cells.
-  return `<div class="dsh-atb-md-table-wrap">${defaultRenderer.table.call(this, token)}</div>`
-}
-renderer.link = function ({ href, title, tokens }: Tokens.Link) {
-  const content = this.parser.parseInline(tokens)
-  const safe = safeHref(href)
-  if (safe === undefined) return content
 
-  let output = `<a href="${escapeHtml(safe)}"`
-  if (title !== undefined && title !== null) output += ` title="${escapeHtml(title)}"`
-  if (!safe.startsWith('#')) output += ' target="_blank" rel="noopener noreferrer"'
-  output += '>'
-  return `${output}${content}</a>`
-}
-renderer.image = function ({ href, title, text, tokens }: Tokens.Image) {
-  const alt = tokens !== undefined
-    ? this.parser.parseInline(tokens, this.parser.textRenderer)
-    : text
-  const safe = safeHref(href)
-  // Unsafe images are rendered as their alt text rather than an empty or
-  // attacker-controlled src, matching the unsafe-link behavior above.
-  if (safe === undefined) return alt
+/** Create a renderer for one Markdown pass and its optional file resolver. */
+function createRenderer(resolveFileMention?: ResolveFileMention): Renderer {
+  const renderer = new Renderer()
+  renderer.html = function ({ text }: Tokens.HTML | Tokens.Tag) {
+    return escapeHtml(text)
+  }
+  renderer.code = function ({ text, lang }: Tokens.Code) {
+    const language = lang !== undefined && lang.length > 0
+      ? ` class="language-${escapeHtml(lang)}"`
+      : ''
+    return `<pre><code${language}>${escapeHtml(text)}\n</code></pre>\n`
+  }
+  renderer.codespan = function ({ text }: Tokens.Codespan) {
+    const path = resolveFileMention?.(text)
+    if (path !== undefined) {
+      // The path is escaped before entering the HTML sink. Markdown's React
+      // wrapper delegates clicks back to the caller, so no inline script or
+      // dynamically-created handler is needed here.
+      return `<button type="button" class="dsh-atb-md-file-link" data-dsh-atb-file="${escapeHtml(path)}" title="${escapeHtml(path)}" aria-label="${escapeHtml(`打开文件 ${text}`)}">${escapeHtml(text)}</button>`
+    }
+    return `<code>${escapeHtml(text)}</code>`
+  }
+  renderer.table = function (token: Tokens.Table) {
+    // Keep table layout semantics intact and put scrolling on a wrapper. A
+    // block-level <table> makes the browser split column sizing across thead /
+    // tbody, which is the source of clipped or apparently missing cells.
+    return `<div class="dsh-atb-md-table-wrap">${defaultRenderer.table.call(this, token)}</div>`
+  }
+  renderer.link = function ({ href, title, tokens }: Tokens.Link) {
+    const content = this.parser.parseInline(tokens)
+    const safe = safeHref(href)
+    if (safe === undefined) return content
 
-  let output = `<img src="${escapeHtml(safe)}" alt="${escapeHtml(alt)}"`
-  if (title !== undefined && title !== null) output += ` title="${escapeHtml(title)}"`
-  return `${output}>`
+    let output = `<a href="${escapeHtml(safe)}"`
+    if (title !== undefined && title !== null) output += ` title="${escapeHtml(title)}"`
+    if (!safe.startsWith('#')) output += ' target="_blank" rel="noopener noreferrer"'
+    output += '>'
+    return `${output}${content}</a>`
+  }
+  renderer.image = function ({ href, title, text, tokens }: Tokens.Image) {
+    const alt = tokens !== undefined
+      ? this.parser.parseInline(tokens, this.parser.textRenderer)
+      : text
+    const safe = safeHref(href)
+    // Unsafe images are rendered as their alt text rather than an empty or
+    // attacker-controlled src, matching the unsafe-link behavior above.
+    if (safe === undefined) return alt
+
+    let output = `<img src="${escapeHtml(safe)}" alt="${escapeHtml(alt)}"`
+    if (title !== undefined && title !== null) output += ` title="${escapeHtml(title)}"`
+    return `${output}>`
+  }
+  return renderer
 }
+
+const renderer = createRenderer()
 
 /**
  * Convert untrusted task text to display-only markdown HTML.
  * `async: false` is part of the contract: renderMarkdown always returns a
  * string and never exposes a Promise to the component.
  */
-export function renderMarkdown(text: string): string {
+export function renderMarkdown(text: string, options?: MarkdownOptions): string {
   return marked.parse(normalizeMarkdown(text), {
     gfm: true,
     breaks: true,
     async: false,
-    renderer,
+    renderer: options?.resolveFileMention === undefined
+      ? renderer
+      : createRenderer(options.resolveFileMention),
   })
 }
 
-export function Markdown({ text, className }: { text: string; className?: string }) {
+export function Markdown({
+  text,
+  className,
+  resolveFileMention,
+  onOpenFile,
+}: {
+  text: string
+  className?: string
+  resolveFileMention?: ResolveFileMention
+  onOpenFile?: (path: string) => void
+}) {
   const classes = ['dsh-atb-md', className].filter(Boolean).join(' ')
+  const handleClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    if (onOpenFile === undefined) return
+    const target = event.target
+    if (!(target instanceof Element)) return
+    const fileLink = target.closest<HTMLButtonElement>('[data-dsh-atb-file]')
+    if (fileLink === null || !event.currentTarget.contains(fileLink)) return
+    const path = fileLink.dataset.dshAtbFile
+    if (path === undefined || path.length === 0) return
+    event.stopPropagation()
+    onOpenFile(path)
+  }
   // SECURITY CONTRACT: renderMarkdown is the only producer allowed to reach
   // this dangerouslySetInnerHTML sink. It escapes raw HTML tokens and applies
   // URL scheme checks in the renderer above. Do not bypass this path.
-  return <div className={classes} dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
+  return (
+    <div
+      className={classes}
+      onClick={onOpenFile === undefined ? undefined : handleClick}
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(text, { resolveFileMention }) }}
+    />
+  )
 }

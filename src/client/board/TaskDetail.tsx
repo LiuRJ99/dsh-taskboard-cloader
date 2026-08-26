@@ -78,60 +78,95 @@ function isLocalFileCandidate(raw: string, assumePath: boolean): boolean {
     || /^[^:]+\.[^:]+$/.test(value)
 }
 
-/** Copy a displayed path without giving it any additional filesystem authority. */
-function copyPath(path: string): void {
-  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText !== undefined) {
-    void navigator.clipboard.writeText(path).catch(() => {})
-    return
+/** Resolve an inline Markdown code token to a safe file opener target. */
+function taskFileMentionResolver(
+  task: TaskRecord,
+  workspaces: readonly WorkspaceView[],
+  execution: ExecutionRecord | undefined,
+  scope: SessionScope | undefined,
+  onOpenFile: ((path: string) => void) | undefined,
+): ((value: string) => string | undefined) | undefined {
+  if (onOpenFile === undefined) return undefined
+  return value => {
+    if (!isLocalFileCandidate(value, false)) return undefined
+    const target = resolveTaskFilePath(value, task, workspaces, execution, scope)
+    return target?.available === true ? target.path : undefined
   }
-  if (typeof document === 'undefined') return
-  const input = document.createElement('textarea')
-  input.value = path
-  input.setAttribute('readonly', '')
-  input.style.position = 'fixed'
-  input.style.opacity = '0'
-  document.body.append(input)
-  input.select()
-  try { document.execCommand('copy') } catch { /* clipboard is best-effort */ }
-  input.remove()
 }
 
-/** Compact action buttons shared by report and dirty-file rows. */
-function FileActions({
+/** Render one report path as the shell's underlined open-file link. */
+function OpenFileLink({
+  raw,
   target,
   onOpenFile,
-  onReferenceFile,
 }: {
+  raw: string
   target: TaskFileTarget | undefined
   onOpenFile?: (path: string) => void
-  onReferenceFile?: (path: string) => void
 }): ReactNode {
-  if (onOpenFile === undefined && onReferenceFile === undefined) return null
+  if (onOpenFile === undefined) return <code className="dsh-atb-file-path">{raw}</code>
   if (target === undefined || !target.available) {
     const reason = target?.reason === 'outside-session-workspace'
-      ? '当前会话 workspace 外，暂不可打开或引用'
+      ? '当前会话 workspace 外，暂不可打开'
       : target?.reason === 'missing-session-cwd'
         ? '当前会话路径尚未就绪'
         : '无法解析文件路径'
     return (
-      <span className="dsh-atb-file-actions" onClick={event => event.stopPropagation()}>
+      <span className="dsh-atb-file-unavailable-wrap">
+        <code className="dsh-atb-file-path" title={target?.path ?? reason}>{raw}</code>
         <span className="dsh-atb-file-unavailable" title={target?.path ?? reason}>不可访问</span>
-        {target !== undefined && (
-          <button type="button" className="dsh-atb-file-action" onClick={() => copyPath(target.path)}>复制</button>
-        )}
       </span>
     )
   }
   return (
-    <span className="dsh-atb-file-actions" onClick={event => event.stopPropagation()}>
-      <button type="button" className="dsh-atb-file-action" onClick={() => copyPath(target.path)}>复制</button>
-      {onOpenFile !== undefined && (
-        <button type="button" className="dsh-atb-file-action" onClick={() => onOpenFile(target.path)}>打开</button>
-      )}
-      {onReferenceFile !== undefined && (
-        <button type="button" className="dsh-atb-file-action" onClick={() => onReferenceFile(target.path)}>引用</button>
-      )}
-    </span>
+    <button
+      type="button"
+      className="dsh-atb-file-link"
+      title={target.path}
+      aria-label={`打开文件 ${raw}`}
+      onClick={event => {
+        event.stopPropagation()
+        onOpenFile(target.path)
+      }}
+      onKeyDown={event => {
+        if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
+      }}
+    >
+      {raw}
+    </button>
+  )
+}
+
+/** The compact open action retained beside rows that also expand a diff. */
+function FileOpenAction({
+  target,
+  onOpenFile,
+}: {
+  target: TaskFileTarget | undefined
+  onOpenFile?: (path: string) => void
+}): ReactNode {
+  if (onOpenFile === undefined) return null
+  if (target === undefined || !target.available) {
+    const reason = target?.reason === 'outside-session-workspace'
+      ? '当前会话 workspace 外，暂不可打开'
+      : target?.reason === 'missing-session-cwd'
+        ? '当前会话路径尚未就绪'
+        : '无法解析文件路径'
+    return <span className="dsh-atb-file-unavailable" title={target?.path ?? reason}>不可访问</span>
+  }
+  return (
+    <button
+      type="button"
+      className="dsh-atb-file-action"
+      title={`打开文件 ${target.path}`}
+      aria-label={`打开文件 ${target.path}`}
+      onClick={event => {
+        event.stopPropagation()
+        onOpenFile(target.path)
+      }}
+    >
+      打开
+    </button>
   )
 }
 
@@ -144,7 +179,6 @@ function ReportFileRow({
   scope,
   assumePath,
   onOpenFile,
-  onReferenceFile,
 }: {
   raw: string
   task: TaskRecord
@@ -153,14 +187,12 @@ function ReportFileRow({
   scope?: SessionScope
   assumePath: boolean
   onOpenFile?: (path: string) => void
-  onReferenceFile?: (path: string) => void
 }): ReactNode {
   if (!isLocalFileCandidate(raw, assumePath)) return raw
   const target = resolveTaskFilePath(raw, task, workspaces, execution, scope)
   return (
     <span className="dsh-atb-file-row">
-      <code className="dsh-atb-file-path">{raw}</code>
-      <FileActions target={target} onOpenFile={onOpenFile} onReferenceFile={onReferenceFile} />
+      <OpenFileLink raw={raw} target={target} onOpenFile={onOpenFile} />
     </span>
   )
 }
@@ -251,9 +283,21 @@ function ChecklistBlock({ task, controller }: { task: TaskRecord; controller: Bo
  * original source. Raw mode deliberately uses React text children, never the
  * HTML sink, so reviewers can compare the stored Markdown safely.
  */
-function PreviewText({ text, className, raw }: { text: string; className: string; raw: boolean }): ReactNode {
+function PreviewText({
+  text,
+  className,
+  raw,
+  resolveFileMention,
+  onOpenFile,
+}: {
+  text: string
+  className: string
+  raw: boolean
+  resolveFileMention?: (value: string) => string | undefined
+  onOpenFile?: (path: string) => void
+}): ReactNode {
   if (raw) return <div className={`${className} dsh-atb-raw`}>{text}</div>
-  return <Markdown className={className} text={text} />
+  return <Markdown className={className} text={text} resolveFileMention={resolveFileMention} onOpenFile={onOpenFile} />
 }
 
 /**
@@ -266,18 +310,17 @@ function ReportBlock({
   workspaces,
   scope,
   onOpenFile,
-  onReferenceFile,
 }: {
   task: TaskRecord
   raw: boolean
   workspaces: readonly WorkspaceView[]
   scope?: SessionScope
   onOpenFile?: (path: string) => void
-  onReferenceFile?: (path: string) => void
 }) {
   const execution = [...task.executions].reverse().find(e => e.report !== undefined)
   const report = execution?.report
   if (execution === undefined || report === undefined) return null
+  const resolveFileMention = taskFileMentionResolver(task, workspaces, execution, scope, onOpenFile)
   const section = (label: string, rows: string[] | undefined, fileKind?: 'changed' | 'artifact'): ReactNode => rows !== undefined && rows.length > 0
     ? (
         <div className="dsh-atb-rpt-sec">
@@ -294,7 +337,6 @@ function ReportBlock({
                       scope={scope}
                       assumePath={fileKind === 'changed'}
                       onOpenFile={onOpenFile}
-                      onReferenceFile={onReferenceFile}
                     />
                   : row}
               </li>
@@ -306,14 +348,26 @@ function ReportBlock({
   return (
     <div className="dsh-atb-fieldcard" data-kind="report">
       <div className="dsh-atb-fieldcard-label">执行报告<span className="dsh-atb-cl-progress">由执行会话提交 · {fmtTime(execution.endedAt ?? execution.startedAt)}</span></div>
-      <PreviewText className="dsh-atb-rpt-summary" text={report.summary} raw={raw} />
+      <PreviewText
+        className="dsh-atb-rpt-summary"
+        text={report.summary}
+        raw={raw}
+        resolveFileMention={resolveFileMention}
+        onOpenFile={onOpenFile}
+      />
       {section('改动文件', report.changedFiles, 'changed')}
       {section('自验情况', report.checks)}
       {section('产物', report.artifacts, 'artifact')}
       {report.risk.length > 0 && (
         <div className="dsh-atb-rpt-sec">
           <div className="dsh-atb-rpt-label">剩余风险</div>
-          <PreviewText className="dsh-atb-rpt-risk" text={report.risk} raw={raw} />
+          <PreviewText
+            className="dsh-atb-rpt-risk"
+            text={report.risk}
+            raw={raw}
+            resolveFileMention={resolveFileMention}
+            onOpenFile={onOpenFile}
+          />
         </div>
       )}
     </div>
@@ -331,14 +385,12 @@ function IsolationBlock({
   workspaces,
   scope,
   onOpenFile,
-  onReferenceFile,
 }: {
   task: TaskRecord
   controller: BoardController
   workspaces: readonly WorkspaceView[]
   scope?: SessionScope
   onOpenFile?: (path: string) => void
-  onReferenceFile?: (path: string) => void
 }) {
   const { alert: showAlert, el: alertEl } = useAlert()
   const [confirmMerge, setConfirmMerge] = useState(false)
@@ -443,7 +495,7 @@ function IsolationBlock({
                     >
                       <code>{line.slice(0, 2)}</code> {filePath}
                     </button>
-                    <FileActions target={target} onOpenFile={onOpenFile} onReferenceFile={onReferenceFile} />
+                    <FileOpenAction target={target} onOpenFile={onOpenFile} />
                   </div>
                 )
               })}
@@ -532,7 +584,6 @@ export function TaskDetail({
   fullScreen = false,
   onToggleFullScreen,
   scope,
-  onReferenceFile,
   onOpenFile,
 }: {
   task: TaskRecord
@@ -541,7 +592,6 @@ export function TaskDetail({
   fullScreen?: boolean
   onToggleFullScreen?: () => void
   scope?: SessionScope
-  onReferenceFile?: (path: string) => void
   onOpenFile?: (path: string) => void
 }) {
   const [comment, setComment] = useState('')
@@ -556,6 +606,7 @@ export function TaskDetail({
   const { alert: showAlert, el: alertEl } = useAlert()
   const workspaces = controller.getSnapshot().workspaces
   const ws = workspaces.find(w => w.id === task.workspaceId)
+  const resolveFileMention = taskFileMentionResolver(task, workspaces, latestIsolated(task), scope, onOpenFile)
   const canRun = task.status !== 'in_progress' && task.status !== 'done' && task.status !== 'archived'
   const runningExecution = task.executions.find(e => e.outcome === 'running')
   const holder = task.status === 'in_progress' ? task.claimedBy : undefined
@@ -711,14 +762,26 @@ export function TaskDetail({
       {task.description.length > 0 && (
         <div className="dsh-atb-fieldcard">
           <div className="dsh-atb-fieldcard-label">描述</div>
-          <PreviewText className="dsh-atb-desc" text={task.description} raw={showRawMarkdown} />
+          <PreviewText
+            className="dsh-atb-desc"
+            text={task.description}
+            raw={showRawMarkdown}
+            resolveFileMention={resolveFileMention}
+            onOpenFile={onOpenFile}
+          />
         </div>
       )}
 
       {task.prompt.length > 0 && (
         <div className="dsh-atb-fieldcard" data-kind="prompt">
           <div className="dsh-atb-fieldcard-label">执行 Prompt</div>
-          <PreviewText className="dsh-atb-promptbox" text={task.prompt} raw={showRawMarkdown} />
+          <PreviewText
+            className="dsh-atb-promptbox"
+            text={task.prompt}
+            raw={showRawMarkdown}
+            resolveFileMention={resolveFileMention}
+            onOpenFile={onOpenFile}
+          />
         </div>
       )}
 
@@ -728,7 +791,6 @@ export function TaskDetail({
         workspaces={workspaces}
         scope={scope}
         onOpenFile={onOpenFile}
-        onReferenceFile={onReferenceFile}
       />
 
       <ReportBlock
@@ -737,7 +799,6 @@ export function TaskDetail({
         workspaces={workspaces}
         scope={scope}
         onOpenFile={onOpenFile}
-        onReferenceFile={onReferenceFile}
       />
 
       <ChecklistBlock task={task} controller={controller} />
@@ -792,7 +853,13 @@ export function TaskDetail({
                         <b>{c.threadId !== undefined ? `agent ${shortId(c.threadId)}` : '用户'}</b>
                         <span>{fmtTime(c.createdAt)}</span>
                       </div>
-                      <PreviewText className="dsh-atb-bubble-body" text={c.body} raw={showRawMarkdown} />
+                      <PreviewText
+                        className="dsh-atb-bubble-body"
+                        text={c.body}
+                        raw={showRawMarkdown}
+                        resolveFileMention={resolveFileMention}
+                        onOpenFile={onOpenFile}
+                      />
                     </div>
                   </div>
                 ))}

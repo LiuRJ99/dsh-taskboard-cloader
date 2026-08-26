@@ -1244,6 +1244,68 @@ describe('client half', () => {
     localStorage.clear()
   })
 
+  it('detail: report and comment paths use underlined open-only links', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
+
+    const task = {
+      id: 't-file-links', title: '文件链接', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'in_review' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 2, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [{ id: 'c1', body: '已改 `src/comment.ts`，命令 `npm test` 不应链接。', version: 1, createdAt: 2 }],
+      executions: [{
+        id: 'e1', trigger: 'manual' as const, startedAt: 0, endedAt: 3, outcome: 'succeeded' as const,
+        report: { summary: '参考 `src/summary.ts`', changedFiles: ['src/report.ts'], checks: [], artifacts: [], risk: '' },
+      }],
+    }
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [task] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const opened: string[] = []
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskDetail, {
+      task: task as never,
+      controller,
+      now: 1_000,
+      scope: { sessionId: 'session-a', cwd: '/p/a' } as never,
+      onOpenFile: (path: string) => { opened.push(path) },
+    }))
+    await new Promise(r => setTimeout(r, 10))
+
+    const reportLink = host.querySelector<HTMLButtonElement>('.dsh-atb-rpt-list .dsh-atb-file-link')!
+    const summaryLink = host.querySelector<HTMLButtonElement>('.dsh-atb-rpt-summary .dsh-atb-md-file-link')!
+    const commentLink = host.querySelector<HTMLButtonElement>('.dsh-atb-bubble-body .dsh-atb-md-file-link')!
+    expect(reportLink).not.toBeNull()
+    expect(reportLink.textContent).toBe('src/report.ts')
+    expect(reportLink.title).toBe('/p/a/src/report.ts')
+    expect(summaryLink.title).toBe('/p/a/src/summary.ts')
+    expect(commentLink.title).toBe('/p/a/src/comment.ts')
+    expect(host.querySelector('.dsh-atb-rpt-list .dsh-atb-file-actions')).toBeNull()
+    expect(host.querySelector('.dsh-atb-rpt-list .dsh-atb-file-action')).toBeNull()
+
+    reportLink.click()
+    summaryLink.click()
+    commentLink.click()
+    expect(opened).toEqual(['/p/a/src/report.ts', '/p/a/src/summary.ts', '/p/a/src/comment.ts'])
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
   it('detail: upper-right source toggle compares all Markdown preview fields', async () => {
     localStorage.clear()
     const React = await import('react')

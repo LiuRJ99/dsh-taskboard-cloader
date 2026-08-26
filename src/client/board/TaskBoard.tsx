@@ -46,8 +46,6 @@ export interface TaskBoardProps {
   scope?: SessionScope
   /** Whether the registered tab is currently visible. */
   visible?: boolean
-  /** Better Sidebar's @-reference callback. */
-  onReferenceFile?: (path: string) => void
   /** Open a validated absolute path in Better Sidebar's editor. */
   onOpenFile?: (path: string) => void
 }
@@ -56,7 +54,7 @@ export interface TaskBoardProps {
  * The board view root.
  * @param props - controller plus optional Better Sidebar integration callbacks.
  */
-export function TaskBoard({ controller, scope, visible, onReferenceFile, onOpenFile }: TaskBoardProps) {
+export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardProps) {
   const state = useSyncExternalStore(
     cb => controller.subscribe(cb),
     () => controller.getSnapshot(),
@@ -305,7 +303,6 @@ export function TaskBoard({ controller, scope, visible, onReferenceFile, onOpenF
             fullScreen={detailFullScreen}
             onToggleFullScreen={() => setDetailFullScreen(value => !value)}
             scope={scope}
-            onReferenceFile={onReferenceFile}
             onOpenFile={onOpenFile}
           />
         </div>

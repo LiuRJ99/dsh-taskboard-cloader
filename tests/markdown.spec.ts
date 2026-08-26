@@ -154,6 +154,22 @@ describe('markdown display renderer', () => {
     expect(link.getAttribute('rel')).toBeNull()
   })
 
+  it('renders resolved inline file mentions as underlined open-only buttons', () => {
+    const html = renderMarkdown('改动 `src/a.ts`，命令 `npm test` 不应变成文件链接。', {
+      resolveFileMention: value => value === 'src/a.ts' ? '/repo/app/src/a.ts' : undefined,
+    })
+    const document = domFor(html)
+    const link = document.querySelector<HTMLButtonElement>('.dsh-atb-md-file-link')!
+
+    expect(link).not.toBeNull()
+    expect(link.textContent).toBe('src/a.ts')
+    expect(link.dataset.dshAtbFile).toBe('/repo/app/src/a.ts')
+    expect(link.getAttribute('title')).toBe('/repo/app/src/a.ts')
+    expect(document.querySelector('code')?.textContent).toBe('npm test')
+    expect(html).not.toContain('复制')
+    expect(html).not.toContain('引用')
+  })
+
   it('keeps empty input empty and wraps plain text as a paragraph', () => {
     expect(renderMarkdown('')).toBe('')
     expect(renderMarkdown('plain text')).toBe('<p>plain text</p>\n')

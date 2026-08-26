@@ -36,19 +36,16 @@ describe('Better Sidebar adapter', () => {
     expect(registeredDisposer).toEqual(expect.any(Function))
 
     const scope = { sessionId: 'session-a', cwd: '/repo/app' }
-    const referenced = vi.fn()
     const wrapper = registered[0]!.component({
       ctx: { get: () => service },
       scope,
       visible: true,
-      onReferenceFile: referenced,
     } as never) as { props: { children: { props: { onOpenFile?: (path: string) => void; onReferenceFile?: (path: string) => void } } } }
     const board = wrapper.props.children
     board.props.onOpenFile!('/repo/app/src/index.ts')
-    board.props.onReferenceFile!('/repo/app/src/index.ts')
 
+    expect(board.props.onReferenceFile).toBeUndefined()
     expect(openFile).toHaveBeenCalledWith(scope, '/repo/app/src/index.ts', 'index.ts')
-    expect(referenced).toHaveBeenCalledWith('/repo/app/src/index.ts')
   })
 
   it('reports unavailable when the optional companion service is absent', () => {

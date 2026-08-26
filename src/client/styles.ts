@@ -721,6 +721,30 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-rpt-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.55; word-break: break-all; }
 .dsh-atb-file-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .dsh-atb-file-path { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
+/* Match DSH's native file-tool affordance: the path itself is the only
+   visible open action, with the same quiet underline treatment. */
+.dsh-atb-file-link {
+  display: inline-block; min-width: 0; max-width: 100%; overflow-wrap: anywhere;
+  font: inherit; text-align: left; color: var(--dsw-alias-label-secondary, inherit);
+  text-decoration: underline; text-decoration-color: var(--dsw-alias-label-quaternary, rgba(128,128,128,.55));
+  text-underline-offset: 3px; cursor: pointer; background: none; border: none; margin: 0; padding: 0;
+}
+.dsh-atb-file-link:hover { color: var(--dsw-alias-label-primary, inherit); text-decoration-color: currentColor; }
+.dsh-atb-file-row > .dsh-atb-file-link { flex: 1 1 auto; }
+.dsh-atb-file-link:focus-visible,
+.dsh-atb-md-file-link:focus-visible {
+  outline: 2px solid var(--dsw-alias-border-l3, var(--dsw-alias-brand-primary, #3e63dd));
+  outline-offset: 2px; border-radius: 2px;
+}
+/* Inline-code paths in comments, descriptions, prompts, and report prose use
+   the same open-only affordance while retaining the surrounding Markdown flow. */
+.dsh-atb-md-file-link {
+  display: inline; font: inherit; color: var(--dsw-alias-label-secondary, inherit);
+  text-decoration: underline; text-decoration-color: var(--dsw-alias-label-quaternary, rgba(128,128,128,.55));
+  text-underline-offset: 3px; cursor: pointer; background: none; border: none; margin: 0; padding: 0;
+}
+.dsh-atb-md-file-link:hover { color: var(--dsw-alias-label-primary, inherit); text-decoration-color: currentColor; }
+.dsh-atb-file-unavailable-wrap { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; }
 .dsh-atb-file-actions { display: inline-flex; align-items: center; gap: 4px; flex: none; white-space: nowrap; }
 .dsh-atb-file-action {
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3)); border-radius: 5px;

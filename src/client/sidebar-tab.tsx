@@ -73,7 +73,7 @@ export function registerBetterSidebarTab(
     icon: (size: number) => (
       <span aria-hidden="true" style={{ fontSize: size, lineHeight: 1 }}>▦</span>
     ),
-    component: ({ ctx: sidebarCtx, scope, visible, onReferenceFile }: TabComponentProps) => {
+    component: ({ ctx: sidebarCtx, scope, visible }: TabComponentProps) => {
       const liveService = getService(sidebarCtx)
       const onOpenFile = liveService?.features.includes('openFile') === true
         ? (path: string): void => { liveService.openFile(scope, path, fileTitle(path)) }
@@ -88,7 +88,6 @@ export function registerBetterSidebarTab(
             controller={controller}
             scope={scope}
             visible={visible}
-            onReferenceFile={onReferenceFile}
             onOpenFile={onOpenFile}
           />
         </div>
