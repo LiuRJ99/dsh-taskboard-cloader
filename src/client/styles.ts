@@ -436,9 +436,9 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-bubble { display: flex; gap: 8px; }
 .dsh-atb-bubble-avatar {
   flex: none; width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
-  font-size: 13px; background: var(--dsw-bg-inset, rgba(128,128,128,.12));
+  overflow: hidden;
 }
-.dsh-atb-bubble[data-from="agent"] .dsh-atb-bubble-avatar { background: rgba(142,78,198,.15); }
+.dsh-atb-bubble-avatar svg { width: 100%; height: 100%; display: block; border-radius: inherit; }
 .dsh-atb-bubble-main {
   flex: 1; min-width: 0;
   border-radius: 10px; padding: 6px 10px;

@@ -15,6 +15,7 @@ import type { ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
 import { cleanReportedPath, isAbsolutePath, resolveTaskFilePath, type TaskFileTarget } from '../file-paths.ts'
 import { canTransition, checklistProgress } from '../../shared/protocol.ts'
 import { useAlert } from './AlertModal.tsx'
+import { InitialAvatar } from './Avatar.tsx'
 import { Markdown } from '../markdown.tsx'
 import { fmtTime, isStaleClaim } from './format.ts'
 import { MOVE_LABEL, OUTCOME_LABEL, STATUS_LABEL, URGENCY_LABEL } from './labels.ts'
@@ -845,24 +846,30 @@ export function TaskDetail({
           ? <div className="dsh-atb-empty2">暂无评论 — agent 交接时会在这里汇报改动与验证结果</div>
           : (
               <div className="dsh-atb-commentlist">
-                {task.comments.map(c => (
-                  <div key={c.id} className="dsh-atb-bubble" data-from={c.threadId !== undefined ? 'agent' : 'user'}>
-                    <div className="dsh-atb-bubble-avatar">{c.threadId !== undefined ? '🤖' : '👤'}</div>
-                    <div className="dsh-atb-bubble-main">
-                      <div className="dsh-atb-bubble-meta">
-                        <b>{c.threadId !== undefined ? `agent ${shortId(c.threadId)}` : '用户'}</b>
-                        <span>{fmtTime(c.createdAt)}</span>
+                {task.comments.map(c => {
+                  const isAgent = c.threadId !== undefined
+                  const modelName = isAgent ? task.model?.model : undefined
+                  return (
+                    <div key={c.id} className="dsh-atb-bubble" data-from={isAgent ? 'agent' : 'user'}>
+                      <div className="dsh-atb-bubble-avatar">
+                        <InitialAvatar name={modelName} isUser={!isAgent} size={26} />
                       </div>
-                      <PreviewText
-                        className="dsh-atb-bubble-body"
-                        text={c.body}
-                        raw={showRawMarkdown}
-                        resolveFileMention={resolveFileMention}
-                        onOpenFile={onOpenFile}
-                      />
+                      <div className="dsh-atb-bubble-main">
+                        <div className="dsh-atb-bubble-meta">
+                          <b>{isAgent ? `agent ${shortId(c.threadId)}` : '用户'}</b>
+                          <span>{fmtTime(c.createdAt)}</span>
+                        </div>
+                        <PreviewText
+                          className="dsh-atb-bubble-body"
+                          text={c.body}
+                          raw={showRawMarkdown}
+                          resolveFileMention={resolveFileMention}
+                          onOpenFile={onOpenFile}
+                        />
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
         <div className="dsh-atb-composer">
