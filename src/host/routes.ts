@@ -44,6 +44,7 @@ import {
 import { WORKTREE_DIR, worktreePathOf, type GitFace } from './git.ts'
 import type { TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
+import { registerMermaidBundleRoute } from './mermaid-route.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
 import type { TaskStore } from './store.ts'
 import { ERR, ToolError } from './tools.ts'
@@ -1057,6 +1058,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
   const disposers = [
     ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }),
     ctx.webServer.register({ kind: 'exact', path: SSE_PATH, handler: sse }),
+    registerMermaidBundleRoute(ctx),
   ]
   return () => {
     unsubscribeBroadcast()

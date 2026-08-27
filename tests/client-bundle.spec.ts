@@ -44,6 +44,14 @@ function loadBundledRenderer(): (text: string) => string {
 }
 
 describe('wrapped client bundle', () => {
+  it('keeps Mermaid out of the core bundle and emits a separate lazy chunk', () => {
+    const core = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+    const chunk = readFileSync(new URL('../lib/client-mermaid.js', import.meta.url), 'utf8')
+    expect(core).not.toContain('globalThis.__dshTaskboardChunks__.mermaid = () => {')
+    expect(chunk).toContain('globalThis.__dshTaskboardChunks__.mermaid = () => {')
+    expect(chunk.length).toBeGreaterThan(1_000_000)
+  })
+
   it('preserves multiline list labels and every GFM table row', () => {
     const renderMarkdown = loadBundledRenderer()
     const html = renderMarkdown([

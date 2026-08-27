@@ -1,5 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { marked, Renderer, type Tokens } from 'marked'
+import { hasMermaidFence } from './mermaid-blocks.ts'
+import { MermaidMarkdown } from './mermaid.tsx'
 
 /** Escape every character that can introduce or alter an HTML fragment. */
 export function escapeHtml(text: string): string {
@@ -230,14 +232,22 @@ export function Markdown({
     event.stopPropagation()
     onOpenFile(path)
   }
-  // SECURITY CONTRACT: renderMarkdown is the only producer allowed to reach
-  // this dangerouslySetInnerHTML sink. It escapes raw HTML tokens and applies
-  // URL scheme checks in the renderer above. Do not bypass this path.
+  const html = renderMarkdown(text, { resolveFileMention })
+  if (hasMermaidFence(text)) {
+    // Mermaid is enhanced after the same single Markdown pass. The Mermaid
+    // component keeps every source block visible until a sanitized SVG is
+    // ready, and leaves it in place when loading or rendering fails.
+    return <MermaidMarkdown html={html} className={classes} onOpenFile={onOpenFile} />
+  }
+  // SECURITY CONTRACT: for ordinary Markdown, renderMarkdown is the only
+  // producer allowed to reach this dangerouslySetInnerHTML sink. It escapes
+  // raw HTML tokens and applies URL scheme checks in the renderer above. The
+  // Mermaid path has its own sanitized-SVG sink; do not bypass either path.
   return (
     <div
       className={classes}
       onClick={onOpenFile === undefined ? undefined : handleClick}
-      dangerouslySetInnerHTML={{ __html: renderMarkdown(text, { resolveFileMention }) }}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   )
 }

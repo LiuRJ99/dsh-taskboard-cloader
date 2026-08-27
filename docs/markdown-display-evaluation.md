@@ -98,12 +98,12 @@
 
 ### 6.1 改动清单（已实施）
 
-1. **新增依赖**：`marked@^18`（唯一运行时依赖，零传递依赖）。
+1. **新增依赖**：`marked@^18` 保持为普通 Markdown runtime；`mermaid@^11` 只进入独立的 `lib/client-mermaid.js` 浏览器 chunk，不进入核心 `client.js`。
 2. **新增 `src/client/markdown.tsx`**：
    - `escapeHtml(text)`：转义 `& < > " '`；
    - `renderMarkdown(text)`：对 CRLF、已观察到的列表段落标签和空行分隔的 GFM 表格行做局部归一化，再调用 `marked.parse(normalizedText, { gfm: true, breaks: true, async: false })`；
    - 覆写 `renderer.html`、`renderer.code`、`renderer.codespan`、`renderer.link` / `renderer.image`：原始 HTML/代码内容/属性转义，URL scheme 白名单；外链增加 `target=_blank rel=noopener noreferrer`；
-   - `<Markdown text className>` 组件：`dangerouslySetInnerHTML` 出口 + 安全契约注释。
+   - `<Markdown text className>` 组件：普通内容继续走受保护的 `dangerouslySetInnerHTML` 出口；检测到 Mermaid fence 时交给详情专用增强器，源码保持可见直到安全 SVG 完成。
 3. **`src/client/board/TaskDetail.tsx`** 替换 5 处（§2.1 表格 #1–#5）为 `<Markdown text={…} />`。
 4. **`src/client/styles.ts`** 新增 `.dsh-atb-md` 作用域样式：`p / h1–h4 / ul,ol,li / code / pre（围栏代码块底色+横向滚动）/ a / blockquote / table,th,td / hr`；字号继承各自容器（desc 13px、bubble 12.5px 等），配色用 DSH 设计变量（如 `var(--dsw-alias-fill-tertiary)` 作代码底色）。
 5. **单测**（`tests/markdown.spec.ts`，vitest 纯函数级）：
@@ -111,15 +111,16 @@
    - XSS：`[x](javascript:alert(1))` 的 href 被丢弃；
    - GFM：表格产出 `<table>`、删除线、裸 URL 自动链接；覆盖空行分隔的多行表格；
    - `breaks: true` 单换行、空字符串/纯文本、链接/图片标题与查询参数、嵌套 blockquote、代码转义、section label 与合法列表续行回归。
-6. **README**：changelog 记 0.6.0，说明渲染范围与安全契约。
-7. **验证**：`npm run typecheck`、Markdown/客户端针对性测试（42 个用例）和 `npm run build` 已通过；全量 `npm test` 中 routes 的 `beforeAll` 在 10 秒超时，未能声称全量通过；本地 GUI 视觉回归仍待执行。
+6. **README**：changelog 记 0.6.0，说明普通 Markdown 与详情 Mermaid 懒加载范围及安全契约。
+7. **验证**：`npm run typecheck`、全量 `npm test`（17 个测试文件、248 个用例）和 `npm run build` 已通过；本地 GUI 已验证含 Mermaid 内容的详情在 chunk route 不可用时保留源码并显示失败提示，Host 重启后仍需完成一次成功 SVG 的视觉回归。
+8. **Mermaid 增量**：新增 `src/client/mermaid-blocks.ts`、`mermaid-chunk-loader.ts`、`mermaid-sanitize.ts`、`mermaid.tsx`、`src/host/mermaid-route.ts` 与对应单测；核心 bundle 不包含 Mermaid runtime，独立 chunk 约 6.78 MB（未压缩）。
 
 ### 6.2 工作量与节奏
 
-- 预估 **0.5–1 人日**（含测试与手测）；无宿主侧改动、无协议/存储改动（纯展示层）。
+- 原普通 Markdown 预估 **0.5–1 人日**；本次详情 Mermaid 懒加载实际按 **3–4 人日**（含独立 chunk、Host 静态路由、安全清洗、失败回退、测试与 GUI 回归）实施；无协议/存储改动。
 - 发布节奏：**0.6.0 minor**（新特性），沿用现有打包/发布流程。
 - 风险点：
-  - bundle +44KB（+20%）— 懒加载模块，可接受；若在意可对 client 构建开 minify（独立决策，不在本评估范围）。
+  - 核心 bundle 相比普通 Markdown 基线增加约 25KB；Mermaid runtime 独立 chunk 约 6.78MB 未压缩，仅在详情命中 Mermaid fence 时加载；若在意首图等待，可后续增加 chunk 压缩/缓存策略（不改变当前回退契约）。
   - 渲染与「复制原文」体验存在差异 — 已提供原文/渲染切换，复制行为仍沿用现有任务配置复制逻辑。
   - 老数据里被转义的 HTML 会显示为实体文本 — 属预期行为（安全优先）。
 
@@ -127,9 +128,9 @@
 
 ## 7. 结论
 
-**推荐：方案 A（marked v18 + 原始 HTML renderer 转义 + 链接白名单），已覆盖评论/报告/描述/Prompt，并补充原文切换、列表段落边界和多行表格兼容；0.6.0 发布前仍需完成详情页视觉回归。**
+**推荐：普通内容继续采用方案 A（marked v18 + 原始 HTML renderer 转义 + 链接白名单），详情中的 Mermaid 采用独立 runtime + strict SVG 清洗 + 失败保留源码；Host 重启后仍需完成一次成功 SVG 的视觉回归。**
 
-理由一句话：唯一「体积增量小（+44KB）+ 能力覆盖 agent 高频用法（GFM 表格/列表/代码）+ XSS 面最小（不放行原文 HTML）+ 零传递依赖」的组合；markdown-it 与 react-markdown 能力冗余或过重，自研渲染器无法覆盖表格，宿主复用已确认不可行。
+理由一句话：普通详情保持低额外加载，只有命中 Mermaid fence 才承担约 6.78MB runtime 的一次性请求；安全边界仍由 Markdown renderer 与 Mermaid SVG 二次清洗共同承担，任何加载/解析/渲染异常都不会丢失原文。
 
 ---
 
@@ -137,9 +138,12 @@
 
 | 项目 | 数值 | 取证方式 |
 |------|------|----------|
-| `lib/client.cjs` 当前体积 | 288,463 B | `wc -c lib/client.cjs` |
-| marked@18.0.11 ESM 文件 | 43,800 B（零依赖） | `npm pack` 后量 `package/lib/marked.esm.js` |
+| `lib/client.cjs` 普通 Markdown 基线体积 | 288,463 B | 实施前 `wc -c lib/client.cjs` |
+| `lib/client.cjs` 当前核心体积 | 约 320,000 B | 实施后构建输出 |
+| `lib/client-mermaid.js` 当前体积 | 约 6.78 MB 未压缩 | 实施后构建输出；详情命中 Mermaid 时按需请求 |
+| marked@18.0.11 ESM 文件 | 43,800 B（普通 Markdown 依赖） | `npm pack` 后量 `package/lib/marked.esm.js` |
+| mermaid@11.16.1 | 仅作为构建输入，runtime 独立打入 lazy chunk | `package.json`、`tsdown.client.config.ts` |
 | markdown-it@15.0.0 dist | 117,506 B（+mdurl/linkify-it） | `npm pack` 后量 `package/dist/markdown-it.mjs` |
 | react-markdown@10.1.0 本体 | 52,637 B（依赖链另计） | `npm view dist.unpackedSize` |
 | 宿主可复用渲染 API | 无 | 检索 `@deepseek-ai/dsh/lib/*.js` 无 markdown 标识；宿主依赖清单无相关包 |
-| 插件现有 markdown 依赖 | `marked@18.0.11` | `package.json` / `package-lock.json` |
+| 插件现有 markdown 依赖 | `marked@18.0.11` + `mermaid@11.16.1`（后者仅 lazy chunk） | `package.json` / `package-lock.json` |

@@ -351,6 +351,21 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
   display: block; padding: 0; border: 0; background: transparent;
   white-space: inherit; word-break: normal; overflow-wrap: normal;
 }
+.dsh-atb-mermaid-mount { min-width: 0; max-width: 100%; }
+.dsh-atb-mermaid-svg {
+  min-width: 0; max-width: 100%; overflow-x: auto; overflow-y: hidden;
+  margin: .7em 0; padding: 8px 10px; box-sizing: border-box; border-radius: 7px;
+  background: var(--dsw-alias-fill-tertiary, var(--dsw-bg-inset, rgba(128,128,128,.08)));
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.22));
+  -webkit-overflow-scrolling: touch;
+}
+.dsh-atb-mermaid-svg svg { display: block; width: auto; max-width: none; height: auto; margin: 0 auto; }
+.dsh-atb-mermaid-fallback { min-width: 0; max-width: 100%; }
+.dsh-atb-mermaid-error {
+  margin: .55em 0 .35em; color: var(--dsw-alias-state-error-primary, #e5484d);
+  font-size: .9em; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.dsh-atb-mermaid-source { margin-top: .45em; }
 .dsh-atb-md a {
   color: var(--dsw-alias-state-business-primary, #3e63dd); text-decoration: none; word-break: break-word;
 }
