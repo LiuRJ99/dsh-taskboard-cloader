@@ -1683,4 +1683,261 @@ describe('client half', () => {
     controller.dispose()
     localStorage.clear()
   })
+
+  it('TaskCard & TaskDetail: one-click session jump for executed/running tasks', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskCard } = await import('../src/client/board/TaskCard.tsx')
+    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
+    const { createSessionJumper } = await import('../src/client/session-jump.ts')
+
+    const taskLive = {
+      id: 't-live', title: 'Live task', description: 'desc', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'in_progress' as const, blocked: false,
+      claimedBy: 'session-taskboard-t-live-11112222',
+      execution: { mode: 'claim' as const }, version: 2, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [{
+        id: 'e-1', trigger: 'manual' as const, startedAt: 0, outcome: 'running' as const,
+        sessionId: 'session-taskboard-t-live-11112222',
+      }],
+    }
+    const taskArchived = {
+      id: 't-arch', title: 'Archived task', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'done' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 3, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [{
+        id: 'e-2', trigger: 'manual' as const, startedAt: 0, endedAt: 10, outcome: 'succeeded' as const,
+        sessionId: 'session-taskboard-t-arch-33334444',
+      }],
+    }
+    const taskNoSession = {
+      id: 't-none', title: 'No session task', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'todo' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    }
+
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [taskLive, taskArchived, taskNoSession] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+
+    const opened: string[] = []
+    const sessions = {
+      open: (id: string) => { opened.push(id) },
+      refresh: async () => {},
+      list: { getSnapshot: () => ({ byId: { 'session-taskboard-t-live-11112222': {}, 'session-taskboard-t-arch-33334444': {} } }) },
+    }
+    const workspaces = { list: { getSnapshot: () => ({ archivedSessionIds: ['session-taskboard-t-arch-33334444'] }) } }
+
+    controller.installSessionJumper(createSessionJumper({
+      getSessions: () => sessions as never,
+      getWorkspaces: () => workspaces as never,
+    }))
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    // 1. TaskCard without executions has NO session jump button
+    let host = document.createElement('div')
+    document.body.append(host)
+    let root = createRoot(host)
+    root.render(React.createElement(TaskCard, { task: taskNoSession as never, controller }))
+    await new Promise(r => setTimeout(r, 10))
+    expect(host.querySelector('.dsh-atb-card-session')).toBeNull()
+    root.unmount()
+    host.remove()
+
+    // 2. TaskCard with live session has .dsh-atb-card-session button
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    controller.openBoard()
+    const alerts: string[] = []
+    root.render(React.createElement(TaskCard, {
+      task: taskLive as never,
+      controller,
+      onAlert: (msg: string) => alerts.push(msg),
+    }))
+    await new Promise(r => setTimeout(r, 10))
+
+    const sessionBtn = host.querySelector<HTMLButtonElement>('.dsh-atb-card-session')!
+    expect(sessionBtn).not.toBeNull()
+    expect(sessionBtn.textContent).toContain('t-live-1')
+    expect(sessionBtn.textContent).toContain('↗')
+
+    // Click on the session button: jumps to session, closes board, and does NOT select the card
+    sessionBtn.click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(opened).toEqual(['session-taskboard-t-live-11112222'])
+    expect(controller.getSnapshot().boardOpen).toBe(false)
+    expect(controller.getSnapshot().selectedId).toBeUndefined()
+    root.unmount()
+    host.remove()
+
+    // 3. TaskCard with archived session alerts when clicked
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    controller.openBoard()
+    root.render(React.createElement(TaskCard, {
+      task: taskArchived as never,
+      controller,
+      onAlert: (msg: string) => alerts.push(msg),
+    }))
+    await new Promise(r => setTimeout(r, 10))
+    const archBtn = host.querySelector<HTMLButtonElement>('.dsh-atb-card-session')!
+    expect(archBtn).not.toBeNull()
+    archBtn.click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]).toContain('该会话已归档')
+    expect(controller.getSnapshot().boardOpen).toBe(true) // board stays open on non-opened result
+    root.unmount()
+    host.remove()
+
+    // 4. TaskDetail renders top session button and clickable holder chip
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    controller.openBoard()
+    root.render(React.createElement(TaskDetail, {
+      task: taskLive as never,
+      controller,
+      now: 1_000,
+    }))
+    await new Promise(r => setTimeout(r, 10))
+
+    const topSessionBtn = host.querySelector<HTMLButtonElement>('.dsh-atb-detail-session')!
+    expect(topSessionBtn).not.toBeNull()
+    expect(topSessionBtn.textContent).toContain('跳转会话')
+
+    const holderChipBtn = host.querySelector<HTMLButtonElement>('button.dsh-atb-chip-btn')!
+    expect(holderChipBtn).not.toBeNull()
+    expect(holderChipBtn.textContent).toContain('t-live-1')
+
+    // Click top session button in TaskDetail
+    topSessionBtn.click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(opened).toEqual(['session-taskboard-t-live-11112222', 'session-taskboard-t-live-11112222'])
+    expect(controller.getSnapshot().boardOpen).toBe(false)
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('TaskFormModal: remembers last chosen model and supports reasoningEffort', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskFormModal, LAST_MODEL_KEY, saveLastModel } = await import('../src/client/board/TaskFormModal.tsx')
+
+    // 1. Pre-seed localStorage with last model
+    saveLastModel({ provider: 'deepseek', model: 'deepseek-reasoner', reasoningEffort: 'high' })
+
+    const createdPayloads: unknown[] = []
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      create: async (body: unknown) => {
+        createdPayloads.push(body)
+        return { id: 't-new', version: 1 }
+      },
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+    controller.installModelCatalog(async () => [
+      {
+        provider: 'deepseek',
+        model: 'deepseek-reasoner',
+        name: 'DeepSeek Reasoner',
+        reasoning: {
+          efforts: [
+            { id: 'low', name: '低 (Low)' },
+            { id: 'medium', name: '中 (Medium)' },
+            { id: 'high', name: '高 (High)' },
+          ],
+          defaultEffort: 'medium',
+        },
+      },
+      {
+        provider: 'openai',
+        model: 'gpt-4o',
+        name: 'GPT-4o',
+      },
+    ])
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    // 2. Open TaskFormModal in create mode
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    controller.setComposer(true)
+    root.render(React.createElement(TaskFormModal, { controller }))
+    await new Promise(r => setTimeout(r, 50))
+
+    // Verify Title input and pre-filled Model & Reasoning select
+    const titleInput = host.querySelector<HTMLInputElement>('input[placeholder="一句话说清要做什么"]')!
+    expect(titleInput).not.toBeNull()
+    const selects = host.querySelectorAll('select')
+    // Select 0: Workspace, Select 1: Model, Select 2: Reasoning Effort
+    const modelSelect = selects[1] as HTMLSelectElement
+    expect(modelSelect.value).toBe(JSON.stringify({ provider: 'deepseek', model: 'deepseek-reasoner' }))
+
+    const effortSelect = selects[2] as HTMLSelectElement
+    expect(effortSelect).not.toBeNull()
+    expect(effortSelect.value).toBe('high')
+
+    // Change Title and Submit
+    const titleSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    titleSetter?.call(titleInput, 'My new reasoning task')
+    titleInput.dispatchEvent(new Event('input', { bubbles: true }))
+    titleInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+    // Change effort to 'low'
+    const selectSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set
+    selectSetter?.call(effortSelect, 'low')
+    effortSelect.dispatchEvent(new Event('change', { bubbles: true }))
+
+    await new Promise(r => setTimeout(r, 20))
+
+    // Click submit button (创建任务)
+    const submitBtn = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn'))
+      .find(b => b.textContent === '创建任务')!
+    expect(submitBtn).not.toBeNull()
+    expect(submitBtn.disabled).toBe(false)
+    submitBtn.click()
+    await new Promise(r => setTimeout(r, 30))
+
+    expect(createdPayloads).toHaveLength(1)
+    const payload = createdPayloads[0] as { title: string; model?: { provider: string; model: string; reasoningEffort?: string } }
+    expect(payload.title).toBe('My new reasoning task')
+    expect(payload.model).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-reasoner',
+      reasoningEffort: 'low',
+    })
+
+    // Verify localStorage was updated to the new choice
+    expect(JSON.parse(localStorage.getItem(LAST_MODEL_KEY)!)).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-reasoner',
+      reasoningEffort: 'low',
+    })
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
 })
