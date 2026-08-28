@@ -130,9 +130,11 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - Tasks belong to projects: claiming validates session ownership — no snatching across projects
 - Three-color urgency (urgent red / normal purple / relaxed blue) with filtering and color bars; search (title / ID) and in-column sorting; filters and sorting persist
 - Status-colored dots on column headers: backlog gray / todo blue / in-progress orange / in-review purple / done green / deleted red
-- Create/edit modal: project, model, urgency, execution mode, cron with live validation & next-run preview, isolation toggle, checklist editor
+- Create/edit modal: project, model (with reasoning effort), urgency, execution mode, cron with live validation & next-run preview, isolation toggle, checklist editor
 - Detail panel: status transitions (*done* is human-only; completing with unchecked items asks for confirmation and shows the count), agent/user comment thread, execution history (newest first; session IDs open the execution session on click; deleted/archived targets get distinct notices), stop execution, worktree isolation block (branch / commits / change stats / merge & cleanup), execution report block, acceptance checklist block
 - Quick actions on In Review cards: "✓ Done" one-click accept, "✗ Send back" returns to Todo with an optional reason agents read before starting
+- **One-click session jump (0.5.4)**: task cards get a "🤖 sessionId ↗" button, the detail panel a "🤖 Jump to session" button, and the holder chip is clickable too — straight to the running (or most recent) execution's session (the board collapses over it); archived / deleted / unavailable sessions each get a precise notice
+- **Remember the last model (0.5.4)**: the new-task form brings back the last chosen model and reasoning effort (template prefill and editing are unaffected)
 - **DoD acceptance checklists (0.4.0)**: define acceptance criteria at creation (≤30 items); agents add/tick items via `taskboard_checklist` (with evidence notes); users tick them directly in the detail panel; unchecked items glow red while In Review and the card shows a "☑ n/m" badge (red until all ticked); checklist editing manages the whole group in the form (tick states and evidence preserved)
 - **Structured execution reports (0.4.0)**: agents finish with `taskboard_execution_report` (summary / changed files / checks / artifacts / remaining risks), auto-attached to the current execution; rendered side-by-side in the In Review detail panel; the opening protocol makes the order explicit (report → comment → move to In Review)
 - **JSON import (0.4.0)**: "⬆ Import" in the toolbar picks a backup file → dry-run preview (added / overwritten / invalid breakdown) → merge (upsert by id) or full replace (auto-backup of the current ledger first + double confirmation); JSON exports restore directly in the same format
@@ -215,6 +217,13 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
+
+### 0.5.4
+
+- **One-click session jump from the card & task detail: [@jw5555555555](https://github.com/jw5555555555) ([#11](https://github.com/cloader/dsh-taskboard/pull/11))**: a "🤖 sessionId ↗" button on cards, a "🤖 Jump to session" button on top of the detail panel, and a clickable holder chip — straight to the running (or most recent) execution's session (the board collapses over it); archived / deleted / unavailable sessions each get distinct notices
+- **New-task form remembers the last model, with reasoning-effort support: [@jw5555555555](https://github.com/jw5555555555) ([#11](https://github.com/cloader/dsh-taskboard/pull/11))**: create mode brings back the last chosen model and effort (template prefill and editing are unaffected); a model can pin a reasoning effort (e.g. low/medium/high) passed down to the execution session; reasoning-capable models read their available efforts from the DSH model catalog
+- **Column sort gains "by title": [@Amoss-1](https://github.com/Amoss-1) ([#4](https://github.com/cloader/dsh-taskboard/pull/4))**: numeric-aware comparison keeps numeric prefixes in true numeric order (`01 < 02 < 10 < 90` — plain string comparison would put `10` before `02`); the choice persists with the rest of the view state
+- Interface polish: selects and inputs adapt to light/dark themes (DSH theme variables + color-scheme); template manager dialog layout improvements
 
 ### 0.5.3
 

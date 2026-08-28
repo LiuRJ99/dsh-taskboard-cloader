@@ -840,6 +840,18 @@ describe('client half', () => {
     state = controller.getSnapshot()
     expect(filterTasks(state, tasks).map(t => t.id)).toEqual(['t-doc', 't-slow', 't-fix'])
 
+    // Sort by title: numeric-aware comparison, so numeric prefixes order 01 < 02 < 10 < 90.
+    controller.setSortBy('title')
+    state = controller.getSnapshot()
+    const numbered = [
+      mkTask('t-10', '10 晚间巡检', 'normal', 400),
+      mkTask('t-02', '02 上午修复', 'normal', 300),
+      mkTask('t-01', '01 晨会', 'normal', 500),
+      mkTask('t-90', '90 收尾', 'normal', 600),
+    ]
+    expect(filterTasks(state, numbered).map(t => t.id)).toEqual(['t-01', 't-02', 't-10', 't-90'])
+    controller.setSortBy('updated')
+
     // Filters + sort persist to localStorage and hydrate a fresh controller.
     controller.setWorkspaceFilter('ws-a')
     const persisted = JSON.parse(localStorage.getItem('dsh-taskboard-view-v1')!) as { workspaceId?: string; sortBy?: string }
