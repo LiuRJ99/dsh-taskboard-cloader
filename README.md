@@ -9,6 +9,7 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 
 - **闭环协作**：人建卡 → agent 认领执行 → 结构化报告 → 人验收（✓ 完成 / ✗ 退回附原因）
 - **10 个 `taskboard_*` agent 工具** + 代码级协议闸：agent 永远移不到 done、任务被持有时不可抢、跨项目不可认领
+- **可选 Lazy Gate 适配**：在 `dsh-tool-lazy-gate` 中启用 `taskboard` 后，用户显式输入 `/taskboard` 才会解锁 `taskboard_*` 工具和 `plugin:dsh-taskboard` 协议段；映射关系由本插件 Skill 的 metadata 发布
 - **执行**：手动或 cron 定时（host 侧调度，浏览器关了照跑）；每次执行在任务项目内开全新会话，可指定模型与 preset
 - **Git Worktree 隔离**：每次执行独立 worktree + 任务分支，验收时一键合并；非 git 项目自动降级
 - **验收效率**：DoD 验收清单（agent 勾选附证据）、结构化执行报告（摘要/改动文件/自验/产物/风险）、看板内 diff 查看器
@@ -106,6 +107,30 @@ agent：
   taskboard_move → in_review    # 移待验收
 你：看板待验收列 ✓ 完成   # done 永远只属于人——agent 调用会被代码闸拒绝
 ```
+
+## Lazy Gate 门禁（可选）
+
+如果同时安装并启用了 `dsh-tool-lazy-gate`，Taskboard 会注册一个用户专用的
+`/taskboard` Skill。它在 Skill metadata 中声明本插件的资源映射：
+
+```text
+/taskboard
+  ├─ taskboard_*
+  └─ plugin:dsh-taskboard
+```
+
+Lazy Gate 配置只需要启用对应技能：
+
+```yaml
+capabilities:
+  taskboard:
+    enabled: true
+    skillNames: [taskboard]
+```
+
+未输入 `/taskboard` 时，`taskboard_*` 工具和 Taskboard 协议 Prompt 段会被隐藏；
+模型不能通过 `skill("taskboard")` 自行解锁。未安装 Lazy Gate 时，Taskboard
+仍按默认方式工作。
 
 ## Agent 工具参考
 

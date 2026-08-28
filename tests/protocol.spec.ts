@@ -37,6 +37,7 @@ import {
   type TaskRecord,
 } from '../src/shared/protocol.ts'
 import { TASKBOARD_PROTOCOL } from '../src/host/protocol-text.ts'
+import { TASKBOARD_SKILL } from '../src/host/skill.ts'
 import { PLUGIN_VERSION } from '../src/shared/version.ts'
 import { TaskStore } from '../src/host/store.ts'
 import { ERR, registerTaskboardTools, type ToolDeps, type WorkspaceFace } from '../src/host/tools.ts'
@@ -172,6 +173,24 @@ describe('protocol text', () => {
     expect(TASKBOARD_PROTOCOL).toMatch(/taskboard_execution_report 提交结构化报告/)
     expect(TASKBOARD_PROTOCOL).toMatch(/taskboard_checklist 逐项勾选/)
     expect(TASKBOARD_PROTOCOL).toMatch(/清单全勾也不等于完成/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// lazy-gate skill association
+// ---------------------------------------------------------------------------
+
+describe('lazy-gate skill association', () => {
+  it('registers a user-only taskboard authorization Skill', () => {
+    expect(TASKBOARD_SKILL.name).toBe('taskboard')
+    expect(TASKBOARD_SKILL.invocation).toEqual({ modelInvocable: false, userInvocable: true })
+    expect(TASKBOARD_SKILL.metadata).toEqual({
+      'dsh:gate': {
+        toolPrefixes: ['taskboard_'],
+        promptSections: ['plugin:dsh-taskboard'],
+      },
+    })
+    expect(TASKBOARD_SKILL.content).toContain('unlocked')
   })
 })
 

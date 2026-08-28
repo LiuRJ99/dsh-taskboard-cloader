@@ -1,9 +1,10 @@
 /**
  * Host loader entry for dsh-taskboard.
  *
- * Wiring: the ledger store (one JSON file under the DSH home), the ten
- * `taskboard_*` agent tools, the agent workflow-protocol system-prompt
- * section, the /taskboard JSON+SSE routes (when a webServer is served),
+ * Wiring: the ledger store (one JSON file under the DSH home), the user-only
+ * `/taskboard` authorization Skill, the ten `taskboard_*` agent tools, the agent
+ * workflow-protocol system-prompt section, the /taskboard JSON+SSE routes (when a
+ * webServer is served),
  * the host execution service (fresh in-project sessions, pinned models), and
  * the host-side cron scheduler for scheduled tasks.
  *
@@ -20,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { installModelSelection, type ModelSelection } from '@deepseek-ai/dsh-agent'
 import { PROTOCOL_SECTION_NAME, PROTOCOL_SECTION_ORDER, TASKBOARD_PROTOCOL } from './host/protocol-text.ts'
+import { TASKBOARD_SKILL, type SkillsSurface } from './host/skill.ts'
 import { DEFAULT_MAX_CONCURRENT, ExecutionService, type EventsFace } from './host/execution.ts'
 import { createGitFace } from './host/git.ts'
 import { registerTaskboardRoutes } from './host/routes.ts'
@@ -88,6 +90,14 @@ export function apply(ctx: Context): void {
     text: TASKBOARD_PROTOCOL,
   })
   ctx.effect(() => disposeSection, 'dsh-taskboard: protocol section')
+
+  // Register a user-only authorization Skill when the optional skill registry
+  // is mounted. The dsh:gate metadata is the single source of truth for the
+  // taskboard_* tools and this plugin's protocol prompt section.
+  const skills = ctx.get('skills') as SkillsSurface | undefined
+  if (skills?.register !== undefined) {
+    ctx.effect(() => skills.register(TASKBOARD_SKILL), 'dsh-taskboard: taskboard skill')
+  }
 
   // Tools, routes, execution, and the scheduler all come up with the
   // workspace registry (claim boundary + project execution need it).
