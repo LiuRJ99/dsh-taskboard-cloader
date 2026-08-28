@@ -16,7 +16,7 @@ import { BoardController, type GateCapabilityOption } from './controller.ts'
 import { injectStyles } from './styles.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
-import { registerBetterSidebarTab } from './sidebar-tab.tsx'
+import { getBetterSidebarService, registerBetterSidebarTab } from './sidebar-tab.tsx'
 import { createSessionJumper, type SessionsServiceFace, type WorkspacesServiceFace } from './session-jump.ts'
 import { isTaskModelSupported } from './model-catalog.ts'
 import { MODEL_CAPABILITY_SERVICE, type ModelCapability, type ModelCapabilityProvider } from '../shared/model-capabilities.ts'
@@ -184,6 +184,7 @@ export function apply(ctx: ClientContextFace): void {
     const disposers: Array<() => void> = []
     let sidebarTabActive = false
     let registeredSidebarService: unknown
+    let registeredSidebarDisposer: (() => void) | undefined
     let legacyDisposers: Array<() => void> = []
 
     const disposeLegacyMounts = (): void => {
@@ -204,20 +205,33 @@ export function apply(ctx: ClientContextFace): void {
         // present, the board lives inside the registered tab (and can therefore
         // use the panel/free-window lifecycle); otherwise keep the legacy DOM
         // mount for shells that do not install the companion plugin.
-        const registration = registerBetterSidebarTab(ctx, controller)
-        if (registration.available) {
+        const currentService = getBetterSidebarService(ctx)
+        if (currentService !== undefined) {
           // The service is recreated on Better Sidebar HMR/reload. Identity
           // tracking prevents duplicate registration on ordinary status events
           // while allowing the new service instance to register cleanly.
-          if (registeredSidebarService === registration.service) return
-          disposeLegacyMounts()
-          sidebarTabActive = true
-          registeredSidebarService = registration.service
-          if (registration.disposer !== undefined) disposers.push(registration.disposer)
-          return
+          if (registeredSidebarService === currentService) return
+
+          if (registeredSidebarDisposer !== undefined) {
+            registeredSidebarDisposer()
+            registeredSidebarDisposer = undefined
+          }
+
+          const registration = registerBetterSidebarTab(ctx, controller)
+          if (registration.available) {
+            disposeLegacyMounts()
+            sidebarTabActive = true
+            registeredSidebarService = registration.service
+            registeredSidebarDisposer = registration.disposer
+            return
+          }
         }
 
         if (registeredSidebarService !== undefined) {
+          if (registeredSidebarDisposer !== undefined) {
+            registeredSidebarDisposer()
+            registeredSidebarDisposer = undefined
+          }
           registeredSidebarService = undefined
           sidebarTabActive = false
         }
@@ -254,6 +268,11 @@ export function apply(ctx: ClientContextFace): void {
     // leftover tag after a full disable is inert.
     ctx.effect?.(() => () => {
       disposeLegacyMounts()
+      if (registeredSidebarDisposer !== undefined) {
+        registeredSidebarDisposer()
+        registeredSidebarDisposer = undefined
+      }
+      registeredSidebarService = undefined
       for (const d of disposers.splice(0)) d()
       controller.dispose()
     }, 'dsh-taskboard: client mount')

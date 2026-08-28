@@ -157,8 +157,102 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 0))
     expect(service.registerTab).toHaveBeenCalledTimes(1)
 
+    // Multiple internal/status events must not re-register the tab on the same service
+    for (const listener of [...statusListeners]) listener()
+    for (const listener of [...statusListeners]) listener()
+    expect(service.registerTab).toHaveBeenCalledTimes(1)
+
     for (const disposer of effectDisposers) disposer()
     expect(tabDisposer).toHaveBeenCalledTimes(1)
+  })
+
+  it('Better Sidebar 抛出重复注册异常防护：同一服务实例多次 status 事件不重复调用 registerTab', async () => {
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { apply } = await import('../src/client/index.ts')
+    let isRegistered = false
+    const tabDisposer = vi.fn(() => { isRegistered = false })
+    const service = {
+      registerTab: vi.fn((descriptor: { id: string }) => {
+        if (isRegistered) {
+          throw new Error(`[dsh-better-sidebar] tab type "${descriptor.id}" already registered`)
+        }
+        isRegistered = true
+        return tabDisposer
+      }),
+      features: ['openFile'] as const,
+      openFile: vi.fn(),
+    }
+    const statusListeners: Array<(...args: unknown[]) => unknown> = []
+    const effectDisposers: Array<() => void> = []
+    const ctx = {
+      get: (name: string) => name === 'betterSidebar' ? service : undefined,
+      effect: (fn: () => unknown) => {
+        const disposer = fn()
+        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
+      },
+      on: (event: string, listener: (...args: unknown[]) => unknown) => {
+        if (event === 'internal/status') statusListeners.push(listener)
+        return () => undefined
+      },
+    }
+    apply(ctx as never)
+    await new Promise(r => setTimeout(r, 20))
+    expect(service.registerTab).toHaveBeenCalledTimes(1)
+    expect(isRegistered).toBe(true)
+
+    // Simulate Cordis emitting internal/status multiple times during boot/state updates
+    for (let i = 0; i < 5; i++) {
+      for (const listener of [...statusListeners]) listener()
+    }
+    expect(service.registerTab).toHaveBeenCalledTimes(1)
+
+    for (const disposer of effectDisposers) disposer()
+    expect(tabDisposer).toHaveBeenCalledTimes(1)
+    expect(isRegistered).toBe(false)
+  })
+
+  it('Better Sidebar 实例变化（如 HMR 热重载）时能重新向新服务注册', async () => {
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { apply } = await import('../src/client/index.ts')
+    const disposer1 = vi.fn()
+    const service1 = {
+      registerTab: vi.fn(() => disposer1),
+      features: ['openFile'] as const,
+      openFile: vi.fn(),
+    }
+    const disposer2 = vi.fn()
+    const service2 = {
+      registerTab: vi.fn(() => disposer2),
+      features: ['openFile'] as const,
+      openFile: vi.fn(),
+    }
+    let currentService: typeof service1 | undefined = service1
+    const statusListeners: Array<(...args: unknown[]) => unknown> = []
+    const effectDisposers: Array<() => void> = []
+    const ctx = {
+      get: (name: string) => name === 'betterSidebar' ? currentService : undefined,
+      effect: (fn: () => unknown) => {
+        const disposer = fn()
+        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
+      },
+      on: (event: string, listener: (...args: unknown[]) => unknown) => {
+        if (event === 'internal/status') statusListeners.push(listener)
+        return () => undefined
+      },
+    }
+    apply(ctx as never)
+    await new Promise(r => setTimeout(r, 20))
+    expect(service1.registerTab).toHaveBeenCalledTimes(1)
+    expect(service2.registerTab).not.toHaveBeenCalled()
+
+    // Service replaces
+    currentService = service2
+    for (const listener of [...statusListeners]) listener()
+    expect(service2.registerTab).toHaveBeenCalledTimes(1)
+
+    for (const disposer of effectDisposers) disposer()
   })
 
   it('stylesheet is ownership-tagged, idempotent, and re-attaches after removal', async () => {

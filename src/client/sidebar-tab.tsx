@@ -43,7 +43,7 @@ function fileTitle(path: string): string {
 }
 
 /** Safely read the optional service from a Cordis context. */
-function getService(ctx: { get?(name: string): unknown }): BetterSidebarService | undefined {
+export function getBetterSidebarService(ctx: { get?(name: string): unknown }): BetterSidebarService | undefined {
   try {
     const service = ctx.get?.('betterSidebar') as BetterSidebarService | undefined
     if (service === undefined || typeof service.registerTab !== 'function') return undefined
@@ -62,7 +62,7 @@ export function registerBetterSidebarTab(
   ctx: SidebarTabContextFace,
   controller: BoardController,
 ): BetterSidebarRegistration {
-  const service = getService(ctx)
+  const service = getBetterSidebarService(ctx)
   if (service === undefined) return { available: false }
 
   const descriptor: TabDescriptor = {
@@ -74,7 +74,7 @@ export function registerBetterSidebarTab(
       <span aria-hidden="true" style={{ fontSize: size, lineHeight: 1 }}>▦</span>
     ),
     component: ({ ctx: sidebarCtx, scope, visible }: TabComponentProps) => {
-      const liveService = getService(sidebarCtx)
+      const liveService = getBetterSidebarService(sidebarCtx)
       const onOpenFile = liveService?.features.includes('openFile') === true
         ? (path: string): void => { liveService.openFile(scope, path, fileTitle(path)) }
         : undefined
