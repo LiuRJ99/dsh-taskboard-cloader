@@ -778,6 +778,28 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
     expect(bad.status).toBe(400)
   })
 
+  // -------------------------------------------------------- capabilities
+  it('capabilities: create/update normalize taskboard and reject resource-shaped names', async () => {
+    const created = await post('/dsh-taskboard/tasks', {
+      title: '授权任务', workspaceId: 'ws-a', urgency: 'normal',
+      requiredCapabilities: ['browser', 'taskboard', 'browser', 'computer-use'],
+    })
+    expect(created.status).toBe(201)
+    const id = created.json.value.id as string
+    expect(store.get(id)?.requiredCapabilities).toEqual(['taskboard', 'browser', 'computer-use'])
+
+    const updated = await post(`/dsh-taskboard/tasks/${id}/update`, {
+      ifVersion: 1, requiredCapabilities: ['computer-use'],
+    })
+    expect(updated.status).toBe(200)
+    expect(store.get(id)?.requiredCapabilities).toEqual(['taskboard', 'computer-use'])
+
+    const bad = await post('/dsh-taskboard/tasks', {
+      title: '非法授权', workspaceId: 'ws-a', urgency: 'normal', requiredCapabilities: ['browser_snapshot'],
+    })
+    expect(bad.status).toBe(400)
+  })
+
   // ------------------------------------------------------------- templates
   it('templates: seeds built-ins, upserts, renames, deletes', async () => {
     const list = await (await fetch(`${base}/dsh-taskboard/templates`)).json()
@@ -803,6 +825,7 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
         execution: { mode: 'scheduled', cron: '0 9 * * 1' },
         speed: 'fast',
         permissionMode: 'workspace-write',
+        requiredCapabilities: ['computer-use'],
       },
     })
     expect(created.status).toBe(201)
@@ -810,6 +833,7 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
     expect(created.json.value.task.checklist).toEqual(['a', 'b'])
     expect(created.json.value.task.speed).toBe('fast')
     expect(created.json.value.task.permissionMode).toBe('workspace-write')
+    expect(created.json.value.task.requiredCapabilities).toEqual(['taskboard', 'computer-use'])
     expect(created.json.value.category).toBe('开发')
 
     const renamed = await post('/dsh-taskboard/templates', { id, name: '改名后', category: '运营', task: { urgency: 'relaxed' } })

@@ -545,6 +545,21 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-req { color: var(--dsw-alias-state-error-primary, #e5484d); font-style: normal; }
 .dsh-atb-field-note { font-size: 10.5px; line-height: 1.4; color: var(--dsw-alias-label-tertiary, gray); }
 .dsh-atb-field-note-warn { color: var(--dsw-alias-state-warning-primary, #b56b00); }
+.dsh-atb-capabilities { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; }
+.dsh-atb-capability {
+  display: inline-flex; flex: 0 1 auto; align-items: center; justify-content: flex-start; gap: 7px;
+  min-width: 0; min-height: 31px; padding: 5px 9px; box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35)); border-radius: 8px;
+  background: transparent; color: var(--dsw-alias-label-primary, inherit); cursor: pointer;
+}
+.dsh-atb-capability:hover { border-color: var(--dsw-alias-label-tertiary, rgba(128,128,128,.6)); }
+.dsh-atb-capability input[type="checkbox"] {
+  flex: 0 0 16px; width: 16px; height: 16px; margin: 0; accent-color: var(--dsw-alias-brand-primary, #1f2328);
+}
+.dsh-atb-capability span, .dsh-atb-capability small { white-space: nowrap; }
+.dsh-atb-capability span { font-size: 12px; font-weight: 600; }
+.dsh-atb-capability small { font-size: 10px; color: var(--dsw-alias-label-tertiary, gray); }
+.dsh-atb-capabilities > .dsh-atb-field-note { flex-basis: 100%; }
 .dsh-atb-modal-body input, .dsh-atb-modal-body textarea, .dsh-atb-modal-body select {
   font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px;
   width: 100%; box-sizing: border-box;

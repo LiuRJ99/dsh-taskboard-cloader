@@ -44,6 +44,8 @@ import {
   normalizeModel,
   normalizePrompt,
   normalizeTitle,
+  TASKBOARD_CAPABILITY,
+  requiredCapabilitiesOf,
   summarize,
   syncClaim,
   type Actor,
@@ -101,6 +103,7 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
   if (t.speed !== undefined) lines.push(`速度: ${t.speed === 'fast' ? '快速' : '标准'}`)
   if (t.permissionMode !== undefined) lines.push(`权限模式: ${t.permissionMode}`)
   if (t.presetId !== undefined) lines.push(`执行模式: ${t.presetId}（未指定时为部署默认 preset）`)
+  lines.push(`执行能力: ${requiredCapabilitiesOf(t).join(', ')}`)
   lines.push(`描述: ${t.description.length > 0 ? t.description : '（无）'}`)
   lines.push(`执行 Prompt: ${t.effectivePrompt ?? effectivePrompt(t)}`)
   if (t.checklist !== undefined && t.checklist.length > 0) {
@@ -197,6 +200,8 @@ export interface ToolDeps {
    * in which case only the structural check applies.
    */
   modelProviders?: () => string[] | undefined
+  /** Grant task capabilities after a successful claim mutation. */
+  authorizeSession?: (agent: unknown, skillNames: readonly string[], provenance: 'claim') => void | Promise<void>
 }
 
 /** Validate a pinned model: structural check always, provider route when known. */
@@ -480,6 +485,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           blocked: false,
           execution,
           model,
+          requiredCapabilities: [TASKBOARD_CAPABILITY],
           ...(speed !== undefined ? { speed } : {}),
           ...(permissionMode !== undefined ? { permissionMode } : {}),
           isolation,
@@ -584,7 +590,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     },
     async execute(args: { id: string; status: string; ifVersion: number }, exec: unknown) {
       try {
-        const { actor } = caller(exec as ToolRunContext)
+        const context = exec as ToolRunContext
+        const { actor } = caller(context)
         const to = asStatus(args.status)
         // Claim boundary (policy gate): resolving the caller's workspace is
         // async, so it happens BEFORE the mutation — the comparison runs INSIDE
@@ -594,6 +601,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           : undefined
         // R1: every state guard + the write itself run inside the mutation.
         let next: TaskRecord | undefined
+        let claimed = false
         await store.mutate('task-moved', ledger => {
           const { index, task } = liveTaskAt(ledger, args.id)
           versionGuard(task, args.ifVersion)
@@ -622,10 +630,40 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           next.updatedBy = actor
           if (isClaim(task.status, to)) next.blocked = false
           // Record the holder on a claim; every move out of in_progress releases it.
-          syncClaim(next, to, deps.now(), isClaim(task.status, to) ? actor.sessionId : undefined)
+          claimed = isClaim(task.status, to)
+          syncClaim(next, to, deps.now(), claimed ? actor.sessionId : undefined)
           ledger.tasks[index] = next
           return [next]
         })
+        if (claimed && deps.authorizeSession !== undefined) {
+          try {
+            await deps.authorizeSession(context.agent, requiredCapabilitiesOf(next!), 'claim')
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            // The capability grant is deliberately after the durable claim.
+            // If it fails, compensate only the exact claim we just made; do
+            // not clobber a later write from the same session.
+            try {
+              await store.mutate('task-moved', ledger => {
+                const current = ledger.tasks.find(task => task.id === next!.id)
+                if (current === undefined || current.status !== 'in_progress' || current.claimedBy !== actor.sessionId || current.version !== next!.version) {
+                  throw new Error('claim changed before capability authorization could be rolled back')
+                }
+                const rollback = structuredClone(current)
+                rollback.status = 'todo'
+                rollback.version = current.version + 1
+                rollback.updatedAt = deps.now()
+                rollback.updatedBy = actor
+                syncClaim(rollback, 'todo', deps.now())
+                ledger.tasks[ledger.tasks.findIndex(task => task.id === rollback.id)] = rollback
+                return [rollback]
+              })
+            } catch (rollbackError) {
+              throw new ToolError(ERR.invalidInput, `capability authorization failed: ${message}; claim rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`)
+            }
+            throw new ToolError(ERR.invalidInput, `capability authorization failed: ${message}; claim rolled back`)
+          }
+        }
         return json({ task: summarize(next!) })
       } catch (error) { fail(error) }
     },

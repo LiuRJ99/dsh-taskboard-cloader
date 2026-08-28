@@ -29,6 +29,7 @@ import {
   normalizeTemplateCategory,
   normalizeExecutionReport,
   normalizeModel,
+  normalizeRequiredCapabilities,
   parseCron,
   summarize,
   validateImportedTask,
@@ -191,6 +192,24 @@ describe('lazy-gate skill association', () => {
       },
     })
     expect(TASKBOARD_SKILL.content).toContain('unlocked')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// capability authorization
+// ---------------------------------------------------------------------------
+
+describe('required lazy-gate capabilities', () => {
+  it('always includes taskboard and de-duplicates normalized Skill names', () => {
+    expect(normalizeRequiredCapabilities(['browser', 'taskboard', 'browser', 'computer-use'])).toEqual(['taskboard', 'browser', 'computer-use'])
+    expect(normalizeRequiredCapabilities(undefined)).toEqual(['taskboard'])
+  })
+
+  it('rejects unbounded or resource-shaped values', () => {
+    expect(() => normalizeRequiredCapabilities(['browser_'])).toThrow('invalid required capability')
+    expect(() => normalizeRequiredCapabilities(['browser/tool'])).toThrow('invalid required capability')
+    expect(() => normalizeRequiredCapabilities(Array.from({ length: 21 }, () => 'browser'))).toThrow('at most')
+    expect(() => normalizeRequiredCapabilities(['browser', 1])).toThrow('only skill names')
   })
 })
 

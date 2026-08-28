@@ -127,6 +127,31 @@ const workspaces = {
 }
 
 describe('ExecutionService', () => {
+  it('authorizes configured capabilities before the opening model turn', async () => {
+    const store = await storeWith(task({ requiredCapabilities: ['taskboard', 'computer-use'] }))
+    const agents = fakeAgents()
+    const events = fakeEvents()
+    const grants: Array<{ skills: readonly string[]; provenance: string }> = []
+    const svc = new ExecutionService({
+      store,
+      agents,
+      workspaces,
+      events,
+      now: () => 1_000,
+      authorizeSession: (_agent, skills, provenance) => {
+        grants.push({ skills, provenance })
+        agents.timeline.push('authorize')
+      },
+    })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+    expect(grants).toEqual([{ skills: ['taskboard', 'computer-use'], provenance: 'execution' }])
+    expect(agents.timeline.indexOf('authorize')).toBeGreaterThanOrEqual(0)
+    expect(agents.timeline.indexOf('authorize')).toBeLessThan(agents.timeline.indexOf('inject'))
+    expect(agents.timeline.indexOf('authorize')).toBeLessThan(agents.timeline.indexOf('followup'))
+  })
+
   it('runs a task in a fresh in-project session with the pinned model', async () => {
     const store = await storeWith(task({ model: { provider: 'deepseek', model: 'reasoner' } }))
     const agents = fakeAgents()

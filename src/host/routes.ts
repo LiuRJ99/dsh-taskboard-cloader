@@ -33,6 +33,7 @@ import {
   normalizeTemplateCategory,
   normalizeModel,
   normalizePrompt,
+  normalizeRequiredCapabilities,
   normalizeTitle,
   summarize,
   syncClaim,
@@ -118,6 +119,9 @@ function normalizeTemplateSpec(raw: unknown, now: number): TaskTemplate['task'] 
     spec.execution = normalizeExecution(e.execution as { mode?: string; cron?: string }, now)
   }
   if (e.model !== undefined) spec.model = normalizeModel(e.model)
+  if (e.requiredCapabilities !== undefined) {
+    spec.requiredCapabilities = normalizeRequiredCapabilities(e.requiredCapabilities)
+  }
   if (e.checklist !== undefined) {
     if (!Array.isArray(e.checklist) || e.checklist.some(c => typeof c !== 'string')) {
       throw new Error('Error: invalid_input: task.checklist must be an array of strings')
@@ -473,6 +477,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           // rewrite existing tasks.
           const isolation = isolationRaw === null ? defaultIsolationOf(store.snapshot().settings) : asIsolation(isolationRaw)
           const presetId = normalizePresetId(str(body, 'presetId'))
+          const requiredCapabilities = normalizeRequiredCapabilities(body.requiredCapabilities)
           let checklist: TaskRecord['checklist'] = undefined
           if (body.checklist !== undefined) {
             if (!Array.isArray(body.checklist) || body.checklist.some(c => typeof c !== 'string')) {
@@ -493,6 +498,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             blocked: false,
             execution,
             model,
+            requiredCapabilities,
             ...(speed !== undefined ? { speed } : {}),
             ...(permissionMode !== undefined ? { permissionMode } : {}),
             isolation,
@@ -553,6 +559,9 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
                 next.workspaceId = workspaceId
               }
               if (typeof body.blocked === 'boolean') next.blocked = body.blocked
+              if (body.requiredCapabilities !== undefined) {
+                next.requiredCapabilities = normalizeRequiredCapabilities(body.requiredCapabilities === null ? undefined : body.requiredCapabilities)
+              }
               // The GUI (task owner surface) may edit model/execution; null clears the model.
               if (body.execution !== undefined) next.execution = normalizeExecution(body.execution as { mode?: string; cron?: string }, options.now())
               if (body.model === null) next.model = undefined

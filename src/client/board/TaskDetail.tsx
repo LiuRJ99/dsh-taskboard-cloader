@@ -645,6 +645,7 @@ export function TaskDetail({
             {task.speed === 'fast' && <Chip icon="⚡">快速</Chip>}
             {task.permissionMode !== undefined && <Chip icon="🛡">{task.permissionMode === 'danger-full-access' ? 'Full access' : task.permissionMode === 'workspace-write' ? 'Workspace Write' : 'Read Only'}</Chip>}
             {task.presetId !== undefined && <Chip icon="🎛" >{task.presetId}</Chip>}
+                         {task.requiredCapabilities !== undefined && <Chip icon="🔐">能力 · {task.requiredCapabilities.join(', ')}</Chip>}
             {task.execution.mode === 'scheduled' && (
               <Chip icon="⏰">{task.execution.cron} · 下次 {fmtTime(task.execution.nextRunAt)}</Chip>
             )}

@@ -18,6 +18,7 @@ import {
   newCommentId,
   newExecutionId,
   normalizeBody,
+  requiredCapabilitiesOf,
   type ExecutionRecord,
   type IsolationMode,
   type PermissionMode,
@@ -94,6 +95,8 @@ export interface ExecutionDeps {
   modelExecution?: (sessionId: string, model: TaskModel | undefined, speed: ModelExecutionSpeed) => void | Promise<void>
   /** Apply one of the three file-permission modes before the first prompt. */
   applyPermissionMode?: (session: unknown, mode: PermissionMode) => void | Promise<void>
+  /** Grant the task's selected lazy-gate Skills before the first model request. */
+  authorizeSession?: (agent: unknown, skillNames: readonly string[], provenance: 'execution') => void | Promise<void>
   /** Mint session ids (injectable for tests). */
   mintSessionId?: () => string
   /** Mint message ids (injectable for tests). */
@@ -507,6 +510,22 @@ export class ExecutionService {
         try { await this.deps.git.removeWorktree(workspace.path, prepared.worktreePath) } catch { /* best effort */ }
       }
       return { ok: false, error: 'cancelled during startup' }
+    }
+
+    // 2d. Authorize the task's requested Skills on THIS fresh agent before
+    // the first prompt assembles tools. The callback is host-only; task data
+    // contains names, never tool prefixes or prompt sections.
+    try {
+      await this.deps.authorizeSession?.(handle.agent, requiredCapabilitiesOf(task), 'execution')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      try { await handle.dispose() } catch { /* best effort */ }
+      await this.patchExecution(executionId, { outcome: 'failed', error: `能力授权失败：${message.slice(0, 400)}`, endedAt: this.deps.now() })
+      await this.revertProgress(taskId)
+      if (prepared !== undefined && this.deps.git !== undefined) {
+        try { await this.deps.git.removeWorktree(workspace.path, prepared.worktreePath) } catch { /* best effort */ }
+      }
+      return { ok: false, error: `capability authorization failed: ${message}` }
     }
 
     // 3. Attach the session to the workspace (GUI project session list).

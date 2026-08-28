@@ -99,6 +99,70 @@ export const URGENCY_COLOR: Readonly<Record<Urgency, string>> = {
 }
 
 // ---------------------------------------------------------------------------
+// Capability authorization
+// ---------------------------------------------------------------------------
+
+/**
+ * A capability is the user-facing name of a lazy-gate Skill.  Keeping the
+ * stable Skill name (rather than a tool prefix or prompt section) means the
+ * host gate remains the only component that can resolve it to resources.
+ *
+ * The type is intentionally string-shaped: adapted plugins may publish new
+ * user-invocable gated skills without requiring a taskboard release.  Values
+ * are still constrained by {@link normalizeRequiredCapabilities}.
+ */
+export type TaskCapability = string
+
+/** The capability that every taskboard task receives for its own protocol tools. */
+export const TASKBOARD_CAPABILITY = 'taskboard' as const
+
+/** Maximum number of lazy-gate Skill names carried by one task. */
+export const MAX_REQUIRED_CAPABILITIES = 20
+
+/** Skill names use the same lowercase kebab grammar as DSH slash commands. */
+const TASK_CAPABILITY_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/**
+ * Normalize a task's requested lazy-gate capabilities.
+ *
+ * Taskboard is always included: execution sessions need the taskboard tools to
+ * follow the handoff protocol, and an omitted field on an older ledger must not
+ * silently turn that access off.  Unknown-but-well-formed Skill names are
+ * retained for forward-compatible adapted plugins; the lazy-gate host service
+ * decides whether each name is currently configured and registered.
+ *
+ * @param raw - untyped route/import/ledger value.
+ * @returns stable, de-duplicated names with taskboard first.
+ * @throws when the value is not a bounded array of valid Skill names.
+ */
+export function normalizeRequiredCapabilities(raw: unknown): TaskCapability[] {
+  if (raw === undefined) return [TASKBOARD_CAPABILITY]
+  if (!Array.isArray(raw)) throw new Error('requiredCapabilities must be an array of skill names')
+  if (raw.length > MAX_REQUIRED_CAPABILITIES) {
+    throw new Error(`requiredCapabilities may hold at most ${MAX_REQUIRED_CAPABILITIES} skills`)
+  }
+  const seen = new Set<string>()
+  const result: string[] = [TASKBOARD_CAPABILITY]
+  seen.add(TASKBOARD_CAPABILITY)
+  for (const value of raw) {
+    if (typeof value !== 'string') throw new Error('requiredCapabilities must contain only skill names')
+    const name = value.trim()
+    if (!TASK_CAPABILITY_RE.test(name)) {
+      throw new Error(`invalid required capability "${name}"`)
+    }
+    if (seen.has(name)) continue
+    seen.add(name)
+    result.push(name)
+  }
+  return result
+}
+
+/** Effective capabilities for a legacy record whose field is absent. */
+export function requiredCapabilitiesOf(task: Pick<TaskRecord, 'requiredCapabilities'>): readonly TaskCapability[] {
+  return task.requiredCapabilities ?? [TASKBOARD_CAPABILITY]
+}
+
+// ---------------------------------------------------------------------------
 // Execution
 // ---------------------------------------------------------------------------
 
@@ -461,6 +525,8 @@ export type TaskRecord = {
   blocked: boolean
   execution: ExecutionConfig
   model?: TaskModel
+  /** Lazy-gate Skill names requested by the user; taskboard is always present. */
+  requiredCapabilities?: TaskCapability[]
   /** Taskboard-owned speed preference; omitted = standard. */
   speed?: TaskSpeed
   /** File-permission mode for the fresh execution session; omitted = deployment default. */
@@ -974,6 +1040,7 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
       status,
       blocked: e.blocked === true,
       execution,
+      requiredCapabilities: normalizeRequiredCapabilities(e.requiredCapabilities),
       ...(typeof e.model === 'object' && e.model !== null ? { model: normalizeModel(e.model) } : {}),
       ...(typeof e.speed === 'string' ? { speed: asTaskSpeed(e.speed) } : {}),
       ...(typeof e.permissionMode === 'string' ? { permissionMode: asPermissionMode(e.permissionMode) } : {}),

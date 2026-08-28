@@ -9,10 +9,10 @@
  * @module dsh-taskboard/client/board/TaskFormModal
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { BoardController } from '../controller.ts'
+import type { BoardController, GateCapabilityOption } from '../controller.ts'
 import type { TaskTemplateSpec } from '../../shared/api.ts'
-import type { ChecklistItem, IsolationMode, PermissionMode, TaskSpeed, Urgency } from '../../shared/protocol.ts'
-import { MAX_CHECKLIST_ITEMS, defaultIsolationOf, nextCronTime, parseCron } from '../../shared/protocol.ts'
+import type { ChecklistItem, IsolationMode, PermissionMode, TaskCapability, TaskSpeed, Urgency } from '../../shared/protocol.ts'
+import { MAX_CHECKLIST_ITEMS, TASKBOARD_CAPABILITY, defaultIsolationOf, nextCronTime, normalizeRequiredCapabilities, parseCron } from '../../shared/protocol.ts'
 import { supportsTaskFastSpeed } from '../../shared/model-capabilities.ts'
 import { isTaskModelSupported } from '../model-catalog.ts'
 import { fmtTime } from './format.ts'
@@ -59,6 +59,67 @@ const SPEED_OPTIONS: ReadonlyArray<{ value: TaskSpeed; label: string; hint: stri
   { value: 'standard', label: '标准', hint: '使用标准请求路径' },
   { value: 'fast', label: '快速', hint: '向执行适配器请求更低延迟路径' },
 ]
+
+/** Human labels for the built-in gated skills; adapted skills fall back to their name. */
+const GATE_CAPABILITY_LABELS: Readonly<Record<string, string>> = {
+  browser: '浏览器',
+  'computer-use': '电脑操作',
+}
+
+function gateCapabilityLabel(name: string): string {
+  return GATE_CAPABILITY_LABELS[name] ?? name
+}
+
+function extraCapabilitiesOf(raw: unknown): TaskCapability[] {
+  try {
+    return normalizeRequiredCapabilities(raw).filter(name => name !== TASKBOARD_CAPABILITY)
+  } catch {
+    return []
+  }
+}
+
+/** The task-owned capability picker; taskboard is implicit and cannot be removed. */
+function CapabilityEditor({
+  options,
+  selected,
+  onChange,
+  permissionMode,
+}: {
+  options: readonly GateCapabilityOption[]
+  selected: readonly TaskCapability[]
+  onChange: (next: TaskCapability[]) => void
+  permissionMode: PermissionMode
+}) {
+  const selectedSet = new Set(selected)
+  const toggle = (name: TaskCapability): void => {
+    const next = new Set(selectedSet)
+    if (next.has(name)) next.delete(name)
+    else next.add(name)
+    onChange([...next])
+  }
+  const visible = options
+    .filter(option => option.name !== TASKBOARD_CAPABILITY)
+    .filter((option, index, all) => all.findIndex(candidate => candidate.name === option.name) === index)
+  return (
+    <div className="dsh-atb-capabilities">
+      {visible.map(option => (
+        <label className="dsh-atb-capability" key={option.name}>
+          <input
+            type="checkbox"
+            checked={selectedSet.has(option.name)}
+            onChange={() => toggle(option.name)}
+          />
+          <span>{gateCapabilityLabel(option.name)}</span>
+          <small>{option.name}</small>
+        </label>
+      ))}
+      {selected.length > 0 && permissionMode === 'danger-full-access' && (
+        <span className="dsh-atb-field-note dsh-atb-field-note-warn">高权限文件访问与浏览器/电脑操作会一起授权，请确认任务来源可信。</span>
+      )}
+      <span className="dsh-atb-field-note">勾选项只在该任务执行或被会话认领时授权，不会改变其他会话。</span>
+    </div>
+  )
+}
 
 /** Cron presets offered in the scheduled mode. */
 const CRON_PRESETS: ReadonlyArray<{ label: string; cron: string }> = [
@@ -153,7 +214,7 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
  * @param controller - the controller.
  * @param task - the task being edited (create mode when absent).
  */
-export function TaskFormModal({ controller, task }: { controller: BoardController; task?: TaskRecordLike }) {
+export function TaskFormModal({ controller, task, sessionId }: { controller: BoardController; task?: TaskRecordLike; sessionId?: string }) {
   const state = controller.getSnapshot()
   const prefill: TaskTemplateSpec | undefined = state.templatePrefill
   const editing = task !== undefined
@@ -173,6 +234,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     task?.permissionMode ?? (prefill?.permissionMode === 'read-only' || prefill?.permissionMode === 'danger-full-access' ? prefill.permissionMode : 'workspace-write'),
   )
+  const [requiredCapabilities, setRequiredCapabilities] = useState<TaskCapability[]>(() => extraCapabilitiesOf(task?.requiredCapabilities ?? prefill?.requiredCapabilities))
+  const [gateOptions, setGateOptions] = useState<GateCapabilityOption[]>([])
+  const [gateDiscoveryReady, setGateDiscoveryReady] = useState(false)
   // Preset roster (0.3.3): create mode PRE-SELECTS the deployment default
   // (标准模式 in this deployment); '' = 跟随部署默认 (submit omits the field).
   const initialPreset = task?.presetId ?? prefill?.presetId ?? ''
@@ -210,6 +274,35 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     const face = controller.modelCatalog
     if (face === undefined) return
     void face().then(rows => setCatalog(rows.filter(isTaskModelSupported))).catch(() => setCatalog([]))
+  }, [controller])
+
+  // Lazy-gate discovery is optional. Do not expose a capability form section or
+  // keep probing fallback names when the gate is absent, disabled, or has no
+  // registered enabled execution capability.
+  useEffect(() => {
+    const face = controller.capabilityCatalog
+    if (face === undefined) {
+      setGateOptions([])
+      setGateDiscoveryReady(false)
+      return
+    }
+    let cancelled = false
+    setGateDiscoveryReady(false)
+    void face().then(rows => {
+      if (cancelled) return
+      const names = rows
+        .filter(row => typeof row.name === 'string' && row.name.length > 0)
+        .filter(row => row.name !== TASKBOARD_CAPABILITY)
+        .filter((row, index, all) => all.findIndex(candidate => candidate.name === row.name) === index)
+      setGateOptions(names)
+      setGateDiscoveryReady(true)
+    }).catch(() => {
+      if (!cancelled) {
+        setGateOptions([])
+        setGateDiscoveryReady(false)
+      }
+    })
+    return () => { cancelled = true }
   }, [controller])
 
   // Fast is preserved while the catalog is loading, then normalized against
@@ -347,12 +440,13 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         model: picked ?? null,
         speed: effectiveSpeed,
         permissionMode,
+        requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
         ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
         presetId: presetOut ?? null,
         // [] clears the checklist (host deletes the field on empty).
         checklist: rows.length > 0 ? rows : null,
       })
-      : controller.create({
+      : controller.createFromPanel({
         title,
         workspaceId,
         urgency,
@@ -362,10 +456,11 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         model: picked,
         speed: effectiveSpeed,
         permissionMode,
+        requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
         ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
         ...(presetOut !== undefined ? { presetId: presetOut } : {}),
         ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
-      })
+      }, sessionId)
     void action.catch(() => undefined).finally(() => setBusy(false))
   }
 
@@ -389,13 +484,14 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           model: picked ?? null,
           speed: effectiveSpeed,
           permissionMode,
+          requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
           ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
           presetId: presetOut ?? null,
           checklist: rows.length > 0 ? rows : null,
         })
         if (saved) await controller.run(task.id)
       } else {
-        const id = await controller.create({
+        const id = await controller.createFromPanel({
           title,
           workspaceId,
           urgency,
@@ -405,10 +501,11 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           model: picked,
           speed: effectiveSpeed,
           permissionMode,
+        requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
           ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
           ...(presetOut !== undefined ? { presetId: presetOut } : {}),
           ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
-        })
+        }, sessionId)
         if (id !== undefined) await controller.run(id)
       }
     })().catch(() => undefined).finally(() => setBusy(false))
@@ -493,6 +590,17 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                   </option>
                 ))}
               </select>
+            </Field>
+          )}
+
+          {gateDiscoveryReady && gateOptions.length > 0 && (
+            <Field label="执行能力" full>
+              <CapabilityEditor
+                options={gateOptions}
+                selected={requiredCapabilities}
+                onChange={setRequiredCapabilities}
+                permissionMode={permissionMode}
+              />
             </Field>
           )}
 
@@ -633,6 +741,7 @@ interface TaskRecordLike {
   urgency: Urgency
   execution: { mode: 'claim' | 'scheduled'; cron?: string }
   model?: { provider: string; model: string; reasoningEffort?: string }
+  requiredCapabilities?: TaskCapability[]
   speed?: TaskSpeed
   permissionMode?: PermissionMode
   isolation?: IsolationMode

@@ -8,7 +8,7 @@
  * @module dsh-taskboard/client/controller
  */
 import type { ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
-import type { ChecklistItem, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
+import type { ChecklistItem, TaskCapability, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
 import type { SessionJumpResult } from './session-jump.ts'
@@ -23,6 +23,11 @@ export interface BoardFilters {
 
 /** Column sort orders. */
 export type SortBy = 'default' | 'updated' | 'urgency' | 'created'
+
+/** One lazy-gate Skill the host reports as currently available to the GUI. */
+export interface GateCapabilityOption {
+  name: TaskCapability
+}
 
 /** localStorage key for persisted view state (filters + sort). */
 const VIEW_KEY = 'dsh-taskboard-view-v1'
@@ -112,10 +117,12 @@ export class BoardController {
   /** Newest change-frame revision seen on the SSE stream (S16 refresh chase). */
   private seenRevision: number | undefined
   private sessionJumper: ((sessionId: string) => Promise<SessionJumpResult>) | undefined
+  private currentSessionAuthorizer: ((sessionId?: string) => Promise<void>) | undefined
   /** Composer catalog faces, installed formally by the client entry (T13). */
   private readonly catalogFaces: {
     models?: () => Promise<Array<{ provider: string; model: string; name?: string }>>
     presets?: () => Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }>
+    capabilities?: () => Promise<GateCapabilityOption[]>
   } = {}
 
   /** @param client - the route client. */
@@ -277,6 +284,32 @@ export class BoardController {
     this.sessionJumper = jumper
   }
 
+  /** Install the host-backed current-session authorization bridge. */
+  installCurrentSessionAuthorizer(authorizer: (sessionId?: string) => Promise<void>): void {
+    this.currentSessionAuthorizer = authorizer
+  }
+
+  /** Best-effort user-panel grant; task creation itself remains usable on old hosts. */
+  async authorizeCurrentSession(sessionId?: string): Promise<boolean> {
+    if (this.currentSessionAuthorizer === undefined) return false
+    try {
+      await this.currentSessionAuthorizer(sessionId)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** Install the lazy-gate Skill catalog used by the capability checkboxes. */
+  installCapabilityCatalog(fn: () => Promise<GateCapabilityOption[]>): void {
+    this.catalogFaces.capabilities = fn
+  }
+
+  /** The installed lazy-gate Skill catalog, when the host provides it. */
+  get capabilityCatalog(): (() => Promise<GateCapabilityOption[]>) | undefined {
+    return this.catalogFaces.capabilities
+  }
+
   /** T13: formal installers for the composer catalog faces (was a monkeypatch from the client entry). */
   installModelCatalog(fn: () => Promise<Array<{ provider: string; model: string; name?: string }>>): void {
     this.catalogFaces.models = fn
@@ -328,6 +361,13 @@ export class BoardController {
       this.setState({ error: error instanceof Error ? error.message : String(error) })
       return undefined
     }
+  }
+
+  /** Create from the GUI panel and best-effort authorize its hosting session. */
+  async createFromPanel(body: Parameters<TaskboardClient['create']>[0], sessionId?: string): Promise<string | undefined> {
+    const id = await this.create(body)
+    if (id !== undefined) await this.authorizeCurrentSession(sessionId)
+    return id
   }
 
   /** Edit task fields (form modal submit; the GUI is the owner surface). */
@@ -549,6 +589,7 @@ export class BoardController {
         speed: task.speed,
         permissionMode: task.permissionMode,
         isolation: task.isolation,
+        requiredCapabilities: task.requiredCapabilities,
         ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
         ...(task.checklist !== undefined && task.checklist.length > 0 ? { checklist: task.checklist.map(i => i.text) } : {}),
       })
@@ -626,6 +667,7 @@ export class BoardController {
         speed: task.speed,
         permissionMode: task.permissionMode,
         isolation: task.isolation,
+        requiredCapabilities: task.requiredCapabilities,
         ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
         ...(task.checklist !== undefined && task.checklist.length > 0 ? { checklist: task.checklist.map(i => i.text) } : {}),
       },

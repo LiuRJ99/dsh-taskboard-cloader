@@ -62,6 +62,8 @@ export type CreateTaskBody = {
   presetId?: string
   /** Acceptance checklist item texts (host mints ids, all unchecked). */
   checklist?: string[]
+  /** Lazy-gate Skill names selected by the GUI; taskboard is always included. */
+  requiredCapabilities?: string[]
 }
 
 /** Update-task request body (ifVersion mandatory). */
@@ -86,6 +88,8 @@ export type UpdateTaskBody = {
   presetId?: string | null
   /** Replace the whole checklist (GUI owner surface); null clears it. */
   checklist?: unknown
+  /** Replace GUI-selected lazy-gate Skill names; taskboard is always included. */
+  requiredCapabilities?: string[] | null
 }
 
 /** Move-task request body (ifVersion mandatory; the user MAY move to done). */
@@ -145,6 +149,8 @@ export type TaskTemplateSpec = {
   presetId?: string
   /** Checklist item texts (host mints ids at create time). */
   checklist?: string[]
+  /** Lazy-gate Skill names selected for executions; taskboard is implicit. */
+  requiredCapabilities?: string[]
 }
 
 /** One reusable task template (0.4.0). */

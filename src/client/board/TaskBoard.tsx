@@ -311,6 +311,7 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
       {state.composerOpen && (
         <TaskFormModal
           controller={controller}
+          sessionId={scope?.sessionId}
           task={state.editingId === undefined ? undefined : state.ledger.tasks.find(t => t.id === state.editingId)}
         />
       )}

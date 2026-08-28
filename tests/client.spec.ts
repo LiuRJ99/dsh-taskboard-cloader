@@ -1086,6 +1086,7 @@ describe('client half', () => {
 
     const creates: unknown[] = []
     const updates: unknown[] = []
+    const authorized: Array<string | undefined> = []
     const client = {
       state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
       workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
@@ -1094,6 +1095,8 @@ describe('client half', () => {
       update: async (_id: string, body: unknown) => { updates.push(body); return { id: 't' } },
     }
     const controller = new BoardController(client as never)
+    controller.installCapabilityCatalog(async () => [{ name: 'browser' }, { name: 'computer-use' }])
+    controller.installCurrentSessionAuthorizer(async sessionId => { authorized.push(sessionId) })
     controller.start()
     await new Promise(r => setTimeout(r, 10))
 
@@ -1102,11 +1105,13 @@ describe('client half', () => {
     let host = document.createElement('div')
     document.body.append(host)
     let root = createRoot(host)
-    root.render(React.createElement(TaskFormModal, { controller }))
+    root.render(React.createElement(TaskFormModal, { controller, sessionId: 'panel-session' }))
     await new Promise(r => setTimeout(r, 20))
 
     const titleInput = host.querySelector<HTMLInputElement>('input[maxlength="200"]')!
     expect(titleInput.value).toBe('模板任务')
+    expect(host.querySelector('[data-required="true"]')).toBeNull()
+    expect(host.textContent).not.toContain('任务看板')
     let rows = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-cke-text'))
     expect(rows).toHaveLength(2)
     expect(rows[0]!.value).toBe('复现')
@@ -1120,9 +1125,19 @@ describe('client half', () => {
     setter?.call(rows[2]!, '回归通过')
     rows[2]!.dispatchEvent(new Event('input', { bubbles: true }))
     await new Promise(r => setTimeout(r, 10))
+    const computerCapability = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-capability input'))
+      .find(input => input.parentElement?.textContent?.includes('电脑操作'))
+    computerCapability?.click()
+    await new Promise(r => setTimeout(r, 10))
     ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '创建任务'))!.click()
     await new Promise(r => setTimeout(r, 10))
-    expect(creates[0]).toMatchObject({ title: '模板任务', urgency: 'urgent', checklist: ['复现', '修复', '回归通过'] })
+    expect(creates[0]).toMatchObject({
+      title: '模板任务',
+      urgency: 'urgent',
+      checklist: ['复现', '修复', '回归通过'],
+      requiredCapabilities: ['taskboard', 'computer-use'],
+    })
+    expect(authorized).toEqual(['panel-session'])
 
     root.unmount()
     host.remove()

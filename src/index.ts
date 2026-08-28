@@ -46,6 +46,16 @@ export const name = 'dsh-taskboard'
 /** Required host services (tool registry + prompt assembly). */
 export const inject = ['tools', 'systemPrompt']
 
+/** Service name is intentionally structural so taskboard does not depend on the optional gate package. */
+const TOOL_LAZY_GATE_SERVICE = 'toolLazyGate'
+interface ToolLazyGateService {
+  grant(agent: unknown, skillNames: readonly string[], provenance: 'execution' | 'claim'): void | Promise<void>
+}
+
+function lazyGateService(ctx: { get(name: string): unknown }): ToolLazyGateService | undefined {
+  return ctx.get(TOOL_LAZY_GATE_SERVICE) as ToolLazyGateService | undefined
+}
+
 /** Install the DSH model selector plus the provider-neutral service-tier hint. */
 function installTaskModelOptions(agentCtx: unknown, selection: TaskModel | undefined, speed?: TaskSpeed, serviceTier?: string): void {
   if (selection !== undefined) {
@@ -121,6 +131,9 @@ export function apply(ctx: Context): void {
       workspaces: workspaceFace(wsCtx.workspaceRegistry),
       now,
       modelProviders,
+      authorizeSession: (agent, skillNames, provenance) => {
+        return lazyGateService(wsCtx)?.grant(agent, skillNames, provenance)
+      },
     }))
 
     // Settlement listener over the session event bus.
@@ -173,6 +186,9 @@ export function apply(ctx: Context): void {
           if (typeof target.append !== 'function') throw new Error('permission mode unavailable: no session append face')
           target.append('sandbox/mode', { mode })
           target.append('approval/policy', { policy: mode === 'danger-full-access' ? 'never' : 'ask' })
+        },
+        authorizeSession: (agent, skillNames, provenance) => {
+          return lazyGateService(agentCtx)?.grant(agent, skillNames, provenance)
         },
         now,
         git,

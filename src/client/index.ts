@@ -12,7 +12,7 @@
  * @module dsh-taskboard/client
  */
 import { createClient } from './api.ts'
-import { BoardController } from './controller.ts'
+import { BoardController, type GateCapabilityOption } from './controller.ts'
 import { injectStyles } from './styles.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
@@ -20,6 +20,7 @@ import { registerBetterSidebarTab } from './sidebar-tab.tsx'
 import { createSessionJumper, type SessionsServiceFace, type WorkspacesServiceFace } from './session-jump.ts'
 import { isTaskModelSupported } from './model-catalog.ts'
 import { MODEL_CAPABILITY_SERVICE, type ModelCapability, type ModelCapabilityProvider } from '../shared/model-capabilities.ts'
+import { TASKBOARD_CAPABILITY } from '../shared/protocol.ts'
 
 /** Client plugin name. */
 export const name = 'dsh-taskboard/client'
@@ -29,6 +30,9 @@ export const inject = ['connection']
 
 /** Narrow connection face for the model catalog + preset roster. */
 interface ConnectionFace {
+  rpc?: {
+    call(path: string, endpoint: string, payload: unknown): Promise<{ ok: true; value?: unknown } | { ok: false; error?: unknown }>
+  }
   api: {
     llm: {
       models(payload: Record<string, never>): Promise<{ result: { ok: true; value: { groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string; description?: string; reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string }; serviceTiers?: readonly { id: string; name?: string; description?: string }[] }> }> } } | { ok: false } }>
@@ -45,6 +49,25 @@ interface ClientContextFace {
   effect?(fn: () => unknown, label?: string): void
   /** Cordis lifecycle notifications let optional peers register after us. */
   on?(event: string, listener: (...args: unknown[]) => unknown, options?: { global?: boolean }): () => unknown
+}
+
+interface CurrentSessionListFace {
+  list?: {
+    getSnapshot?(): { current?: unknown }
+  }
+}
+
+function sessionIdFromCurrent(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length > 0) return value
+  if (typeof value !== 'object' || value === null) return undefined
+  const record = value as { id?: unknown; sessionId?: unknown }
+  if (typeof record.id === 'string' && record.id.length > 0) return record.id
+  return typeof record.sessionId === 'string' && record.sessionId.length > 0 ? record.sessionId : undefined
+}
+
+function currentInteractiveSessionId(ctx: ClientContextFace): string | undefined {
+  const sessions = ctx.get?.('sessions') as CurrentSessionListFace | undefined
+  return sessionIdFromCurrent(sessions?.list?.getSnapshot?.().current)
 }
 
 /**
@@ -108,6 +131,43 @@ export function apply(ctx: ClientContextFace): void {
         const presets = response.result.value.presets.map((p: { id: string; name?: string }) => ({ id: p.id, name: p.name }))
         const def = response.result.value.presets.find((p: { id: string; isDefault: boolean }) => p.isDefault)
         return { presets, ...(def !== undefined ? { defaultId: def.id } : {}) }
+      })
+
+      // Lazy-gate discovery is optional and is the sole signal that the GUI
+      // should expose extra execution capabilities. A missing/disabled gate is
+      // represented as undefined internally and never falls back to noisy,
+      // non-functional Browser/Computer checkboxes.
+      let lazyGateDiscovery: Promise<GateCapabilityOption[] | undefined> | undefined
+      const discoverLazyGate = (refresh = false): Promise<GateCapabilityOption[] | undefined> => {
+        if (!refresh && lazyGateDiscovery !== undefined) return lazyGateDiscovery
+        const rpc = connection.rpc
+        lazyGateDiscovery = rpc?.call === undefined
+          ? Promise.resolve(undefined)
+          : rpc.call('/tool-lazy-gate', 'discover', {}).then(response => {
+              if (!response.ok || typeof response.value !== 'object' || response.value === null) return undefined
+              // The host keeps `skills` complete for the lazy-gate settings page;
+              // Taskboard intentionally consumes only its active-only projection.
+              const skills = (response.value as { enabledSkills?: unknown }).enabledSkills
+              if (!Array.isArray(skills)) return undefined
+              return skills
+                .filter((skill): skill is { name: string } => typeof skill === 'object' && skill !== null && typeof (skill as { name?: unknown }).name === 'string')
+                .map(skill => ({ name: skill.name }))
+            }).catch(() => undefined)
+        return lazyGateDiscovery
+      }
+      // A fresh form opens a fresh discovery cycle so newly enabled/registered
+      // capabilities appear without retaining stale catalog data. The submit
+      // path shares that in-flight result and does not issue a second probe.
+      controller.installCapabilityCatalog(async () => (await discoverLazyGate(true)) ?? [])
+      controller.installCurrentSessionAuthorizer(async explicitSessionId => {
+        const skills = await discoverLazyGate()
+        // No gate, or no enabled Taskboard capability: do not make a pointless
+        // panel authorization RPC. Task creation itself remains available.
+        if (skills === undefined || !skills.some(skill => skill.name === TASKBOARD_CAPABILITY)) return
+        const sessionId = explicitSessionId ?? currentInteractiveSessionId(ctx)
+        if (sessionId === undefined) throw new Error('当前会话不可用，无法授权任务看板')
+        const response = await connection.rpc?.call('/tool-lazy-gate', 'grant-taskboard', { sessionId })
+        if (response === undefined || !response.ok) throw new Error('当前运行时不支持任务看板会话授权')
       })
     }
 
