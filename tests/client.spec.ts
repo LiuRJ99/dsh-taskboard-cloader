@@ -1418,6 +1418,97 @@ describe('client half', () => {
     expect(expanded.matches('[class*="_collapsed"]')).toBe(false)
   })
 
+  it('0.5.2 回归：DSH Desktop 非兼容模式（extended frame）下入口与看板都能挂载；隐藏规则第三选择器', async () => {
+    localStorage.clear()
+    // Earlier tests in this file leave their shell fixtures in the shared
+    // jsdom document (they dispose the entry, not the columns) — clear
+    // every prior column/entry/view so the selectors below see ONLY the
+    // extended frame built in this test.
+    for (const selector of [
+      '[data-pane="sidebar"]', '[class*="sidebarCol"]',
+      '[data-pane="conversation"]', '[class*="centerCol"]',
+      '[data-dsh-atb-entry]', '[data-dsh-atb-view]',
+    ]) {
+      for (const el of document.querySelectorAll(selector)) el.remove()
+    }
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { mountSidebarEntry } = await import('../src/client/sidebar-entry.ts')
+    const { mountBoard, BOARD_VIEW_SELECTOR } = await import('../src/client/board-mount.tsx')
+    const { injectStyles } = await import('../src/client/styles.ts')
+    injectStyles()
+
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      templates: async () => ({ templates: [] }),
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    // The DSH Desktop extended-mode frame shape (verified against
+    // anywhere-labs/dsh-desktop ExtendedFrame.tsx and the installed
+    // app.asar): the official ui-layout row is DISABLED — the desktop
+    // package owns the columns. NO data-pane attributes, NO
+    // sidebarCol/centerCol substrings; the official sidebar still renders
+    // (unchanged) inside dshDesktopUpstreamSidebar with its Xa_ classes.
+    const frame = document.createElement('div')
+    frame.className = 'dshDesktopFrame'
+    frame.dataset.desktopMode = 'extended'
+    const surface = document.createElement('aside')
+    surface.className = 'dshDesktopSidebarSurface'
+    const upstream = document.createElement('div')
+    upstream.className = 'dshDesktopUpstreamSidebar'
+    const sidebarRoot = document.createElement('div')
+    sidebarRoot.className = 'hHd-Xa_root'
+    const logoRow = document.createElement('div')
+    logoRow.className = 'hHd-Xa_logoRow'
+    const newSession = document.createElement('button')
+    newSession.className = 'hHd-Xa_newSession'
+    newSession.textContent = '新会话'
+    logoRow.append(newSession)
+    sidebarRoot.append(logoRow)
+    upstream.append(sidebarRoot)
+    surface.append(upstream)
+    const center = document.createElement('main')
+    center.className = 'dshDesktopConversationSurface'
+    const conversationContent = document.createElement('div')
+    conversationContent.textContent = '会话内容'
+    center.append(conversationContent)
+    frame.append(surface, center)
+    document.body.append(frame)
+
+    const disposeEntry = mountSidebarEntry(controller)
+    const disposeBoard = mountBoard(controller)
+    await new Promise(r => setTimeout(r, 20))
+
+    // On 0.5.1 both stayed null forever: sidebarRoot()'s column selector
+    // matched nothing in the extended frame, so the entry never placed.
+    const entry = document.querySelector<HTMLElement>('[data-dsh-atb-entry]')
+    expect(entry).not.toBeNull()
+    expect(upstream.contains(entry)).toBe(true)
+    const view = document.querySelector<HTMLElement>(BOARD_VIEW_SELECTOR)
+    expect(view).not.toBeNull()
+    expect(view!.parentElement).toBe(center)
+
+    // The hide rule knows the third column generation.
+    const css = document.getElementById('dsh-taskboard-styles')!.textContent ?? ''
+    expect(css).toContain('html[data-dsh-atb-active] .dshDesktopConversationSurface > *:not([data-dsh-atb-view])')
+
+    // Collapse signal: the extended frame sets data-sidebar-collapsed on
+    // ITSELF — the existing rail rules key on that attribute unchanged.
+    frame.setAttribute('data-sidebar-collapsed', '')
+    expect(frame.matches('[data-sidebar-collapsed]')).toBe(true)
+
+    disposeEntry()
+    disposeBoard()
+    controller.closeBoard()
+    frame.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
   it('SSE 帧对账：hello/change 按 api.ts 的 revision 规则触发 onGap/onChange', async () => {
     localStorage.clear()
     vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)

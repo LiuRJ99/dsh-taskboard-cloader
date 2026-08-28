@@ -183,7 +183,7 @@ Export a full backup anytime with "⬇ JSON" in the toolbar, or the task list as
 ## FAQ
 
 **No "Task Board" entry in the sidebar?**
-Refresh the page. Still nothing? Confirm the plugin is installed in the current profile and restart `dsh web` (the host half loads at process start). Since 0.4.2 both the legacy `data-pane` shell and the newer hash-class shell (DSH Desktop) are supported.
+Refresh the page. Still nothing? Confirm the plugin is installed in the current profile and restart `dsh web` (the host half loads at process start). All three shell generations are supported: `data-pane` (dev), hashed class names (official layout, since 0.4.2), and the DSH Desktop non-compat extended frame (since 0.5.2).
 
 **Where is task data stored? How do I back it up?**
 See [Configuration & Data](#configuration--data). "⬇ JSON" in the GUI exports everything anytime; "⬆ Import" restores it.
@@ -215,6 +215,11 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
+
+### 0.5.2
+
+- **Fixed the sidebar entry and board never appearing in DSH Desktop's non-compat (extended) mode**: extended mode disables the official `ui-layout` row and owns the layout itself (`.dshDesktopFrame` / `.dshDesktopSidebarSurface` / `.dshDesktopUpstreamSidebar` / `.dshDesktopConversationSurface`) — a third DOM generation the 0.5.1 dual selectors all missed: the entry retried every 2 seconds forever and never placed, and the board view never mounted either. Three selectors were extended to triple-generation matching: the sidebar column (sidebar-entry), the center-column mount (board-mount), and the board-active hide rule (styles); collapsed styling needed no change (the extended frame sets `data-sidebar-collapsed` itself, which the existing rail rules already key on). The official sidebar still renders unchanged inside the extended frame (`Xa_logoRow`/`Xa_newSession` anchors intact), so the entry lands exactly where it does in compatibility mode
+- Verified against anywhere-labs/dsh-desktop's `ExtendedFrame.tsx` source and the installed app.asar; a regression test builds the extended-frame DOM shape and asserts entry mount, board mount, and the third hide selector
 
 ### 0.5.1
 

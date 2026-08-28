@@ -183,7 +183,7 @@ agent：
 ## 常见问题
 
 **侧边栏没有「任务看板」入口？**
-刷新页面；仍没有则确认插件已装进当前 profile 并重启 `dsh web`（宿主半区在进程启动时加载）。0.4.2 起旧 `data-pane` shell 与新哈希类名 shell（DSH Desktop）都支持。
+刷新页面；仍没有则确认插件已装进当前 profile 并重启 `dsh web`（宿主半区在进程启动时加载）。三代 shell 均支持：`data-pane`（dev）、哈希类名（官方布局，0.4.2 起）、DSH Desktop 非兼容 extended frame（0.5.2 起）。
 
 **任务数据存在哪？怎么备份？**
 见[配置与数据](#配置与数据)。GUI「⬇ JSON」随时全量导出；「⬆ 导入」可恢复。
@@ -215,6 +215,11 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 ```
 
 ## 升级日志
+
+### 0.5.2
+
+- **修复 DSH Desktop 非兼容模式（extended）下侧栏入口与看板都不出现**：Desktop 的 extended 模式会禁用官方 `ui-layout` row、以自有 frame 接管整个布局（`.dshDesktopFrame` / `.dshDesktopSidebarSurface` / `.dshDesktopUpstreamSidebar` / `.dshDesktopConversationSurface`），与此前两代 shell（dev 的 `data-pane` 属性、官方布局的 `sidebarCol`/`centerCol` 哈希类）完全不同，0.5.1 的双选择器全部落空——入口每 2 秒重试永远插不进，看板视图也挂不上。本次把三处选择器扩为三代兼容：侧栏列（sidebar-entry）、中间列挂载（board-mount）、看板激活隐藏规则（styles）；折叠态无需改动（extended frame 自身就设置 `data-sidebar-collapsed`，现有折叠规则直接命中）。官方 sidebar 内容在 extended 模式下原样渲染（`Xa_logoRow`/`Xa_newSession` 锚点不变），入口插入位置与兼容模式一致
+- 实测依据：anywhere-labs/dsh-desktop 的 `ExtendedFrame.tsx` 源码与本机安装 app.asar 二进制扫描；回归测试构造 extended frame DOM 形态，断言入口挂载、看板挂载与第三隐藏选择器
 
 ### 0.5.1
 

@@ -69,10 +69,12 @@ export const STYLES = `
 .dsh-atb-search { width: 130px; }
 .dsh-atb-badge[data-kind="stale"] { background: rgba(217,130,43,.15); color: #d9822b; }
 
-/* 0.4.2: dual column matching — dev shell's data-pane pane OR the Desktop
- * shell's CSS-Module hashed centerCol (see board-mount.tsx). */
+/* Triple-generation column matching — dev shell's data-pane pane, the
+ * official layout shell's CSS-Module hashed centerCol (0.4.2), or DSH
+ * Desktop's non-compat extended frame surface (0.5.2, see board-mount.tsx). */
 html[data-dsh-atb-active] [data-pane="conversation"] > *:not([data-dsh-atb-view]),
-html[data-dsh-atb-active] [class*="centerCol"] > *:not([data-dsh-atb-view]) { display: none !important; }
+html[data-dsh-atb-active] [class*="centerCol"] > *:not([data-dsh-atb-view]),
+html[data-dsh-atb-active] .dshDesktopConversationSurface > *:not([data-dsh-atb-view]) { display: none !important; }
 .dsh-atb-view { display: none; }
 html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 

@@ -24,10 +24,17 @@ const ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke
 
 /**
  * Find the sidebar shell root element, or undefined while not yet mounted.
- * (Same as the working family plugins: sidebarCol pane → logoRow owner.)
+ * Triple-generation matching (0.5.2): the dev shell's data-pane pane, the
+ * official layout's CSS-Module sidebarCol, and DSH Desktop's non-compat
+ * (extended) frame — which disables the official ui-layout row and owns
+ * the columns itself (aside.dshDesktopSidebarSurface >
+ * div.dshDesktopUpstreamSidebar wrapping the unchanged official sidebar).
+ * logoRow-owner resolution is identical on all three generations.
  */
 function sidebarRoot(): HTMLElement | undefined {
-  const column = document.querySelector<HTMLElement>('[data-pane="sidebar"], [class*="sidebarCol"]')
+  const column = document.querySelector<HTMLElement>(
+    '[data-pane="sidebar"], [class*="sidebarCol"], .dshDesktopUpstreamSidebar, .dshDesktopSidebarSurface',
+  )
   if (column === null) return undefined
   const logoOwner = column.querySelector<HTMLElement>('[class*="logoRow"]')?.parentElement
   return logoOwner ?? (column.firstElementChild as HTMLElement | undefined)
