@@ -218,8 +218,9 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 
 ### 0.5.2
 
-- **修复 DSH Desktop 非兼容模式（extended）下侧栏入口与看板都不出现**：Desktop 的 extended 模式会禁用官方 `ui-layout` row、以自有 frame 接管整个布局（`.dshDesktopFrame` / `.dshDesktopSidebarSurface` / `.dshDesktopUpstreamSidebar` / `.dshDesktopConversationSurface`），与此前两代 shell（dev 的 `data-pane` 属性、官方布局的 `sidebarCol`/`centerCol` 哈希类）完全不同，0.5.1 的双选择器全部落空——入口每 2 秒重试永远插不进，看板视图也挂不上。本次把三处选择器扩为三代兼容：侧栏列（sidebar-entry）、中间列挂载（board-mount）、看板激活隐藏规则（styles）；折叠态无需改动（extended frame 自身就设置 `data-sidebar-collapsed`，现有折叠规则直接命中）。官方 sidebar 内容在 extended 模式下原样渲染（`Xa_logoRow`/`Xa_newSession` 锚点不变），入口插入位置与兼容模式一致
-- 实测依据：anywhere-labs/dsh-desktop 的 `ExtendedFrame.tsx` 源码与本机安装 app.asar 二进制扫描；回归测试构造 extended frame DOM 形态，断言入口挂载、看板挂载与第三隐藏选择器
+- **修复 DSH Desktop 非兼容模式下侧栏没有「任务看板」入口、看板也打不开的问题**：此前插件只认识前两代界面结构，Desktop 的新界面把整个布局骨架换掉了，入口找不到落脚点，只能在后台一遍遍徒劳重试。现在三代界面（浏览器版、兼容模式、非兼容模式）都能正常显示入口和看板
+- 侧栏入口换上新图标：更直观的三列看板样式
+- 新增非兼容模式的回归测试（共 199 项）
 
 ### 0.5.1
 

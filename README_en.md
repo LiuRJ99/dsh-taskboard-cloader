@@ -218,8 +218,9 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 
 ### 0.5.2
 
-- **Fixed the sidebar entry and board never appearing in DSH Desktop's non-compat (extended) mode**: extended mode disables the official `ui-layout` row and owns the layout itself (`.dshDesktopFrame` / `.dshDesktopSidebarSurface` / `.dshDesktopUpstreamSidebar` / `.dshDesktopConversationSurface`) — a third DOM generation the 0.5.1 dual selectors all missed: the entry retried every 2 seconds forever and never placed, and the board view never mounted either. Three selectors were extended to triple-generation matching: the sidebar column (sidebar-entry), the center-column mount (board-mount), and the board-active hide rule (styles); collapsed styling needed no change (the extended frame sets `data-sidebar-collapsed` itself, which the existing rail rules already key on). The official sidebar still renders unchanged inside the extended frame (`Xa_logoRow`/`Xa_newSession` anchors intact), so the entry lands exactly where it does in compatibility mode
-- Verified against anywhere-labs/dsh-desktop's `ExtendedFrame.tsx` source and the installed app.asar; a regression test builds the extended-frame DOM shape and asserts entry mount, board mount, and the third hide selector
+- **Fixed the missing "Task Board" sidebar entry — and the board that wouldn't open — in DSH Desktop's non-compat mode**: the plugin only recognized the previous two interface generations, and the Desktop's new shell rebuilt the whole layout skeleton, so the entry never found its footing and kept retrying in the background forever. All three shell generations (browser, compatibility mode, non-compat mode) now show the entry and the board properly
+- New sidebar icon: a more intuitive three-lane kanban style
+- Added regression coverage for non-compat mode (199 cases in total)
 
 ### 0.5.1
 
