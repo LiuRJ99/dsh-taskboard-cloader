@@ -369,7 +369,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       workspaceId: { type: 'string', required: true, description: 'Project (DSH workspace id) this task belongs to.' },
       urgency: { type: 'string', required: true, description: 'urgent (red) | normal (purple) | relaxed (blue).' },
       description: { type: 'string', description: 'What the task involves (plain text).' },
-      prompt: { type: 'string', description: 'Prompt sent to a fresh session when executed; default = title+description.' },
+      prompt: { type: 'string', description: 'Extra execution instructions; the session receives title+description+this prompt.' },
       status: { type: 'string', description: 'Initial status; default todo. backlog = not approved for execution.' },
       execution: {
         type: 'object',

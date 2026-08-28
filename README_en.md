@@ -136,7 +136,7 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - **DoD acceptance checklists (0.4.0)**: define acceptance criteria at creation (≤30 items); agents add/tick items via `taskboard_checklist` (with evidence notes); users tick them directly in the detail panel; unchecked items glow red while In Review and the card shows a "☑ n/m" badge (red until all ticked); checklist editing manages the whole group in the form (tick states and evidence preserved)
 - **Structured execution reports (0.4.0)**: agents finish with `taskboard_execution_report` (summary / changed files / checks / artifacts / remaining risks), auto-attached to the current execution; rendered side-by-side in the In Review detail panel; the opening protocol makes the order explicit (report → comment → move to In Review)
 - **JSON import (0.4.0)**: "⬆ Import" in the toolbar picks a backup file → dry-run preview (added / overwritten / invalid breakdown) → merge (upsert by id) or full replace (auto-backup of the current ledger first + double confirmation); JSON exports restore directly in the same format
-- **Task templates (0.4.0)**: "+ New Task ▼" dropdown (blank / built-in Bug fix · Release check · Routine inspection / manage templates) pre-fills the form (title / description / prompt / urgency / schedule / isolation / preset / checklist); "⌗ Save as template" in the task detail captures your own presets; templates live in a side file in the DSH home directory, rename/delete in the manager dialog
+- **Task templates (0.4.0)**: "+ New Task ▼" dropdown (blank / built-in New feature · Bug fix · Release check · Routine inspection / manage templates) pre-fills the form (title / description / prompt / urgency / schedule / isolation / preset / checklist); "⌗ Save as template" in the task detail captures your own presets; templates live in a side file in the DSH home directory, rename/delete in the manager dialog
 - **Diff viewer (0.4.0)**: clicking a commit row or an uncommitted modified-file row in the isolation block expands a diff in-board (`git show` for commits, `git diff` for files, capped at 128 KB / 2000 lines with truncation noted); falls back to the main repo when the worktree is gone (commits and baseline-range diffs only)
 
 **Agent tools (`taskboard_*`)**
@@ -144,7 +144,7 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - Code-level protocol gates: agents can never reach *done* (not even with every checklist item ticked); held tasks cannot be preempted; model/execution fields are read-only to agents
 
 **Execution**
-- Manual runs or cron schedules: each execution opens a brand-new session in the task's project (clean context, optional model, optional preset); two opening messages arrive in the same turn — the plugin context line carries the task frame and hand-off protocol (including failure fallback guidance), while the card payload (prompt or title+description) arrives as a normal user message
+- Manual runs or cron schedules: each execution opens a brand-new session in the task's project (clean context, optional model, optional preset); two opening messages arrive in the same turn — the plugin context line carries the task frame and hand-off protocol (including failure fallback guidance), while the card payload (title+description+prompt) arrives as a normal user message
 - **Per-task presets (0.3.3)**: an "execution mode (preset)" dropdown in the create/edit form — execution sessions are composed from that preset (tool sets and persona come from it, matching how the GUI composes new sessions); defaults to the deployment default preset, or pick "follow deployment default"; a broken preset fails the execution outright and records why in the execution history (no half-composed sessions); changeable anytime, effective next round
 - **Git worktree isolated execution (0.3.0)**: per-task toggle (since 0.5.0 the default for newly created tasks comes from Board Settings; factory default runs in place). Every execution happens on a dedicated worktree at `<project>/.dsh-worktrees/<taskId>`, branch `task/<title>+<taskId>` (fixed after first creation; renaming doesn't rename branches). The executing session stays rooted at the project directory (grouping, tools, and the file sandbox fully available — DSH requires session cwd === workspace root, fixed in 0.3.2), and the worktree path plus boundary rules are spelled out in the opening instructions. Settlement collects commit lists / uncommitted-changes warnings / change stats automatically. Non-git projects or missing git degrade gracefully to in-place execution (the reason is recorded; the ledger and execution flow never fail because of git). At acceptance: one-click `--no-ff` merge into the main working tree (dirty tree / conflicts reported verbatim, never auto-resolved), worktree deletion (refused with uncommitted changes), optional branch deletion. "↻ Resume" continues on the existing worktree/branch (previous commits and edits kept)
 - **Board settings (0.5.0)**: "🛠 Settings" in the toolbar — choose how new tasks execute by default (🌿 Worktree isolation / 📁 run in place; factory default is the latter). Saving applies to newly created tasks; later changes never affect existing ones
@@ -215,6 +215,12 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
+
+### 0.5.3
+
+- **The execution prompt is now append-style**: a custom prompt no longer replaces the opening instructions wholesale — the session receives "title + description + prompt", so context written in the description is no longer dropped; the create/edit form copy and the `taskboard_create` tool description were updated to match
+- **New built-in "New feature" template**: placed before "Bug fix" — title prefix "New:", four steps (clarify requirements → implement → add tests → run suites), with a three-item acceptance checklist
+- **"Bug fix" template first line now reads "fix the issues above"**: the description now reaches the session before the prompt, so "above" is the right pointer
 
 ### 0.5.2
 

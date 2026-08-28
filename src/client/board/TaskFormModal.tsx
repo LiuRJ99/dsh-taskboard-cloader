@@ -370,8 +370,8 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
             <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="需求细节、验收标准…" />
           </Field>
 
-          <Field label={editing ? '执行 Prompt' : '执行 Prompt（可选，默认 = 标题+描述）'} full>
-            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder={'发给执行会话的完整指令。支持模板变量：{{lastExecution}}（上次执行结果）、{{lastComments}}（最近 3 条评论）'} />
+          <Field label={editing ? '执行 Prompt（实际 Prompt = 标题+任务描述+Prompt）' : '执行 Prompt（可选；实际 Prompt = 标题+任务描述+Prompt）'} full>
+            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder={'追加在「标题+任务描述」之后发给执行会话的补充指令。支持模板变量：{{lastExecution}}（上次执行结果）、{{lastComments}}（最近 3 条评论）'} />
           </Field>
 
           <Field label="执行方式" full>

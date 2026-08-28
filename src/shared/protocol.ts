@@ -385,7 +385,7 @@ export type TaskRecord = {
   id: string
   title: string
   description: string
-  /** The prompt sent to a fresh session on execution; falls back to title+description. */
+  /** Extra execution prompt; the execution session receives title+description+prompt. */
   prompt: string
   /** Owning project: a DSH workspace id. */
   workspaceId: string
@@ -598,13 +598,14 @@ export function normalizeExecution(
 }
 
 /**
- * The effective prompt of a task: explicit prompt, or title+description.
+ * The effective prompt of a task: title+description, with the explicit
+ * prompt appended when set — title+description+prompt.
  * @param task - the task.
  */
 export function effectivePrompt(task: TaskRecord): string {
-  if (task.prompt.length > 0) return task.prompt
   const head = task.title
-  return task.description.length > 0 ? `${head}\n\n${task.description}` : head
+  const body = task.description.length > 0 ? `${head}\n\n${task.description}` : head
+  return task.prompt.length > 0 ? `${body}\n\n${task.prompt}` : body
 }
 
 /**
