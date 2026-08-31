@@ -92,10 +92,12 @@ html[data-dsh-atb-active] [class*="sidebarCol"] {
 .dsh-atb-search { width: 130px; }
 .dsh-atb-badge[data-kind="stale"] { background: rgba(217,130,43,.15); color: #d9822b; }
 
-/* 0.4.2: dual column matching — dev shell's data-pane pane OR the Desktop
- * shell's CSS-Module hashed centerCol (see board-mount.tsx). */
+/* Triple-generation column matching — dev shell's data-pane pane, the
+ * official layout shell's CSS-Module hashed centerCol (0.4.2), or DSH
+ * Desktop's non-compat extended frame surface (0.5.2, see board-mount.tsx). */
 html[data-dsh-atb-active] [data-pane="conversation"] > *:not([data-dsh-atb-view]),
-html[data-dsh-atb-active] [class*="centerCol"] > *:not([data-dsh-atb-view]) { display: none !important; }
+html[data-dsh-atb-active] [class*="centerCol"] > *:not([data-dsh-atb-view]),
+html[data-dsh-atb-active] .dshDesktopConversationSurface > *:not([data-dsh-atb-view]) { display: none !important; }
 .dsh-atb-view { display: none; }
 html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 /* Better Sidebar owns the outer panel/free-window geometry. Keep the board
@@ -125,8 +127,43 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-spacer { flex: 1; }
 .dsh-atb-select, .dsh-atb-input {
   font: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: 7px;
-  border: 1px solid var(--dsw-border, rgba(128,128,128,.35));
-  background: var(--dsw-bg, transparent); color: inherit;
+  border: 1px solid var(--dsw-border, var(--dsw-alias-border-l2, rgba(128,128,128,.35)));
+  background: var(--dsw-alias-bg-module-platform, var(--dsw-bg-elevated, var(--dsw-bg, transparent)));
+  color: var(--dsw-alias-label-primary, var(--dsw-text-primary, inherit));
+  color-scheme: light dark;
+}
+.dsh-atb-select option,
+.dsh-atb-modal-body select option {
+  background: var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-module-platform, #252830));
+  color: var(--dsw-alias-label-primary, var(--dsw-text-primary, #e6e8eb));
+}
+body[data-ds-dark-theme] .dsh-atb-board,
+body[data-ds-dark-theme] .dsh-atb-modal,
+body[data-ds-dark-theme] .dsh-atb-select,
+body[data-ds-dark-theme] .dsh-atb-input,
+body[data-ds-dark-theme] .dsh-atb-modal-body select,
+body[data-ds-dark-theme] .dsh-atb-modal-body input,
+body[data-ds-dark-theme] .dsh-atb-modal-body textarea {
+  color-scheme: dark;
+}
+body[data-ds-dark-theme] .dsh-atb-select option,
+body[data-ds-dark-theme] .dsh-atb-modal-body select option {
+  background: #252830;
+  color: #e6e8eb;
+}
+@media (prefers-color-scheme: dark) {
+  .dsh-atb-select,
+  .dsh-atb-input,
+  .dsh-atb-modal-body select,
+  .dsh-atb-modal-body input,
+  .dsh-atb-modal-body textarea {
+    color-scheme: dark;
+  }
+  .dsh-atb-select option,
+  .dsh-atb-modal-body select option {
+    background: #252830;
+    color: #e6e8eb;
+  }
 }
 .dsh-atb-chip {
   display: inline-flex; align-items: center; gap: 5px;
@@ -212,6 +249,19 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-badge[data-kind="trashed"] { background: rgba(229,72,77,.14); color: #e5484d; text-decoration: line-through; }
 .dsh-atb-badge[data-kind="done"] { background: rgba(46,160,67,.16); color: #2ea043; }
 .dsh-atb-badge[data-kind="running"] { background: rgba(229,152,42,.16); color: #e69842; }
+.dsh-atb-card-session {
+  font: inherit; font-size: 10.5px; line-height: 1; padding: 2px 6px; border-radius: 5px;
+  border: 1px solid var(--dsw-border, rgba(128,128,128,.3));
+  background: var(--dsw-bg-elevated, rgba(128,128,128,.14));
+  color: var(--dsw-text-secondary, inherit);
+  cursor: pointer; display: inline-flex; align-items: center; gap: 3px;
+  transition: all .15s ease;
+}
+.dsh-atb-card-session:hover {
+  border-color: var(--dsw-alias-brand-primary, #1f2328);
+  background: var(--dsw-hover, rgba(128,128,128,.24));
+  color: var(--dsw-alias-label-primary, inherit);
+}
 
 /* ---------- card quick review (in_review column) ---------- */
 .dsh-atb-quick { display: flex; gap: 6px; margin-top: 7px; }
@@ -269,6 +319,17 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
   background: var(--dsw-alias-fill-tertiary, var(--dsw-bg-inset, rgba(128,128,128,.14)));
   color: var(--dsw-alias-label-primary, inherit);
 }
+.dsh-atb-detail-session {
+  font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--dsw-border, rgba(128,128,128,.32));
+  background: var(--dsw-bg-elevated, rgba(128,128,128,.1));
+  color: var(--dsw-alias-label-primary, inherit);
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.dsh-atb-detail-session:hover {
+  border-color: var(--dsw-alias-brand-primary, #1f2328);
+  background: var(--dsw-hover, rgba(128,128,128,.22));
+}
 
 .dsh-atb-statuspill {
   flex: none; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px; letter-spacing: .02em;
@@ -285,6 +346,14 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
   display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 1;
   padding: 3px 8px; border-radius: 6px;
   background: var(--dsw-bg-inset, rgba(128,128,128,.09)); color: var(--dsw-text-secondary, #999);
+}
+button.dsh-atb-chip2.dsh-atb-chip-btn {
+  font: inherit; border: 1px solid var(--dsw-border, rgba(128,128,128,.25)); cursor: pointer;
+}
+button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
+  border-color: var(--dsw-alias-brand-primary, #1f2328);
+  color: var(--dsw-alias-label-primary, inherit);
+  background: var(--dsw-hover, rgba(128,128,128,.2));
 }
 .dsh-atb-chip2-icon { font-size: 10.5px; opacity: .85; }
 .dsh-atb-chip2[data-tone="urgent"] { background: rgba(229,72,77,.15); color: #e5484d; }
@@ -856,18 +925,26 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
   font-size: 11.5px; color: var(--dsw-alias-label-tertiary, gray);
 }
 .dsh-atb-tplm { max-width: 620px; width: min(620px, 92vw); }
-.dsh-atb-tplm-list { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; }
+.dsh-atb-tplm .dsh-atb-modal-body,
+.dsh-atb-set .dsh-atb-modal-body,
+.dsh-atb-diag .dsh-atb-modal-body,
+.dsh-atb-imp .dsh-atb-modal-body {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.dsh-atb-tplm-list { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; width: 100%; }
 .dsh-atb-tplm-row {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(90px, 130px) auto;
   grid-template-areas: "name category actions" "meta meta meta";
   align-items: center; gap: 7px 10px; padding: 8px 10px; border-radius: 8px;
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25));
+  background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,.02));
 }
 .dsh-atb-tplm-name, .dsh-atb-tplm-category {
   width: 100%; min-width: 0; box-sizing: border-box;
   font-size: 12.5px; padding: 5px 8px; border-radius: 7px;
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3));
   background: var(--dsw-alias-bg-layer-1, transparent); color: inherit;
+  box-sizing: border-box;
 }
 .dsh-atb-tplm-name { grid-area: name; }
 .dsh-atb-tplm-category { grid-area: category; font-size: 11.5px; }

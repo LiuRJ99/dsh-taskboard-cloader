@@ -40,7 +40,7 @@ export interface AgentsFace {
   create(options: {
     sessionId: string
     meta?: { cwd?: string; agentPreset?: string }
-    agentOptions?: { provider?: string; model?: string }
+    agentOptions?: { provider?: string; model?: string; reasoningEffort?: string }
     /** Preset composition callback: mounts tools/persona into the agent's scoped context. */
     setup?: (agentCtx: unknown) => Promise<void> | void
   }): Promise<{
@@ -85,7 +85,7 @@ export interface ExecutionDeps {
   workspaces: ExecutionWorkspaceFace
   events: EventsFace
   now: () => number
-  /** The deployment default model selection (fills sessions of unpinned tasks). */
+  /** The deployment default model (fills sessions of unpinned tasks). */
   defaultModel?: () => TaskModel | undefined
   /** Install the DSH model-selection waterfall for the fresh task agent. */
   installModelSelection?: (agentCtx: unknown, selection: TaskModel | undefined, speed?: TaskSpeed, serviceTier?: string) => void
@@ -455,7 +455,13 @@ export class ExecutionService {
           cwd: workspace.path,
           ...(composition !== undefined ? { agentPreset: composition.agentPreset } : {}),
         },
-        ...(model !== undefined ? { agentOptions: { provider: model.provider, model: model.model } } : {}),
+        ...(model !== undefined ? {
+          agentOptions: {
+            provider: model.provider,
+            model: model.model,
+            ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}),
+          },
+        } : {}),
         ...(setup !== undefined ? { setup } : {}),
       })
     } catch (error) {
@@ -816,8 +822,9 @@ export class ExecutionService {
   }
 
   /**
-   * The card body as a normal user bubble: the effective prompt (explicit
-   * prompt, else title+description) with template variables resolved from
+   * The card body as a normal user bubble: the effective prompt (title+
+   * description, with the explicit prompt appended when set) with template
+   * variables resolved from
    * the task's own history at submit time (valuable for recurring patrols):
    * `{{lastExecution}}` → the previous execution's trigger/outcome/error;
    * `{{lastComments}}` → the last three comments (who + body).

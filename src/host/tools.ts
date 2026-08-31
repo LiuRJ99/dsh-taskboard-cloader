@@ -99,7 +99,7 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
   const holder = isClaimedBy(t)
   if (holder !== undefined) lines.push(`认领: agent ${String(holder).slice(0, 24)}（持有期间其他会话不可移动）`)
   if (t.execution.nextRunAt !== undefined) lines.push(`下次触发: ${new Date(t.execution.nextRunAt).toISOString()}`)
-  if (t.model !== undefined) lines.push(`固定模型: ${t.model.provider}/${t.model.model}${t.model.reasoningEffort !== undefined ? ` · 推理等级 ${t.model.reasoningEffort}` : ''}`)
+  if (t.model !== undefined) lines.push(`固定模型: ${t.model.provider}/${t.model.model}${t.model.reasoningEffort !== undefined ? ` (思考强度: ${t.model.reasoningEffort})` : ''}`)
   if (t.speed !== undefined) lines.push(`速度: ${t.speed === 'fast' ? '快速' : '标准'}`)
   if (t.permissionMode !== undefined) lines.push(`权限模式: ${t.permissionMode}`)
   if (t.presetId !== undefined) lines.push(`执行模式: ${t.presetId}（未指定时为部署默认 preset）`)
@@ -383,7 +383,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       workspaceId: { type: 'string', required: true, description: 'Project (DSH workspace id) this task belongs to.' },
       urgency: { type: 'string', required: true, description: 'urgent (red) | normal (purple) | relaxed (blue).' },
       description: { type: 'string', description: 'What the task involves (plain text).' },
-      prompt: { type: 'string', description: 'Prompt sent to a fresh session when executed; default = title+description.' },
+      prompt: { type: 'string', description: 'Extra execution instructions; the session receives title+description+this prompt.' },
       status: { type: 'string', description: 'Initial status; default todo. backlog = not approved for execution.' },
       execution: {
         type: 'object',
@@ -400,8 +400,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         description: 'Pin executions to one configured model: { provider, model, reasoningEffort? }. Omit to use the default model.',
         properties: {
           provider: { type: 'string', description: 'Provider route id.' },
-          reasoningEffort: { type: 'string', description: 'Adapter-owned reasoning effort id; omit for the model/provider default.' },
           model: { type: 'string', description: 'Provider-owned model id.' },
+          reasoningEffort: { type: 'string', description: 'Optional adapter-owned thinking intensity / reasoning effort (e.g. low, medium, high); omit for the model/provider default.' },
         },
       },
       speed: {

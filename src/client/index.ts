@@ -35,7 +35,27 @@ interface ConnectionFace {
   }
   api: {
     llm: {
-      models(payload: Record<string, never>): Promise<{ result: { ok: true; value: { groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string; description?: string; reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string }; serviceTiers?: readonly { id: string; name?: string; description?: string }[] }> }> } } | { ok: false } }>
+      models(payload: Record<string, never>): Promise<{
+        result: {
+          ok: true
+          value: {
+            groups: Array<{
+              id: string
+              name: string
+              models: Array<{
+                id: string
+                name?: string
+                description?: string
+                reasoning?: {
+                  efforts: Array<{ id: string; name: string; description?: string }>
+                  defaultEffort?: string
+                }
+                serviceTiers?: readonly { id: string; name?: string; description?: string }[]
+              }>
+            }>
+          }
+        } | { ok: false }
+      }>
     }
     agentPresets?: {
       list(payload: Record<string, never>): Promise<{ result: { ok: true; value: { presets: Array<{ id: string; name?: string; isDefault: boolean }> } } | { ok: false } }>
@@ -71,8 +91,8 @@ function currentInteractiveSessionId(ctx: ClientContextFace): string | undefined
 }
 
 /**
- * Mount the client half.
- * @param ctx - the client context (connection injected).
+ * Client entry: installs styles, starts the controller, mounts DOM seats.
+ * @param ctx - the cordis client context.
  */
 export function apply(ctx: ClientContextFace): void {
   try {
@@ -90,7 +110,10 @@ export function apply(ctx: ClientContextFace): void {
         model: string
         name?: string
         description?: string
-        reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string }
+        reasoning?: {
+          efforts: Array<{ id: string; name: string; description?: string }>
+          defaultEffort?: string
+        }
         serviceTiers?: readonly { id: string; name?: string; description?: string }[]
       }
       controller.installModelCatalog(async (): Promise<CatalogRow[]> => {

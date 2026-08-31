@@ -42,8 +42,8 @@ function duration(startedAt: number | undefined, endedAt: number | undefined): s
 }
 
 /** Small labelled meta chip. */
-function Chip({ icon, children, tone }: { icon?: string; children: ReactNode; tone?: string }) {
-  return <span className="dsh-atb-chip2" data-tone={tone}>{icon !== undefined && <span className="dsh-atb-chip2-icon">{icon}</span>}{children}</span>
+function Chip({ icon, children, tone, title }: { icon?: string; children: ReactNode; tone?: string; title?: string }) {
+  return <span className="dsh-atb-chip2" data-tone={tone} title={title}>{icon !== undefined && <span className="dsh-atb-chip2-icon">{icon}</span>}{children}</span>
 }
 
 /** The most recent execution carrying isolation facts, newest first. */
@@ -613,6 +613,8 @@ export function TaskDetail({
   const holder = task.status === 'in_progress' ? task.claimedBy : undefined
   const stale = now !== undefined && isStaleClaim(task, now)
   const unchecked = (task.checklist ?? []).filter(i => !i.checked).length
+  const sessionExecution = [...task.executions].reverse().find(e => e.sessionId !== undefined)
+  const targetSessionId = runningExecution?.sessionId ?? sessionExecution?.sessionId ?? (task.claimedBy?.startsWith('session-') ? task.claimedBy : undefined)
 
   /** Fire one top action under the shared busy guard; re-enable on settle. */
   const runAction = (action: () => Promise<unknown>): void => {
@@ -641,7 +643,14 @@ export function TaskDetail({
           <div className="dsh-atb-detail-chips">
             <Chip tone={task.urgency}>● {URGENCY_LABEL[task.urgency] ?? task.urgency}</Chip>
             <Chip icon="📁">{ws?.title ?? shortId(task.workspaceId)}</Chip>
-            {task.model !== undefined && <Chip icon="✦">{task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}</Chip>}
+            {task.model !== undefined && (
+              <Chip
+                icon="✦"
+                title={`固定模型: ${task.model.provider}/${task.model.model}${task.model.reasoningEffort !== undefined ? ` · 思考强度: ${task.model.reasoningEffort}` : ''}`}
+              >
+                {task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}
+              </Chip>
+            )}
             {task.speed === 'fast' && <Chip icon="⚡">快速</Chip>}
             {task.permissionMode !== undefined && <Chip icon="🛡">{task.permissionMode === 'danger-full-access' ? 'Full access' : task.permissionMode === 'workspace-write' ? 'Workspace Write' : 'Read Only'}</Chip>}
             {task.presetId !== undefined && <Chip icon="🎛" >{task.presetId}</Chip>}
@@ -660,9 +669,16 @@ export function TaskDetail({
             )}
             {(task.isolation === undefined || task.isolation === 'worktree') && task.branch === undefined && <Chip icon="🌿">Worktree 隔离</Chip>}
             {holder !== undefined && (
-              <Chip icon={stale ? '⏱' : '🔑'} tone={stale ? 'urgent' : undefined}>
-                {stale ? '认领超时 · ' : '由 '}{shortId(holder)} 持有
-              </Chip>
+              <button
+                type="button"
+                className="dsh-atb-chip2 dsh-atb-chip-btn"
+                data-tone={stale ? 'urgent' : undefined}
+                title={`点击跳转至该会话：${holder}`}
+                onClick={() => jumpToSession(holder)}
+              >
+                <span className="dsh-atb-chip2-icon">{stale ? '⏱' : '🤖'}</span>
+                {stale ? '认领超时 · ' : '由 '}{shortId(holder)} 持有 ↗
+              </button>
             )}
             {task.trashedAt !== undefined && <Chip icon="🗑" tone="urgent">已删除待清除</Chip>}
             <Chip>v{task.version}</Chip>
@@ -672,6 +688,16 @@ export function TaskDetail({
           </div>
         </div>
         <div className="dsh-atb-detail-topbtns">
+          {targetSessionId !== undefined && (
+            <button
+              type="button"
+              className="dsh-atb-detail-session"
+              title={`一键跳转到对应会话：${targetSessionId}`}
+              onClick={() => jumpToSession(targetSessionId)}
+            >
+              🤖 跳转会话 ↗
+            </button>
+          )}
           <button
             type="button"
             className="dsh-atb-detail-edit"

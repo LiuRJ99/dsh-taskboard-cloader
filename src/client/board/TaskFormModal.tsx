@@ -40,6 +40,42 @@ export function speedForModel(model: CatalogModel | undefined, speed: TaskSpeed)
   return supportsTaskFastSpeed(model) ? speed : 'standard'
 }
 
+/** Local storage key for remembering the last selected model in create mode. */
+export const LAST_MODEL_KEY = 'dsh-taskboard-last-model-v1'
+
+/** Read the remembered model from localStorage. */
+export function loadLastModel(): { provider: string; model: string; reasoningEffort?: string } | undefined {
+  try {
+    const raw = localStorage.getItem(LAST_MODEL_KEY)
+    if (raw === null) return undefined
+    const parsed = JSON.parse(raw) as unknown
+    if (typeof parsed === 'object' && parsed !== null) {
+      const { provider, model, reasoningEffort } = parsed as { provider?: unknown; model?: unknown; reasoningEffort?: unknown }
+      if (typeof provider === 'string' && typeof model === 'string' && provider.trim().length > 0 && model.trim().length > 0) {
+        return {
+          provider: provider.trim(),
+          model: model.trim(),
+          ...(typeof reasoningEffort === 'string' && reasoningEffort.trim().length > 0 ? { reasoningEffort: reasoningEffort.trim() } : {}),
+        }
+      }
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Save the remembered model to localStorage. */
+export function saveLastModel(model?: { provider: string; model: string; reasoningEffort?: string }): void {
+  try {
+    if (model === undefined) {
+      localStorage.removeItem(LAST_MODEL_KEY)
+    } else {
+      localStorage.setItem(LAST_MODEL_KEY, JSON.stringify(model))
+    }
+  } catch { /* storage unavailable */ }
+}
+
 /** Urgency segmented options with a one-line hint each. */
 const URGENCY_OPTIONS: ReadonlyArray<{ value: Urgency; label: string; hint: string }> = [
   { value: 'urgent', label: '紧急', hint: '优先处理' },
@@ -226,7 +262,8 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
   const [mode, setMode] = useState<'claim' | 'scheduled'>(task?.execution.mode === 'scheduled' || prefill?.execution?.mode === 'scheduled' ? 'scheduled' : 'claim')
   const [cron, setCron] = useState(task?.execution.cron ?? prefill?.execution?.cron ?? '0 9 * * *')
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
-  const initialModel = task?.model ?? prefill?.model
+  // In create mode (when not pinned by template), prefill from the remembered last choice.
+  const initialModel = task?.model ?? prefill?.model ?? (!editing ? loadLastModel() : undefined)
   const [model, setModel] = useState(initialModel === undefined ? '' : JSON.stringify(initialModel))
   const [speed, setSpeed] = useState<TaskSpeed>(
     task?.speed === 'fast' || prefill?.speed === 'fast' ? 'fast' : 'standard',
@@ -423,7 +460,8 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
 
   const submit = (): void => {
     if (!valid || busy) return
-    const picked = model !== '' ? (JSON.parse(model) as { provider: string; model: string; reasoningEffort?: string }) : undefined
+    const picked = selectedModel
+    if (!editing) saveLastModel(picked)
     const isolationOut = isolationPayload()
     const presetOut = presetPayload()
     const rows = filledRows()
@@ -467,7 +505,8 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
   /** Save the form, then immediately trigger a manual run of the task. */
   const submitAndRun = (): void => {
     if (!valid || runBlocked || busy) return
-    const picked = model !== '' ? (JSON.parse(model) as { provider: string; model: string; reasoningEffort?: string }) : undefined
+    const picked = selectedModel
+    if (!editing) saveLastModel(picked)
     const isolationOut = isolationPayload()
     const presetOut = presetPayload()
     const rows = filledRows()
@@ -501,7 +540,7 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
           model: picked,
           speed: effectiveSpeed,
           permissionMode,
-        requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
+          requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
           ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
           ...(presetOut !== undefined ? { presetId: presetOut } : {}),
           ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
@@ -626,8 +665,8 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
             <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="需求细节、验收标准…" />
           </Field>
 
-          <Field label={editing ? '执行 Prompt' : '执行 Prompt（可选，默认 = 标题+描述）'} full>
-            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder={'发给执行会话的完整指令。支持模板变量：{{lastExecution}}（上次执行结果）、{{lastComments}}（最近 3 条评论）'} />
+          <Field label={editing ? '执行 Prompt（实际 Prompt = 标题+任务描述+Prompt）' : '执行 Prompt（可选；实际 Prompt = 标题+任务描述+Prompt）'} full>
+            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder={'追加在「标题+任务描述」之后发给执行会话的补充指令。支持模板变量：{{lastExecution}}（上次执行结果）、{{lastComments}}（最近 3 条评论）'} />
           </Field>
 
           <Field label="执行方式" full>

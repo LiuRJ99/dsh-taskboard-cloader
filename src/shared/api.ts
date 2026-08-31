@@ -5,9 +5,9 @@
  *
  * @module dsh-taskboard/shared/api
  */
-import type { BoardSettings, TaskLedger, TaskRecord, TaskSummary } from './protocol.ts'
+import type { BoardSettings, TaskLedger, TaskModel, TaskRecord, TaskSummary } from './protocol.ts'
 
-export type { TaskRecord }
+export type { TaskModel, TaskRecord }
 
 /** Route prefix on the shared DSH webserver (same origin as the GUI). */
 export const ROUTE_PREFIX = '/dsh-taskboard'
@@ -51,7 +51,7 @@ export type CreateTaskBody = {
   description?: string
   prompt?: string
   execution?: { mode?: string; cron?: string }
-  model?: { provider: string; model: string; reasoningEffort?: string }
+  model?: TaskModel
   /** Taskboard-owned speed preference ('standard' | 'fast'); omitted = standard. */
   speed?: string
   /** Three Harness file-permission modes; omitted = deployment default. */
@@ -77,7 +77,7 @@ export type UpdateTaskBody = {
   /** Rebind the task to another project (GUI owner surface only). */
   workspaceId?: string
   execution?: { mode?: string; cron?: string }
-  model?: { provider: string; model: string; reasoningEffort?: string } | null
+  model?: TaskModel | null
   /** Change the taskboard-owned speed preference. */
   speed?: string | null
   /** Change the three-value Harness file-permission mode. */
@@ -142,7 +142,7 @@ export type TaskTemplateSpec = {
   prompt?: string
   urgency?: string
   execution?: { mode?: string; cron?: string }
-  model?: { provider: string; model: string; reasoningEffort?: string }
+  model?: TaskModel
   speed?: string
   permissionMode?: string
   isolation?: string

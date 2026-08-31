@@ -67,78 +67,78 @@ export function TemplateManager({ controller }: { controller: BoardController })
                   </datalist>
                   <div className="dsh-atb-tplm-list">
                     {visibleTemplates.map(t => {
-                          const name = nameOf(t.id, t.name)
-                          const category = categoryOf(t.id, t.category)
-                          const unchanged = name === t.name && category === templateCategoryOf(t)
-                          return (
-                            <div key={t.id} className="dsh-atb-tplm-row">
-                              <input
-                                className="dsh-atb-tplm-name"
-                                value={name}
-                                maxLength={60}
-                                spellCheck={false}
-                                aria-label={`模板名 ${t.name}`}
-                                onChange={e => setEdits(prev => ({ ...prev, [t.id]: e.target.value }))}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter') save(t.id, name, category)
-                                }}
-                              />
-                              <input
-                                className="dsh-atb-tplm-category"
-                                value={category}
-                                maxLength={30}
-                                list="dsh-atb-template-categories"
-                                spellCheck={false}
-                                aria-label={`模板类别 ${t.name}`}
-                                onChange={e => setCategoryEdits(prev => ({ ...prev, [t.id]: e.target.value }))}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter') save(t.id, name, category)
-                                }}
-                              />
-                              <span className="dsh-atb-tplm-meta">
-                                {t.builtin === true ? '内置' : '自建'}
-                                {t.task.checklist !== undefined && t.task.checklist.length > 0 ? ` · 清单 ${t.task.checklist.length} 项` : ''}
-                                {t.task.urgency !== undefined ? ` · ${t.task.urgency}` : ''}
-                                {t.task.speed === 'fast' ? ' · 快速' : ''}
-                                {t.task.permissionMode !== undefined ? ` · ${t.task.permissionMode}` : ''}
-                              </span>
-                              <span className="dsh-atb-tplm-btns">
-                                <button
-                                  type="button"
-                                  className="dsh-atb-btn"
-                                  disabled={unchanged || name.trim().length === 0}
-                                  title="保存模板名和类别"
-                                  onClick={() => save(t.id, name, category)}
-                                >
-                                  改名
+                      const name = nameOf(t.id, t.name)
+                      const category = categoryOf(t.id, t.category)
+                      const unchanged = name === t.name && category === templateCategoryOf(t)
+                      return (
+                        <div key={t.id} className="dsh-atb-tplm-row">
+                          <input
+                            className="dsh-atb-tplm-name"
+                            value={name}
+                            maxLength={60}
+                            spellCheck={false}
+                            aria-label={`模板名 ${t.name}`}
+                            onChange={e => setEdits(prev => ({ ...prev, [t.id]: e.target.value }))}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') save(t.id, name, category)
+                            }}
+                          />
+                          <input
+                            className="dsh-atb-tplm-category"
+                            value={category}
+                            maxLength={30}
+                            list="dsh-atb-template-categories"
+                            spellCheck={false}
+                            aria-label={`模板类别 ${t.name}`}
+                            onChange={e => setCategoryEdits(prev => ({ ...prev, [t.id]: e.target.value }))}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') save(t.id, name, category)
+                            }}
+                          />
+                          <span className="dsh-atb-tplm-meta">
+                            {t.builtin === true ? '内置' : '自建'}
+                            {t.task.checklist !== undefined && t.task.checklist.length > 0 ? ` · 清单 ${t.task.checklist.length} 项` : ''}
+                            {t.task.urgency !== undefined ? ` · ${t.task.urgency}` : ''}
+                            {t.task.speed === 'fast' ? ' · 快速' : ''}
+                            {t.task.permissionMode !== undefined ? ` · ${t.task.permissionMode}` : ''}
+                          </span>
+                          <span className="dsh-atb-tplm-btns">
+                            <button
+                              type="button"
+                              className="dsh-atb-btn"
+                              disabled={unchanged || name.trim().length === 0}
+                              title="保存模板名和类别"
+                              onClick={() => save(t.id, name, category)}
+                            >
+                              改名
+                            </button>
+                            <button
+                              type="button"
+                              className="dsh-atb-btn"
+                              title="用此模板打开新建表单"
+                              onClick={() => {
+                                close()
+                                controller.newFromTemplate(t.task)
+                              }}
+                            >
+                              用此新建
+                            </button>
+                            {confirmId === t.id
+                              ? (
+                                <>
+                                  <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => { void controller.deleteTemplate(t.id); setConfirmId(undefined) }}>确认删除</button>
+                                  <button type="button" className="dsh-atb-btn" onClick={() => setConfirmId(undefined)}>取消</button>
+                                </>
+                              )
+                              : (
+                                <button type="button" className="dsh-atb-btn" data-danger="true" title="删除该模板" onClick={() => setConfirmId(t.id)}>
+                                  🗑
                                 </button>
-                                <button
-                                  type="button"
-                                  className="dsh-atb-btn"
-                                  title="用此模板打开新建表单"
-                                  onClick={() => {
-                                    close()
-                                    controller.newFromTemplate(t.task)
-                                  }}
-                                >
-                                  用此新建
-                                </button>
-                                {confirmId === t.id
-                                  ? (
-                                    <>
-                                      <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => { void controller.deleteTemplate(t.id); setConfirmId(undefined) }}>确认删除</button>
-                                      <button type="button" className="dsh-atb-btn" onClick={() => setConfirmId(undefined)}>取消</button>
-                                    </>
-                                  )
-                                  : (
-                                      <button type="button" className="dsh-atb-btn" data-danger="true" title="删除该模板" onClick={() => setConfirmId(t.id)}>
-                                        🗑
-                                      </button>
-                                    )}
-                              </span>
-                            </div>
-                          )
-                      })}
+                              )}
+                          </span>
+                        </div>
+                      )
+                    })}
                   </div>
                 </>
               )}

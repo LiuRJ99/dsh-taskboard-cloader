@@ -22,7 +22,7 @@ export interface BoardFilters {
 }
 
 /** Column sort orders. */
-export type SortBy = 'default' | 'updated' | 'urgency' | 'created'
+export type SortBy = 'default' | 'updated' | 'urgency' | 'created' | 'title'
 
 /** One lazy-gate Skill the host reports as currently available to the GUI. */
 export interface GateCapabilityOption {
@@ -38,7 +38,7 @@ function loadView(): { workspaceId?: string; urgencies: Urgency[]; sortBy: SortB
     const raw = localStorage.getItem(VIEW_KEY)
     if (raw === null) return { urgencies: [], sortBy: 'default' }
     const parsed = JSON.parse(raw) as { workspaceId?: string; urgencies?: Urgency[]; sortBy?: SortBy }
-    const sortBy = parsed.sortBy === 'updated' || parsed.sortBy === 'urgency' || parsed.sortBy === 'created' ? parsed.sortBy : 'default'
+    const sortBy = parsed.sortBy === 'updated' || parsed.sortBy === 'urgency' || parsed.sortBy === 'created' || parsed.sortBy === 'title' ? parsed.sortBy : 'default'
     return {
       workspaceId: typeof parsed.workspaceId === 'string' ? parsed.workspaceId : undefined,
       urgencies: Array.isArray(parsed.urgencies) ? parsed.urgencies.filter(u => u === 'urgent' || u === 'normal' || u === 'relaxed') : [],
@@ -120,7 +120,15 @@ export class BoardController {
   private currentSessionAuthorizer: ((sessionId?: string) => Promise<void>) | undefined
   /** Composer catalog faces, installed formally by the client entry (T13). */
   private readonly catalogFaces: {
-    models?: () => Promise<Array<{ provider: string; model: string; name?: string }>>
+    models?: () => Promise<Array<{
+      provider: string
+      model: string
+      name?: string
+      reasoning?: {
+        efforts: Array<{ id: string; name: string; description?: string }>
+        defaultEffort?: string
+      }
+    }>>
     presets?: () => Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }>
     capabilities?: () => Promise<GateCapabilityOption[]>
   } = {}
@@ -311,7 +319,15 @@ export class BoardController {
   }
 
   /** T13: formal installers for the composer catalog faces (was a monkeypatch from the client entry). */
-  installModelCatalog(fn: () => Promise<Array<{ provider: string; model: string; name?: string }>>): void {
+  installModelCatalog(fn: () => Promise<Array<{
+    provider: string
+    model: string
+    name?: string
+    reasoning?: {
+      efforts: Array<{ id: string; name: string; description?: string }>
+      defaultEffort?: string
+    }
+  }>>): void {
     this.catalogFaces.models = fn
   }
 
@@ -321,7 +337,15 @@ export class BoardController {
   }
 
   /** The installed model catalog face, when the runtime provides one. */
-  get modelCatalog(): (() => Promise<Array<{ provider: string; model: string; name?: string }>>) | undefined {
+  get modelCatalog(): (() => Promise<Array<{
+    provider: string
+    model: string
+    name?: string
+    reasoning?: {
+      efforts: Array<{ id: string; name: string; description?: string }>
+      defaultEffort?: string
+    }
+  }>>) | undefined {
     return this.catalogFaces.models
   }
 

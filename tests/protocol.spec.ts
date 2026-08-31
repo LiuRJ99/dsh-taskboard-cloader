@@ -281,6 +281,30 @@ describe('execution report', () => {
   })
 })
 
+describe('model normalization (reasoning effort support)', () => {
+  it('normalizes provider and model, and preserves reasoningEffort when present', () => {
+    expect(normalizeModel({ provider: ' deepseek ', model: ' deepseek-reasoner ' })).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-reasoner',
+    })
+    expect(normalizeModel({ provider: 'deepseek', model: 'deepseek-reasoner', reasoningEffort: ' high ' })).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-reasoner',
+      reasoningEffort: 'high',
+    })
+    expect(normalizeModel({ provider: 'deepseek', model: 'deepseek-reasoner', reasoningEffort: '   ' })).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-reasoner',
+    })
+  })
+
+  it('rejects non-object or empty provider/model', () => {
+    expect(() => normalizeModel(null)).toThrow('model must be')
+    expect(() => normalizeModel({ provider: '', model: 'gpt-4o' })).toThrow('non-empty')
+    expect(() => normalizeModel({ provider: 'openai', model: '' })).toThrow('non-empty')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // ledger import validation (0.4.0)
 // ---------------------------------------------------------------------------

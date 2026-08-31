@@ -506,7 +506,7 @@ export type ExecutionRecord = {
 export type TaskModel = {
   provider: string
   model: string
-  /** Adapter-owned reasoning level; absent = model/provider default. */
+  /** Thinking intensity / reasoning effort (optional; e.g. 'low', 'medium', 'high', 'none'). */
   reasoningEffort?: string
 }
 
@@ -515,7 +515,7 @@ export type TaskRecord = {
   id: string
   title: string
   description: string
-  /** The prompt sent to a fresh session on execution; falls back to title+description. */
+  /** Extra execution prompt; the execution session receives title+description+prompt. */
   prompt: string
   /** Owning project: a DSH workspace id. */
   workspaceId: string
@@ -734,13 +734,14 @@ export function normalizeExecution(
 }
 
 /**
- * The effective prompt of a task: explicit prompt, or title+description.
+ * The effective prompt of a task: title+description, with the explicit
+ * prompt appended when set — title+description+prompt.
  * @param task - the task.
  */
 export function effectivePrompt(task: TaskRecord): string {
-  if (task.prompt.length > 0) return task.prompt
   const head = task.title
-  return task.description.length > 0 ? `${head}\n\n${task.description}` : head
+  const body = task.description.length > 0 ? `${head}\n\n${task.description}` : head
+  return task.prompt.length > 0 ? `${body}\n\n${task.prompt}` : body
 }
 
 /**
@@ -773,8 +774,8 @@ export function syncClaim(task: TaskRecord, to: TaskStatus, now: number, holder?
 }
 
 /**
- * Validate and normalize a pinned model: `{ provider, model }`, both
- * non-empty trimmed strings.
+ * Validate and normalize a pinned model: `{ provider, model, reasoningEffort? }`,
+ * provider and model must be non-empty trimmed strings.
  * @param raw - the raw input.
  * @returns the normalized model.
  * @throws when the shape or the fields are invalid.
