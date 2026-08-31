@@ -1,5 +1,13 @@
 # 更新日志 / Changelog
 
+### 0.5.5
+
+- **外部工作区会话自动同步看板： [@jw5555555555](https://github.com/jw5555555555)（[#13](https://github.com/cloader/dsh-taskboard/pull/13)）**：看板「设置」新增「自动同步工作区会话」开关（出厂默认关闭）——开启后，工作区直接新建的会话自动在看板生成任务卡片：按会话工作目录（cwd）映射到对应项目，取首条用户消息与会话标题作为任务的描述与标题；运行中自动进入「进行中」并绑定会话 ID（卡片可一键跳转），执行成功自动流转「待验收」并生成系统评论，异常退回「待办」；自动过滤看板自身创建的内部执行会话防止重复建卡；多轮续跑延续同一张卡片
+
+**English:**
+
+- **Sync external workspace sessions onto the board: [@jw5555555555](https://github.com/jw5555555555) ([#13](https://github.com/cloader/dsh-taskboard/pull/13))**: board settings gain an "auto-sync external sessions" toggle (off by default) — once enabled, sessions created directly in a workspace spawn task cards automatically: the project is resolved from the session's cwd, and the first user message plus the session title become the task's description and title; running sessions enter In Progress with the session ID bound (cards gain one-click jump), successful turns settle into In Review with a system comment, failures return to Todo; the board's own internal execution sessions are filtered out to avoid duplicate cards; multi-turn continuations keep the same card
+
 ### 0.5.4
 
 - **看板卡片与任务详情一键跳转执行会话： [@jw5555555555](https://github.com/jw5555555555)（[#11](https://github.com/cloader/dsh-taskboard/pull/11)）**：卡片元数据行新增「🤖 会话ID ↗」按钮、详情页顶部新增「🤖 跳转会话 ↗」按钮、持有者 Chip 可点击——进行中优先、其次最近一次执行对应的会话一键直达（看板自动收起）；已归档 / 已删除 / 会话服务不可用分别给出明确提示

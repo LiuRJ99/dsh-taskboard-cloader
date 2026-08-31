@@ -133,6 +133,7 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - Create/edit modal: project, model (with reasoning effort), urgency, execution mode, cron with live validation & next-run preview, isolation toggle, checklist editor
 - Detail panel: status transitions (*done* is human-only; completing with unchecked items asks for confirmation and shows the count), agent/user comment thread, execution history (newest first; session IDs open the execution session on click; deleted/archived targets get distinct notices), stop execution, worktree isolation block (branch / commits / change stats / merge & cleanup), execution report block, acceptance checklist block
 - Quick actions on In Review cards: "✓ Done" one-click accept, "✗ Send back" returns to Todo with an optional reason agents read before starting
+- **External session auto-sync (0.5.5)**: with "🔄 auto-capture sessions" enabled in board settings, sessions created directly in a workspace spawn task cards automatically — the project is resolved from the session's cwd and the first user message becomes the title/description; running sessions enter In Progress with the session bound (one-click jump works), successful turns settle into In Review, failures fall back to Todo; off by default
 - **One-click session jump (0.5.4)**: task cards get a "🤖 sessionId ↗" button, the detail panel a "🤖 Jump to session" button, and the holder chip is clickable too — straight to the running (or most recent) execution's session (the board collapses over it); archived / deleted / unavailable sessions each get a precise notice
 - **Remember the last model (0.5.4)**: the new-task form brings back the last chosen model and reasoning effort (template prefill and editing are unaffected)
 - **DoD acceptance checklists (0.4.0)**: define acceptance criteria at creation (≤30 items); agents add/tick items via `taskboard_checklist` (with evidence notes); users tick them directly in the detail panel; unchecked items glow red while In Review and the card shows a "☑ n/m" badge (red until all ticked); checklist editing manages the whole group in the form (tick states and evidence preserved)
@@ -211,12 +212,16 @@ That's pnpm build authorization — add the key printed in the error to `allowBu
 git clone https://github.com/cloader/dsh-taskboard.git
 cd dsh-taskboard
 npm install && npm run build    # dual build: host ESM + client CJS
-npm test                        # full vitest suite (~150 cases)
+npm test                        # full vitest suite (208 cases)
 node tests/manual-git-e2e.mjs   # real-git end-to-end manual test (full worktree chain + resume + diff viewer)
 node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
+
+### 0.5.5
+
+- **Sync external workspace sessions onto the board: [@jw5555555555](https://github.com/jw5555555555) ([#13](https://github.com/cloader/dsh-taskboard/pull/13))**: board settings gain an "auto-sync external sessions" toggle (off by default) — once enabled, sessions created directly in a workspace spawn task cards automatically: the project is resolved from the session's cwd, and the first user message plus the session title become the task's description and title; running sessions enter In Progress with the session ID bound (cards gain one-click jump), successful turns settle into In Review with a system comment, failures return to Todo; the board's own internal execution sessions are filtered out to avoid duplicate cards; multi-turn continuations keep the same card
 
 ### 0.5.4
 
@@ -224,12 +229,6 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 - **New-task form remembers the last model, with reasoning-effort support: [@jw5555555555](https://github.com/jw5555555555) ([#11](https://github.com/cloader/dsh-taskboard/pull/11))**: create mode brings back the last chosen model and effort (template prefill and editing are unaffected); a model can pin a reasoning effort (e.g. low/medium/high) passed down to the execution session; reasoning-capable models read their available efforts from the DSH model catalog
 - **Column sort gains "by title": [@Amoss-1](https://github.com/Amoss-1) ([#4](https://github.com/cloader/dsh-taskboard/pull/4))**: numeric-aware comparison keeps numeric prefixes in true numeric order (`01 < 02 < 10 < 90` — plain string comparison would put `10` before `02`); the choice persists with the rest of the view state
 - Interface polish: selects and inputs adapt to light/dark themes (DSH theme variables + color-scheme); template manager dialog layout improvements
-
-### 0.5.3
-
-- **The execution prompt is now append-style**: a custom prompt no longer replaces the opening instructions wholesale — the session receives "title + description + prompt", so context written in the description is no longer dropped; the create/edit form copy and the `taskboard_create` tool description were updated to match
-- **New built-in "New feature" template**: placed before "Bug fix" — title prefix "New:", four steps (clarify requirements → implement → add tests → run suites), with a three-item acceptance checklist
-- **"Bug fix" template first line now reads "fix the issues above"**: the description now reaches the session before the prompt, so "above" is the right pointer
 
 > 📜 For the complete history of earlier versions, see [changelog.md](changelog.md) (in Chinese).
 
