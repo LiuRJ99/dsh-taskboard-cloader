@@ -18,11 +18,13 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
   asBoardSettings,
   asIsolation,
+  asPermission,
   asStatus,
   asUrgency,
   canTransition,
   checklistFromTexts,
   defaultIsolationOf,
+  defaultPermissionOf,
   newCommentId,
   newTaskId,
   normalizeBody,
@@ -39,7 +41,7 @@ import {
   type TaskRecord,
 } from '../shared/protocol.ts'
 import { WORKTREE_DIR, worktreePathOf, type GitFace } from './git.ts'
-import type { TaskTemplate } from '../shared/api.ts'
+import type { CatalogModelItem, CatalogPresetItem, TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
 import type { TaskStore } from './store.ts'
@@ -81,6 +83,17 @@ export interface TaskboardRoutesOptions {
   git?: GitFace
   /** Task-template store (0.4.0); absent → 501 on template actions. */
   templates?: TemplateStore
+  /** Prompt completions face (0.5.5; dynamically discovers skills & commands). */
+  promptCompletions?: () => Promise<{
+    skills?: Array<{ name: string; description?: string }>
+    commands?: Array<{ name: string; description?: string; hint?: string }>
+  }>
+  /** Model and preset catalog face (0.5.5; dynamically discovers models & presets). */
+  modelCatalog?: () => Promise<{
+    models?: CatalogModelItem[]
+    presets?: CatalogPresetItem[]
+    defaultPresetId?: string
+  }>
 }
 
 /** Validate a template's task spec (routes-side, unknown → invalid_input). */
@@ -100,12 +113,14 @@ function normalizeTemplateSpec(raw: unknown, now: number): TaskTemplate['task'] 
   const urgency = str('urgency')
   const isolation = str('isolation')
   const presetId = str('presetId')
+  const permission = str('permission')
   if (title !== undefined) spec.title = normalizeTitle(title)
   if (description !== undefined) spec.description = description
   if (prompt !== undefined) spec.prompt = normalizePrompt(prompt)
   if (urgency !== undefined) spec.urgency = asUrgency(urgency)
   if (isolation !== undefined) spec.isolation = asIsolation(isolation)
   if (presetId !== undefined && presetId.trim().length > 0) spec.presetId = presetId.trim()
+  if (permission !== undefined && permission.trim().length > 0) spec.permission = asPermission(permission)
   if (e.execution !== undefined) {
     spec.execution = normalizeExecution(e.execution as { mode?: string; cron?: string }, now)
   }
@@ -406,6 +421,33 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           return
         }
 
+        // Prompt completions (0.5.5; dynamically discovers skills & commands).
+        if (pathname === `${ROUTE_PREFIX}/prompt-completions`) {
+          const completions = await options.promptCompletions?.().catch(() => undefined)
+          json(res, {
+            ok: true,
+            value: {
+              commands: completions?.commands ?? [],
+              skills: completions?.skills ?? [],
+            },
+          })
+          return
+        }
+
+        // Model catalog (0.5.5; dynamically discovers models & presets from runtime).
+        if (pathname === `${ROUTE_PREFIX}/model-catalog`) {
+          const catalog = await options.modelCatalog?.().catch(() => undefined)
+          json(res, {
+            ok: true,
+            value: {
+              models: catalog?.models ?? [],
+              presets: catalog?.presets ?? [],
+              ...(catalog?.defaultPresetId !== undefined ? { defaultPresetId: catalog.defaultPresetId } : {}),
+            },
+          })
+          return
+        }
+
         const taskMatch = pathname.match(TASK_RE)
         if (taskMatch !== null) {
           const task = store.get(taskMatch[1]!)
@@ -463,6 +505,8 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           // rewrite existing tasks.
           const isolation = isolationRaw === null ? defaultIsolationOf(store.snapshot().settings) : asIsolation(isolationRaw)
           const presetId = normalizePresetId(str(body, 'presetId'))
+          const permissionRaw = str(body, 'permission')
+          const permission = permissionRaw === null ? defaultPermissionOf(store.snapshot().settings) : asPermission(permissionRaw)
           let checklist: TaskRecord['checklist'] = undefined
           if (body.checklist !== undefined) {
             if (!Array.isArray(body.checklist) || body.checklist.some(c => typeof c !== 'string')) {
@@ -485,6 +529,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             model,
             isolation,
             ...(presetId !== undefined ? { presetId } : {}),
+            permission,
             ...(checklist !== undefined ? { checklist } : {}),
             version: 1,
             createdAt: now,
@@ -557,6 +602,9 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               // Preset may change any time: each run composes fresh.
               if (body.presetId === null) delete next.presetId
               else if (body.presetId !== undefined) next.presetId = normalizePresetId(str(body, 'presetId'))!
+              // Permission (0.5.5): 'workspace-write' | 'read-only' | 'danger-full-access'
+              if (body.permission === null) delete next.permission
+              else if (body.permission !== undefined) next.permission = asPermission(body.permission)
               // Checklist (0.4.0): the GUI replaces the whole list; null clears.
               if (body.checklist === null) delete next.checklist
               else if (body.checklist !== undefined) {
