@@ -133,7 +133,10 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - Create/edit modal: project, model (with reasoning effort), urgency, execution mode, cron with live validation & next-run preview, isolation toggle, checklist editor
 - Detail panel: status transitions (*done* is human-only; completing with unchecked items asks for confirmation and shows the count), agent/user comment thread, execution history (newest first; session IDs open the execution session on click; deleted/archived targets get distinct notices), stop execution, worktree isolation block (branch / commits / change stats / merge & cleanup), execution report block, acceptance checklist block
 - Quick actions on In Review cards: "✓ Done" one-click accept, "✗ Send back" returns to Todo with an optional reason agents read before starting
-- **External session auto-sync (0.5.5)**: with "🔄 auto-capture sessions" enabled in board settings, sessions created directly in a workspace spawn task cards automatically — the project is resolved from the session's cwd and the first user message becomes the title/description; running sessions enter In Progress with the session bound (one-click jump works), successful turns settle into In Review, failures fall back to Todo; off by default
+- **Two-column wide task form + slash completion (0.6.0)**: the create/edit modal goes two-column (core fields and execution config on the left, description and prompt on the right); typing `/` in the description/prompt pops command and skill completion (↑↓/Enter/Tab/Esc keyboard navigation; host-discovered items merge over the built-in list); Markdown images in description/prompt render as thumbnails with a click-to-zoom lightbox
+- **Execution permission (0.6.0)**: per-task three-way execution permission (📁 workspace write / 🔒 read-only / ⚡ full access) picked in the form plus a default-permission board setting; permission badges on cards, the detail panel and the template list
+- **Bilingual UI, zh/en (0.6.0)**: every piece of board copy follows DSH's "Settings - General - Language" switch live (no reload); the preference is stored by DSH itself (locale.preference in settings.yaml) and the plugin adds no settings of its own; environments without the DSH locale service fall back to the browser language
+- **External session auto-sync (0.5.5)**: with "🔄 auto-capture sessions" enabled in board settings, sessions created directly in a workspace spawn task cards automatically — the project is resolved from the session's cwd and the first user message becomes the title/description; running sessions enter In Progress with the session bound (one-click jump works), successful turns settle into In Review, failures fall back to Todo; subagent sessions are filtered too since 0.6.0; off by default
 - **One-click session jump (0.5.4)**: task cards get a "🤖 sessionId ↗" button, the detail panel a "🤖 Jump to session" button, and the holder chip is clickable too — straight to the running (or most recent) execution's session (the board collapses over it); archived / deleted / unavailable sessions each get a precise notice
 - **Remember the last model (0.5.4)**: the new-task form brings back the last chosen model and reasoning effort (template prefill and editing are unaffected)
 - **DoD acceptance checklists (0.4.0)**: define acceptance criteria at creation (≤30 items); agents add/tick items via `taskboard_checklist` (with evidence notes); users tick them directly in the detail panel; unchecked items glow red while In Review and the card shows a "☑ n/m" badge (red until all ticked); checklist editing manages the whole group in the form (tick states and evidence preserved)
@@ -212,12 +215,29 @@ That's pnpm build authorization — add the key printed in the error to `allowBu
 git clone https://github.com/cloader/dsh-taskboard.git
 cd dsh-taskboard
 npm install && npm run build    # dual build: host ESM + client CJS
-npm test                        # full vitest suite (208 cases)
+npm test                        # full vitest suite (232 cases)
 node tests/manual-git-e2e.mjs   # real-git end-to-end manual test (full worktree chain + resume + diff viewer)
 node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
+
+### 0.6.0
+
+- **Two-column wide task form, `/` slash completion and execution-permission picker: [@jw5555555555](https://github.com/jw5555555555) ([#14](https://github.com/cloader/dsh-taskboard/pull/14))**
+  - The create/edit modal becomes a two-column wide layout (core fields and execution config on the left, description and execution prompt on the right)
+  - The description and prompt inputs gain `/` slash autocomplete for slash commands and agent skills (↑↓ navigate, Enter/Tab pick, Esc close; host-discovered commands/skills merge over the built-in list)
+  - New per-task three-way "execution permission" picker (📁 workspace write / 🔒 read-only / ⚡ full access) plus a default-permission board setting, with permission badges on cards and the detail panel
+  - Markdown images in description/prompt render as clickable thumbnails with a lightbox
+  - Fixes model-catalog discovery (falls back to the host API when the runtime face is missing)
+  - Session auto-sync now filters out subagent sessions to avoid spurious cards
+- **Bilingual UI following the DSH language setting**
+  - All board copy (columns / cards / detail / form / templates / import-export / settings / diagnostics / sidebar entry) now consumes the DSH locale service — switching zh/en under "Settings → General → Language" applies live without a reload
+  - The preference stays stored by DSH itself (locale.preference in settings.yaml); the plugin adds no settings of its own
+  - Deployments without the locale service fall back to the browser language (zh on Chinese browsers, en otherwise)
+  - Adds src/client/i18n/ (zh/en dictionaries + a thin adapter + a useT hook); labels.ts becomes enum key maps
+  - zh/en key parity enforced three ways (compile-time types, unit tests, a source scan)
+  - Also fixes the PLUGIN_VERSION drift against package.json (0.5.4 → 0.5.5)
 
 ### 0.5.5
 

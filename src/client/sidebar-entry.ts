@@ -15,6 +15,7 @@
  * @module dsh-taskboard/client/sidebar-entry
  */
 import type { BoardController } from './controller.ts'
+import { localeStore, translate } from './i18n/runtime.ts'
 
 /** Stable data attribute identifying this entry row. */
 export const ENTRY_SELECTOR = '[data-dsh-atb-entry]'
@@ -68,8 +69,8 @@ function createEntry(controller: BoardController): HTMLButtonElement {
   entry.type = 'button'
   entry.dataset.dshAtbEntry = ''
   entry.className = 'dsh-atb-entry'
-  entry.setAttribute('aria-label', 'Agent 任务看板')
-  entry.innerHTML = `<span class="dsh-atb-entry-icon">${ICON}</span><span class="dsh-atb-entry-label">任务看板</span><span class="dsh-atb-entry-stats"></span>`
+  entry.setAttribute('aria-label', translate('shared.entry.aria'))
+  entry.innerHTML = `<span class="dsh-atb-entry-icon">${ICON}</span><span class="dsh-atb-entry-label">${translate('shared.entry.label')}</span><span class="dsh-atb-entry-stats"></span>`
   entry.addEventListener('click', () => { controller.toggleBoard() })
   return entry
 }
@@ -164,7 +165,7 @@ function wireStats(entry: HTMLButtonElement, controller: BoardController): () =>
     setRollValue(slots[0]!, todo)
     setRollValue(slots[1]!, inProgress)
     setRollValue(slots[2]!, inReview)
-    stats.title = `待办 ${todo} ｜ 进行中 ${inProgress} ｜ 待验收 ${inReview}（待办|进行中|待验收）`
+    stats.title = translate('shared.stats.title', { todo, doing: inProgress, review: inReview })
   }
   return update
 }
@@ -262,6 +263,14 @@ export function mountSidebarEntry(controller: BoardController): () => void {
     syncStats()
   }
   const unsubscribe = controller.subscribe(syncActive)
+  // Locale switches re-render the static DOM text (aria-label, label, tooltip);
+  // the rolling number slots carry digits only, nothing to redo for them.
+  const unsubscribeLocale = localeStore.subscribe(() => {
+    entry.setAttribute('aria-label', translate('shared.entry.aria'))
+    const label = entry.querySelector<HTMLElement>('.dsh-atb-entry-label')
+    if (label !== null) label.textContent = translate('shared.entry.label')
+    syncStats()
+  })
   syncActive()
 
   tryPlace()
@@ -270,6 +279,7 @@ export function mountSidebarEntry(controller: BoardController): () => void {
     clearInterval(retry)
     waitObserver.disconnect()
     rootObserver.disconnect()
+    unsubscribeLocale()
     unsubscribe()
     entry.remove()
   }

@@ -14,6 +14,7 @@ import type { TaskTemplateSpec } from '../../shared/api.ts'
 import type { ChecklistItem, IsolationMode, PermissionMode, TaskRecord, Urgency } from '../../shared/protocol.ts'
 import { MAX_CHECKLIST_ITEMS, asPermission, defaultIsolationOf, defaultPermissionOf, nextCronTime, parseCron } from '../../shared/protocol.ts'
 import { fmtTime } from './format.ts'
+import { useT, type Translate } from '../i18n/runtime.ts'
 import { SlashPromptInput } from './SlashPromptInput.tsx'
 
 /** One row of the configured model catalog (from llm.models). */
@@ -63,26 +64,26 @@ export function saveLastModel(model?: { provider: string; model: string; reasoni
   } catch { /* storage unavailable */ }
 }
 
-/** Urgency segmented options with a one-line hint each. */
-const URGENCY_OPTIONS: ReadonlyArray<{ value: Urgency; label: string; hint: string }> = [
-  { value: 'urgent', label: '紧急', hint: '优先处理' },
-  { value: 'normal', label: '一般', hint: '正常排期' },
-  { value: 'relaxed', label: '不急', hint: '有空再做' },
+/** Urgency segmented options with a one-line hint each (translated per render). */
+const urgencyOptions = (t: Translate): ReadonlyArray<{ value: Urgency; label: string; hint: string }> => [
+  { value: 'urgent', label: t('form.urgency.urgent'), hint: t('form.urgency.urgentHint') },
+  { value: 'normal', label: t('form.urgency.normal'), hint: t('form.urgency.normalHint') },
+  { value: 'relaxed', label: t('form.urgency.relaxed'), hint: t('form.urgency.relaxedHint') },
 ]
 
-/** Cron presets offered in the scheduled mode. */
-const CRON_PRESETS: ReadonlyArray<{ label: string; cron: string }> = [
-  { label: '每天 09:00', cron: '0 9 * * *' },
-  { label: '每小时', cron: '0 * * * *' },
-  { label: '每 10 分钟', cron: '*/10 * * * *' },
-  { label: '每周一 09:00', cron: '0 9 * * 1' },
+/** Cron presets offered in the scheduled mode (translated per render). */
+const cronPresets = (t: Translate): ReadonlyArray<{ label: string; cron: string }> => [
+  { label: t('form.cron.daily'), cron: '0 9 * * *' },
+  { label: t('form.cron.hourly'), cron: '0 * * * *' },
+  { label: t('form.cron.every10min'), cron: '*/10 * * * *' },
+  { label: t('form.cron.weekly'), cron: '0 9 * * 1' },
 ]
 
-/** Permission presets aligned with DSH. */
-const PERMISSION_OPTIONS: ReadonlyArray<{ value: PermissionMode; label: string; hint: string; icon: string }> = [
-  { value: 'workspace-write', label: '可写入工作区', hint: '可读写工作区及临时目录（推荐默认）', icon: '📁' },
-  { value: 'read-only', label: '仅可查看', hint: '只读查看与检索，禁止修改文件或执行外部命令', icon: '🔒' },
-  { value: 'danger-full-access', label: '完全权限', hint: '完全无限制权限，可访问全盘及执行外部命令', icon: '⚡' },
+/** Permission presets aligned with DSH (translated per render). */
+const permissionOptions = (t: Translate): ReadonlyArray<{ value: PermissionMode; label: string; hint: string; icon: string }> => [
+  { value: 'workspace-write', label: t('form.perm.write'), hint: t('form.perm.writeHint'), icon: '📁' },
+  { value: 'read-only', label: t('form.perm.readOnly'), hint: t('form.perm.readOnlyHint'), icon: '🔒' },
+  { value: 'danger-full-access', label: t('form.perm.fullAccess'), hint: t('form.perm.fullAccessHint'), icon: '⚡' },
 ]
 
 /** Field shell: label + control, optionally spanning the full grid row. */
@@ -119,6 +120,7 @@ interface CheckRow {
  * replaces the whole list on save).
  */
 function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChange: (rows: CheckRow[]) => void; editing: boolean }) {
+  const t = useT()
   const setRow = (index: number, patch: Partial<CheckRow>): void => {
     const next = rows.map((row, i) => i === index ? { ...row, ...patch } : row)
     onChange(next)
@@ -133,7 +135,7 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
               type="checkbox"
               className="dsh-atb-cke-box"
               checked={row.checked}
-              title={`勾选状态随保存保留（当前勾选人：${row.checkedBy ?? '未勾选'}）`}
+              title={t('form.check.checkedTitle', { who: row.checkedBy ?? t('form.check.notCheckedYet') })}
               onChange={e => setRow(index, { checked: e.target.checked })}
             />
           )}
@@ -141,18 +143,18 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
             className="dsh-atb-cke-text"
             value={row.text}
             maxLength={200}
-            placeholder={`验收项 ${index + 1}（完成标准）`}
+            placeholder={t('form.check.itemPlaceholder', { n: index + 1 })}
             spellCheck={false}
             onChange={e => setRow(index, { text: e.target.value })}
           />
-          <button type="button" className="dsh-atb-cke-del" title="删除该验收项" onClick={() => onChange(rows.filter((_, i) => i !== index))}>✕</button>
+          <button type="button" className="dsh-atb-cke-del" title={t('form.check.removeTitle')} onClick={() => onChange(rows.filter((_, i) => i !== index))}>✕</button>
         </div>
       ))}
       {rows.length < MAX_CHECKLIST_ITEMS && (
-        <button type="button" className="dsh-atb-cke-add" onClick={() => onChange([...rows, { text: '', checked: false }])}>＋ 添加验收项</button>
+        <button type="button" className="dsh-atb-cke-add" onClick={() => onChange([...rows, { text: '', checked: false }])}>{t('form.check.add')}</button>
       )}
       {rows.length > 0 && (
-        <span className="dsh-atb-cke-hint">{editing ? `已勾选 ${checked}/${rows.length}（保存将整体覆盖清单，勾选状态保留）` : `共 ${rows.length} 项，执行会话按清单干活并逐项勾选，未完成项验收时高亮`}</span>
+        <span className="dsh-atb-cke-hint">{editing ? t('form.check.hintEdit', { checked, total: rows.length }) : t('form.check.hintCreate', { n: rows.length })}</span>
       )}
     </div>
   )
@@ -167,6 +169,7 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
  * @param task - the task being edited (create mode when absent).
  */
 export function TaskFormModal({ controller, task }: { controller: BoardController; task?: TaskRecord }) {
+  const t = useT()
   const state = controller.getSnapshot()
   const prefill: TaskTemplateSpec | undefined = state.templatePrefill
   const editing = task !== undefined
@@ -371,40 +374,40 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   }
 
   const hint = !valid
-    ? (title.trim().length === 0 ? '请填写标题' : workspaceId === '' ? '请选择项目' : 'Cron 表达式无效（分 时 日 月 周）')
+    ? (title.trim().length === 0 ? t('form.hint.needTitle') : workspaceId === '' ? t('form.hint.needProject') : t('form.hint.cronBad'))
     : mode === 'scheduled' && nextRun !== null
-      ? `下次运行 ${fmtTime(nextRun)}`
+      ? t('form.hint.nextRun', { time: fmtTime(nextRun) })
       : editing
-        ? `保存后版本 v${task.version} → v${task.version + 1}`
-        : '创建后项目内会话可认领执行'
+        ? t('form.hint.saveVersion', { v: task.version, next: task.version + 1 })
+        : t('form.hint.createClaim')
 
   return (
     <div className="dsh-atb-modal-backdrop" onClick={e => { if (e.target === e.currentTarget) controller.closeForm() }}>
-      <div className="dsh-atb-modal dsh-atb-taskform-modal" data-mode={editing ? 'edit' : 'create'} role="dialog" aria-modal="true" aria-label={editing ? '编辑任务' : '新建任务'}>
+      <div className="dsh-atb-modal dsh-atb-taskform-modal" data-mode={editing ? 'edit' : 'create'} role="dialog" aria-modal="true" aria-label={editing ? t('form.title.edit') : t('form.title.create')}>
         <div className="dsh-atb-modal-head">
           <span className="dsh-atb-modal-headicon">{editing ? '✎' : '✚'}</span>
           <div className="dsh-atb-modal-headtext">
-            <h3>{editing ? '编辑任务' : '新建任务'}</h3>
-            <p>{editing ? '调整任务内容与执行配置' : '推入看板，项目内会话可认领执行'}</p>
+            <h3>{editing ? t('form.title.edit') : t('form.title.create')}</h3>
+            <p>{editing ? t('form.subtitle.edit') : t('form.subtitle.create')}</p>
           </div>
-          <button type="button" className="dsh-atb-modal-close" aria-label="关闭" onClick={() => controller.closeForm()}>✕</button>
+          <button type="button" className="dsh-atb-modal-close" aria-label={t('shared.close')} onClick={() => controller.closeForm()}>✕</button>
         </div>
 
         <div className="dsh-atb-modal-body dsh-atb-taskform-body">
           {/* Left Column: Core Fields & Execution Configurations */}
           <div className="dsh-atb-form-col dsh-atb-form-left">
-            <Field label="标题" required full>
-              <input ref={titleRef} value={title} onChange={e => setTitle(e.target.value)} placeholder="一句话说清要做什么" maxLength={200} />
+            <Field label={t('form.field.title')} required full>
+              <input ref={titleRef} value={title} onChange={e => setTitle(e.target.value)} placeholder={t('form.field.titlePlaceholder')} maxLength={200} />
             </Field>
 
             <div className="dsh-atb-form-subgrid">
-              <Field label="项目" required>
+              <Field label={t('form.field.project')} required>
                 <select value={workspaceId} onChange={e => setWorkspaceId(e.target.value)}>
                   {state.workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.title || ws.path}</option>)}
                 </select>
               </Field>
 
-              <Field label="模型（默认 = 会话默认模型）">
+              <Field label={t('form.field.model')}>
                 <select
                   value={model}
                   onChange={e => {
@@ -423,23 +426,23 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                     }
                   }}
                 >
-                  <option value="">默认模型</option>
+                  <option value="">{t('form.field.modelDefault')}</option>
                   {catalog.map(m => (
                     <option key={`${m.provider}/${m.model}`} value={JSON.stringify({ provider: m.provider, model: m.model })}>
-                      {m.name ?? m.model}（{m.provider}）
+                      {t('form.model.option', { name: m.name ?? m.model, provider: m.provider })}
                     </option>
                   ))}
                 </select>
               </Field>
 
               {parsedModel !== undefined && (
-                <Field label="思考强度（Reasoning Effort）">
+                <Field label={t('form.field.effort')}>
                   <select
                     value={reasoningEffort}
                     onChange={e => setReasoningEffort(e.target.value)}
-                    title="设置模型的思考强度（如 low/medium/high）；默认 = 跟随模型/提供商默认"
+                    title={t('form.field.effortTitle')}
                   >
-                    <option value="">跟随模型默认{modelReasoning?.defaultEffort !== undefined ? `（当前：${modelReasoning.efforts.find(ef => ef.id === modelReasoning.defaultEffort)?.name ?? modelReasoning.defaultEffort}）` : ''}</option>
+                    <option value="">{t('form.effort.follow')}{modelReasoning?.defaultEffort !== undefined ? t('shared.current', { name: modelReasoning.efforts.find(ef => ef.id === modelReasoning.defaultEffort)?.name ?? modelReasoning.defaultEffort }) : ''}</option>
                     {modelReasoning !== undefined && modelReasoning.efforts.length > 0 ? (
                       modelReasoning.efforts.map(eff => (
                         <option key={eff.id} value={eff.id}>
@@ -448,10 +451,10 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                       ))
                     ) : (
                       <>
-                        <option value="low">低 (low)</option>
-                        <option value="medium">中 (medium)</option>
-                        <option value="high">高 (high)</option>
-                        <option value="none">关闭思考 (none)</option>
+                        <option value="low">{t('form.effort.low')}</option>
+                        <option value="medium">{t('form.effort.medium')}</option>
+                        <option value="high">{t('form.effort.high')}</option>
+                        <option value="none">{t('form.effort.none')}</option>
                       </>
                     )}
                   </select>
@@ -459,12 +462,12 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
               )}
 
               {presets.length > 0 && (
-                <Field label="执行模式（preset）">
-                  <select value={presetId} onChange={e => setPresetId(e.target.value)} title="执行会话按该 preset 组合（决定工具集与人设）；默认 = 部署默认 preset">
-                    <option value="">跟随部署默认{presetDefault !== undefined ? `（当前：${presets.find(p => p.id === presetDefault)?.name ?? presetDefault}）` : ''}</option>
+                <Field label={t('form.field.preset')}>
+                  <select value={presetId} onChange={e => setPresetId(e.target.value)} title={t('form.field.presetTitle')}>
+                    <option value="">{t('form.preset.follow')}{presetDefault !== undefined ? t('shared.current', { name: presets.find(p => p.id === presetDefault)?.name ?? presetDefault }) : ''}</option>
                     {presets.map(p => (
                       <option key={p.id} value={p.id}>
-                        {p.name ?? p.id}{p.id === presetDefault ? '（部署默认）' : ''}
+                        {p.name ?? p.id}{p.id === presetDefault ? t('form.preset.defaultTag') : ''}
                       </option>
                     ))}
                   </select>
@@ -472,9 +475,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
               )}
             </div>
 
-            <Field label="紧急度" full>
+            <Field label={t('form.field.urgency')} full>
               <div className="dsh-atb-urgency-picker">
-                {URGENCY_OPTIONS.map(o => (
+                {urgencyOptions(t).map(o => (
                   <button
                     key={o.value}
                     type="button"
@@ -490,9 +493,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
               </div>
             </Field>
 
-            <Field label="执行权限" full>
+            <Field label={t('form.field.permission')} full>
               <div className="dsh-atb-perm-picker">
-                {PERMISSION_OPTIONS.map(opt => (
+                {permissionOptions(t).map(opt => (
                   <button
                     key={opt.value}
                     type="button"
@@ -500,37 +503,37 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                     data-on={permission === opt.value}
                     onClick={() => setPermission(opt.value)}
                   >
-                    <span className="dsh-atb-perm-name">{opt.icon} {opt.label}{opt.value === 'workspace-write' ? '（默认）' : ''}</span>
+                    <span className="dsh-atb-perm-name">{opt.icon} {opt.label}{opt.value === 'workspace-write' ? t('form.perm.defaultTag') : ''}</span>
                     <span className="dsh-atb-perm-hint">{opt.hint}</span>
                   </button>
                 ))}
               </div>
             </Field>
 
-            <Field label="执行方式" full>
+            <Field label={t('form.field.mode')} full>
               <div className="dsh-atb-mode-picker">
                 <button type="button" className="dsh-atb-mode-opt" data-on={mode === 'claim'} onClick={() => setMode('claim')}>
-                  <span className="dsh-atb-mode-name">🤝 认领制</span>
-                  <span className="dsh-atb-mode-hint">项目内会话认领</span>
+                  <span className="dsh-atb-mode-name">{t('form.mode.claim')}</span>
+                  <span className="dsh-atb-mode-hint">{t('form.mode.claimHint')}</span>
                 </button>
                 <button type="button" className="dsh-atb-mode-opt" data-on={mode === 'scheduled'} onClick={() => setMode('scheduled')}>
-                  <span className="dsh-atb-mode-name">⏰ 定时执行</span>
-                  <span className="dsh-atb-mode-hint">到点自动开跑</span>
+                  <span className="dsh-atb-mode-name">{t('form.mode.scheduled')}</span>
+                  <span className="dsh-atb-mode-hint">{t('form.mode.scheduledHint')}</span>
                 </button>
               </div>
             </Field>
 
             {mode === 'scheduled' && (
-              <Field label="Cron 表达式" required full>
+              <Field label={t('form.field.cron')} required full>
                 <input
                   className={cronBad ? 'dsh-atb-input-bad' : undefined}
                   value={cron}
                   onChange={e => setCron(e.target.value)}
-                  placeholder="分 时 日 月 周"
+                  placeholder={t('form.cron.placeholder')}
                   spellCheck={false}
                 />
                 <span className="dsh-atb-cron-presets">
-                  {CRON_PRESETS.map(p => (
+                  {cronPresets(t).map(p => (
                     <button
                       key={p.cron}
                       type="button"
@@ -541,24 +544,24 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                       {p.label}
                     </button>
                   ))}
-                  {!cronBad && nextRun !== null && <span className="dsh-atb-cron-next">下次 {fmtTime(nextRun)}</span>}
+                  {!cronBad && nextRun !== null && <span className="dsh-atb-cron-next">{t('form.cron.next', { time: fmtTime(nextRun) })}</span>}
                 </span>
               </Field>
             )}
 
-            <Field label="执行隔离" full>
+            <Field label={t('form.field.isolation')} full>
               <div className="dsh-atb-mode-picker" data-disabled={isolationDisabled ? 'true' : undefined}>
                 <button
                   type="button"
                   className="dsh-atb-mode-opt"
                   data-on={isolation === 'worktree'}
                   disabled={isolationDisabled}
-                  title={isolationLocked ? '任务已有执行记录，隔离方式已锁定' : !gitOk ? '当前项目非 git 仓库' : '每次执行在独立 worktree 分支上进行'}
+                  title={isolationLocked ? t('form.iso.locked') : !gitOk ? t('form.iso.nonGit') : t('form.iso.worktreeTitle')}
                   onClick={() => setIsolation('worktree')}
                 >
-                  <span className="dsh-atb-mode-name">🌿 Worktree 隔离</span>
+                  <span className="dsh-atb-mode-name">{t('form.iso.worktree')}</span>
                   <span className="dsh-atb-mode-hint">
-                    {isolationLocked ? '已锁定（执行开始后不可更改）' : !gitOk ? '当前项目非 git 仓库' : '独立分支 task/标题+ID，互不污染'}
+                    {isolationLocked ? t('form.iso.lockedShort') : !gitOk ? t('form.iso.nonGit') : t('form.iso.worktreeHint')}
                   </span>
                 </button>
                 <button
@@ -566,42 +569,42 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                   className="dsh-atb-mode-opt"
                   data-on={isolation === 'none'}
                   disabled={isolationDisabled}
-                  title={isolationLocked ? '任务已有执行记录，隔离方式已锁定' : '直接在项目目录执行（不使用 git）'}
+                  title={isolationLocked ? t('form.iso.locked') : t('form.iso.noneTitle')}
                   onClick={() => setIsolation('none')}
                 >
-                  <span className="dsh-atb-mode-name">📁 原目录执行</span>
-                  <span className="dsh-atb-mode-hint">{isolationLocked ? '已锁定（执行开始后不可更改）' : !gitOk ? '当前项目非 git 仓库，将在原目录执行' : '不使用 git，直接在项目目录工作'}</span>
+                  <span className="dsh-atb-mode-name">{t('form.iso.none')}</span>
+                  <span className="dsh-atb-mode-hint">{isolationLocked ? t('form.iso.lockedShort') : !gitOk ? t('form.iso.noneHintNonGit') : t('form.iso.noneHint')}</span>
                 </button>
               </div>
               {!gitOk && !isolationLocked && (
-                <span className="dsh-atb-isolation-note">当前项目非 git 仓库，将在原目录执行（任务仍按默认配置创建，运行时自动降级）</span>
+                <span className="dsh-atb-isolation-note">{t('form.iso.nonGitNote')}</span>
               )}
             </Field>
 
-            <Field label={editing ? '验收清单（DoD）' : '验收清单（DoD，可选）'} full>
+            <Field label={editing ? t('form.field.checklist') : t('form.field.checklistOptional')} full>
               <ChecklistEditor rows={checkRows} onChange={setCheckRows} editing={editing} />
             </Field>
           </div>
 
           {/* Right Column: Description & Execution Prompt */}
           <div className="dsh-atb-form-col dsh-atb-form-right">
-            <Field label={editing ? '描述' : '描述（可选）'} full>
+            <Field label={editing ? t('form.field.description') : t('form.field.descriptionOptional')} full>
               <SlashPromptInput
                 value={description}
                 onChange={setDescription}
                 controller={controller}
                 rows={7}
-                placeholder="需求细节、背景说明、验收标准…"
+                placeholder={t('form.desc.placeholder')}
               />
             </Field>
 
-            <Field label={editing ? '执行 Prompt（实际 Prompt = 标题+任务描述+Prompt）' : '执行 Prompt（可选；实际 Prompt = 标题+任务描述+Prompt）'} full>
+            <Field label={editing ? t('form.field.prompt') : t('form.field.promptOptional')} full>
               <SlashPromptInput
                 value={prompt}
                 onChange={setPrompt}
                 controller={controller}
                 rows={7}
-                placeholder={'追加在「标题+任务描述」之后发给执行会话的补充指令。支持模板变量：{{lastExecution}}（上次执行结果）、{{lastComments}}（最近 3 条评论）'}
+                placeholder={t('form.prompt.placeholder')}
               />
             </Field>
           </div>
@@ -610,18 +613,18 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         <div className="dsh-atb-modal-foot">
           <span className="dsh-atb-modal-hint" data-tone={valid ? undefined : 'bad'}>{hint}</span>
           <span className="dsh-atb-modal-footbtns">
-            <button type="button" className="dsh-atb-btn" onClick={() => controller.closeForm()}>取消</button>
+            <button type="button" className="dsh-atb-btn" onClick={() => controller.closeForm()}>{t('shared.cancel')}</button>
             <button
               type="button"
               className="dsh-atb-btn"
               disabled={!valid || runBlocked || busy}
-              title={runBlocked ? '任务正在执行中，不能重复发起' : busy ? '正在提交…' : '保存后立即发起执行（新会话）'}
+              title={runBlocked ? t('form.action.runBlockedTitle') : busy ? t('form.action.runBusyTitle') : t('form.action.runTitle')}
               onClick={submitAndRun}
             >
-              ⚡ 立即执行
+              {t('form.action.run')}
             </button>
             <button type="button" className="dsh-atb-btn" data-primary="true" disabled={!valid || busy} onClick={submit}>
-              {editing ? '保存修改' : '创建任务'}
+              {editing ? t('form.action.save') : t('form.action.create')}
             </button>
           </span>
         </div>

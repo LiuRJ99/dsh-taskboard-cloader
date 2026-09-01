@@ -5,7 +5,7 @@
  * entry, board mount, controller, SSE wiring) starts and renders into a
  * jsdom document without throwing.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { waitFor } from './wait-for.ts'
 
 /** Stub a route payload. */
@@ -47,6 +47,13 @@ class EventSourceMock {
 
 describe('client half', () => {
   const disposers: Array<() => void> = []
+
+  beforeEach(() => {
+    // i18n: no DSH locale service exists in this fake context, so the
+    // adapter resolves the fallback locale — pin it to zh to match the
+    // (historical, verbatim) zh copy these tests assert on.
+    document.documentElement.lang = 'zh-CN'
+  })
 
   afterEach(() => {
     for (const d of disposers.splice(0)) d()

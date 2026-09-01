@@ -12,6 +12,7 @@ import type { ChecklistItem, TaskLedger, TaskRecord, Urgency } from '../shared/p
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
 import type { SessionJumpResult } from './session-jump.ts'
+import { translate } from './i18n/runtime.ts'
 
 /** View filters over the ledger. */
 export interface BoardFilters {
@@ -605,7 +606,7 @@ export class BoardController {
     try {
       await this.client.create({
         // Keep the suffix under the host's 200-char title cap (review P1).
-        title: `${task.title.slice(0, 196)}（副本）`,
+        title: task.title.slice(0, 196) + translate('shared.duplicate.suffix'),
         workspaceId: task.workspaceId,
         urgency: task.urgency,
         description: task.description.length > 0 ? task.description : undefined,

@@ -5,6 +5,7 @@
  * @module dsh-taskboard/client/board/AlertModal
  */
 import { useState, useEffect } from 'react'
+import { useT } from '../i18n/runtime.ts'
 
 /** Show a non-blocking alert modal. Returns true when opened. */
 export function useAlert(): { alert: (msg: string) => void; el: React.ReactNode } {
@@ -18,6 +19,7 @@ export function useAlert(): { alert: (msg: string) => void; el: React.ReactNode 
 }
 
 function AlertModal({ message, onClose }: { message: string; onClose: () => void }) {
+  const t = useT()
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', handler)
@@ -29,7 +31,7 @@ function AlertModal({ message, onClose }: { message: string; onClose: () => void
       <div className="dsh-atb-alert" onClick={e => e.stopPropagation()}>
         <div className="dsh-atb-alert-icon">⛔</div>
         <div className="dsh-atb-alert-msg">{message}</div>
-        <button type="button" className="dsh-atb-btn" data-primary="true" onClick={onClose}>知道了</button>
+        <button type="button" className="dsh-atb-btn" data-primary="true" onClick={onClose}>{t('alert.ok')}</button>
       </div>
     </div>
   )

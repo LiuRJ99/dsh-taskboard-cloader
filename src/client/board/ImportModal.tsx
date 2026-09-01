@@ -10,6 +10,7 @@ import { useRef, useState } from 'react'
 import type { BoardController } from '../controller.ts'
 import type { ImportPreviewResponse } from '../../shared/api.ts'
 import { useAlert } from './AlertModal.tsx'
+import { useT } from '../i18n/runtime.ts'
 
 /** One classified row (create / overwrite). */
 function PlanRow({ row }: { row: { id: string; title: string; status: string } }) {
@@ -26,6 +27,7 @@ function PlanRow({ row }: { row: { id: string; title: string; status: string } }
  * @param controller - the controller.
  */
 export function ImportModal({ controller }: { controller: BoardController }) {
+  const t = useT()
   const [fileName, setFileName] = useState('')
   const [parsed, setParsed] = useState<unknown>(null)
   const [parseError, setParseError] = useState<string | undefined>(undefined)
@@ -55,7 +57,7 @@ export function ImportModal({ controller }: { controller: BoardController }) {
           if (p !== undefined) setPlan(p)
         })
       } catch {
-        setParseError('文件不是合法 JSON')
+        setParseError(t('imp.parseError'))
       }
     })
   }
@@ -73,8 +75,8 @@ export function ImportModal({ controller }: { controller: BoardController }) {
       setConfirmReplace(false)
       if (r === undefined) return
       setResult(r.mode === 'replace'
-        ? `整册替换完成：导入 ${r.created + r.overwritten} 张（原 ${r.replacedTotal} 张已整册备份）`
-        : `合并完成：新增 ${r.created} 张、覆盖 ${r.overwritten} 张`)
+        ? t('imp.result.replace', { n: r.created + r.overwritten, total: r.replacedTotal ?? 0 })
+        : t('imp.result.merge', { n: r.created, m: r.overwritten }))
     })
   }
 
@@ -82,14 +84,14 @@ export function ImportModal({ controller }: { controller: BoardController }) {
 
   return (
     <div className="dsh-atb-modal-backdrop" onClick={e => { if (e.target === e.currentTarget) close() }}>
-      <div className="dsh-atb-modal dsh-atb-imp" role="dialog" aria-modal="true" aria-label="导入台账">
+      <div className="dsh-atb-modal dsh-atb-imp" role="dialog" aria-modal="true" aria-label={t('imp.aria')}>
         <div className="dsh-atb-modal-head">
           <span className="dsh-atb-modal-headicon">⬆</span>
           <div className="dsh-atb-modal-headtext">
-            <h3>导入台账</h3>
-            <p>选择导出的 JSON 备份文件：先预览、再合并或整册替换</p>
+            <h3>{t('imp.title')}</h3>
+            <p>{t('imp.subtitle')}</p>
           </div>
-          <button type="button" className="dsh-atb-modal-close" aria-label="关闭" onClick={close}>✕</button>
+          <button type="button" className="dsh-atb-modal-close" aria-label={t('shared.close')} onClick={close}>✕</button>
         </div>
         <div className="dsh-atb-modal-body">
           <div className="dsh-atb-imp-picker">
@@ -101,38 +103,38 @@ export function ImportModal({ controller }: { controller: BoardController }) {
             />
             {fileName.length > 0 && <span className="dsh-atb-imp-filename">{fileName}</span>}
           </div>
-          <div className="dsh-atb-imp-note">⬇ JSON 导出的文件即为同格式备份，可直接导入恢复；导入文件的 schemaVersion 必须与当前版本一致。</div>
+          <div className="dsh-atb-imp-note">{t('imp.note')}</div>
 
           {parseError !== undefined && <div className="dsh-atb-imp-error">{parseError}</div>}
-          {plan === undefined && parseError === undefined && fileName.length > 0 && <div className="dsh-atb-empty2">预览中…</div>}
+          {plan === undefined && parseError === undefined && fileName.length > 0 && <div className="dsh-atb-empty2">{t('imp.previewing')}</div>}
 
           {plan !== undefined && (
             <>
               <div className="dsh-atb-imp-stats">
-                <div className="dsh-atb-imp-stat" data-tone="ok"><b>{plan.create.length}</b><span>新增</span></div>
-                <div className="dsh-atb-imp-stat" data-tone="warn"><b>{plan.overwrite.length}</b><span>覆盖（同 id）</span></div>
-                <div className="dsh-atb-imp-stat" data-tone={plan.invalid.length > 0 ? 'bad' : undefined}><b>{plan.invalid.length}</b><span>无效（跳过）</span></div>
+                <div className="dsh-atb-imp-stat" data-tone="ok"><b>{plan.create.length}</b><span>{t('imp.stat.create')}</span></div>
+                <div className="dsh-atb-imp-stat" data-tone="warn"><b>{plan.overwrite.length}</b><span>{t('imp.stat.overwrite')}</span></div>
+                <div className="dsh-atb-imp-stat" data-tone={plan.invalid.length > 0 ? 'bad' : undefined}><b>{plan.invalid.length}</b><span>{t('imp.stat.invalid')}</span></div>
               </div>
 
               {plan.create.length > 0 && (
                 <div className="dsh-atb-imp-sec">
-                  <h4>新增任务</h4>
+                  <h4>{t('imp.sec.create')}</h4>
                   <div className="dsh-atb-imp-list">{plan.create.map(r => <PlanRow key={r.id} row={r} />)}</div>
                 </div>
               )}
               {plan.overwrite.length > 0 && (
                 <div className="dsh-atb-imp-sec">
-                  <h4>覆盖任务（整卡替换，含执行历史与评论）</h4>
+                  <h4>{t('imp.sec.overwrite')}</h4>
                   <div className="dsh-atb-imp-list">{plan.overwrite.map(r => <PlanRow key={r.id} row={r} />)}</div>
                 </div>
               )}
               {plan.invalid.length > 0 && (
                 <div className="dsh-atb-imp-sec">
-                  <h4>无效条目（不会导入）</h4>
+                  <h4>{t('imp.sec.invalid')}</h4>
                   <div className="dsh-atb-imp-list">
                     {plan.invalid.map((r, i) => (
                       <div key={r.id ?? `invalid-${i}`} className="dsh-atb-imp-row" data-tone="bad" title={r.id ?? ''}>
-                        <span className="dsh-atb-imp-row-title">{r.id ?? '（无 id）'}</span>
+                        <span className="dsh-atb-imp-row-title">{r.id ?? t('imp.noId')}</span>
                         <span className="dsh-atb-imp-row-status">{r.reason}</span>
                       </div>
                     ))}
@@ -142,12 +144,12 @@ export function ImportModal({ controller }: { controller: BoardController }) {
 
               <div className="dsh-atb-mode-picker">
                 <button type="button" className="dsh-atb-mode-opt" data-on={mode === 'merge'} onClick={() => { setMode('merge'); setConfirmReplace(false) }}>
-                  <span className="dsh-atb-mode-name">⊕ 合并</span>
-                  <span className="dsh-atb-mode-hint">新增 + 按 id 覆盖，其余不动</span>
+                  <span className="dsh-atb-mode-name">{t('imp.mode.merge')}</span>
+                  <span className="dsh-atb-mode-hint">{t('imp.mode.mergeHint')}</span>
                 </button>
                 <button type="button" className="dsh-atb-mode-opt" data-on={mode === 'replace'} onClick={() => setMode('replace')}>
-                  <span className="dsh-atb-mode-name">💣 整册替换</span>
-                  <span className="dsh-atb-mode-hint">清空当前台账，以导入文件为准（先自动备份）</span>
+                  <span className="dsh-atb-mode-name">{t('imp.mode.replace')}</span>
+                  <span className="dsh-atb-mode-hint">{t('imp.mode.replaceHint')}</span>
                 </button>
               </div>
 
@@ -158,11 +160,11 @@ export function ImportModal({ controller }: { controller: BoardController }) {
         <div className="dsh-atb-modal-foot">
           <span className="dsh-atb-modal-hint">
             {mode === 'replace'
-              ? confirmReplace ? '⚠ 再次点击确认执行整册替换（不可撤销，已自动备份）' : '整册替换需要二次确认'
-              : '合并只写入预览中列出的任务'}
+              ? confirmReplace ? t('imp.foot.replaceConfirm') : t('imp.foot.replaceNeedConfirm')
+              : t('imp.foot.mergeHint')}
           </span>
           <span className="dsh-atb-modal-footbtns">
-            <button type="button" className="dsh-atb-btn" onClick={close}>{result !== undefined ? '关闭' : '取消'}</button>
+            <button type="button" className="dsh-atb-btn" onClick={close}>{result !== undefined ? t('shared.close') : t('shared.cancel')}</button>
             <button
               type="button"
               className="dsh-atb-btn"
@@ -171,7 +173,7 @@ export function ImportModal({ controller }: { controller: BoardController }) {
               disabled={plan === undefined || busy}
               onClick={commit}
             >
-              {mode === 'replace' && confirmReplace ? '确认整册替换' : '执行导入'}
+              {mode === 'replace' && confirmReplace ? t('imp.action.confirmReplace') : t('imp.action.run')}
             </button>
           </span>
         </div>

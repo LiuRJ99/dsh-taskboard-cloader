@@ -9,45 +9,47 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
 import type { BoardController } from '../controller.ts'
 import type { PromptCompletionItem } from '../../shared/api.ts'
+import { useT, type Translate } from '../i18n/runtime.ts'
 
-/** Default built-in slash commands. */
-export const DEFAULT_COMMANDS: PromptCompletionItem[] = [
-  { name: 'goal', kind: 'command', description: '自主完成长期目标任务，持续深度推进', hint: '<目标描述>' },
-  { name: 'schedule', kind: 'command', description: '设置一次性定时或周期性 Cron 调度', hint: '<时间/表达式>' },
-  { name: 'plan', kind: 'command', description: '在行动前制定分步实施计划并由用户确认' },
-  { name: 'browser', kind: 'command', description: '启动网页浏览器交互与实时页面检索' },
-  { name: 'grill-me', kind: 'command', description: '通过多轮单题访谈深入对齐需求与设计意图' },
-  { name: 'teamwork-preview', kind: 'command', description: '多智能体协作与团队工作流预览' },
-  { name: 'learn', kind: 'command', description: '沉淀解决经验与新规则到知识库' },
-  { name: 'review', kind: 'command', description: '多维度代码审查（正确性、架构与安全）' },
-  { name: 'security', kind: 'command', description: '安全加固与代码漏洞扫描' },
-  { name: 'permission', kind: 'command', description: '切换当前会话权限级别 (read-only / workspace-write / full-access)', hint: '<preset>' },
+/** Default built-in slash commands (descriptions resolve through t at render,
+ * so they follow the GUI language live; host-provided items override by name). */
+export const defaultCommands = (t: Translate): PromptCompletionItem[] => [
+  { name: 'goal', kind: 'command', description: t('slash.cmd.goal.desc'), hint: t('slash.cmd.goal.hint') },
+  { name: 'schedule', kind: 'command', description: t('slash.cmd.schedule.desc'), hint: t('slash.cmd.schedule.hint') },
+  { name: 'plan', kind: 'command', description: t('slash.cmd.plan.desc') },
+  { name: 'browser', kind: 'command', description: t('slash.cmd.browser.desc') },
+  { name: 'grill-me', kind: 'command', description: t('slash.cmd.grill-me.desc') },
+  { name: 'teamwork-preview', kind: 'command', description: t('slash.cmd.teamwork-preview.desc') },
+  { name: 'learn', kind: 'command', description: t('slash.cmd.learn.desc') },
+  { name: 'review', kind: 'command', description: t('slash.cmd.review.desc') },
+  { name: 'security', kind: 'command', description: t('slash.cmd.security.desc') },
+  { name: 'permission', kind: 'command', description: t('slash.cmd.permission.desc'), hint: t('slash.cmd.permission.hint') },
 ]
 
-/** Default built-in skills. */
-export const DEFAULT_SKILLS: PromptCompletionItem[] = [
-  { name: 'frontend-ui-engineering', kind: 'skill', description: '构建生产级、可访问的高品质前端界面与组件' },
-  { name: 'api-and-interface-design', kind: 'skill', description: '设计稳定契约、清晰边界的 REST / RPC 接口' },
-  { name: 'test-driven-development', kind: 'skill', description: '测试驱动开发（TDD），编写单元与集成测试' },
-  { name: 'debugging-and-error-recovery', kind: 'skill', description: '系统化定位 Bug 根因并恢复错误' },
-  { name: 'performance-optimization', kind: 'skill', description: '前后端性能调优、减少渲染开销与查询优化' },
-  { name: 'ci-cd-and-automation', kind: 'skill', description: '自动化构建、CI/CD 流水线与质量门禁' },
-  { name: 'code-review-and-quality', kind: 'skill', description: '多轴向代码审查与重构指导' },
-  { name: 'code-simplification', kind: 'skill', description: '精简复杂逻辑，提升可读性与可维护性' },
-  { name: 'context-engineering', kind: 'skill', description: '优化上下文结构与提示词工程' },
-  { name: 'doubt-driven-development', kind: 'skill', description: '以怀疑驱动的对抗式审查，确保核心逻辑正确' },
-  { name: 'git-workflow-and-versioning', kind: 'skill', description: 'Git 工作流、分支管理、语义化版本与变更日志' },
-  { name: 'idea-refine', kind: 'skill', description: '通过发散与收敛思维细化方案与假设检验' },
-  { name: 'incremental-implementation', kind: 'skill', description: '小步快跑、增量交付多文件变更' },
-  { name: 'interview-me', kind: 'skill', description: '深度访谈挖掘真实意图' },
-  { name: 'memory-leak-debugging', kind: 'skill', description: '排查诊断 JavaScript/Node.js 内存泄漏' },
-  { name: 'observability-and-instrumentation', kind: 'skill', description: '添加日志、指标打点与链路追踪' },
-  { name: 'planning-and-task-breakdown', kind: 'skill', description: '将复杂需求拆解为有序可执行任务' },
-  { name: 'security-and-hardening', kind: 'skill', description: '防御安全漏洞、输入过滤与鉴权加固' },
-  { name: 'shipping-and-launch', kind: 'skill', description: '生产发布前检查清单与回滚策略' },
-  { name: 'source-driven-development', kind: 'skill', description: '基于权威官方文档与源码进行设计实现' },
-  { name: 'spec-driven-development', kind: 'skill', description: '在编码前制定清晰的技术规范' },
-  { name: 'using-agent-skills', kind: 'skill', description: '发现并动态调用智能体各项专业技能' },
+/** Default built-in skills (descriptions resolve through t at render). */
+export const defaultSkills = (t: Translate): PromptCompletionItem[] => [
+  { name: 'frontend-ui-engineering', kind: 'skill', description: t('slash.skill.frontend-ui-engineering') },
+  { name: 'api-and-interface-design', kind: 'skill', description: t('slash.skill.api-and-interface-design') },
+  { name: 'test-driven-development', kind: 'skill', description: t('slash.skill.test-driven-development') },
+  { name: 'debugging-and-error-recovery', kind: 'skill', description: t('slash.skill.debugging-and-error-recovery') },
+  { name: 'performance-optimization', kind: 'skill', description: t('slash.skill.performance-optimization') },
+  { name: 'ci-cd-and-automation', kind: 'skill', description: t('slash.skill.ci-cd-and-automation') },
+  { name: 'code-review-and-quality', kind: 'skill', description: t('slash.skill.code-review-and-quality') },
+  { name: 'code-simplification', kind: 'skill', description: t('slash.skill.code-simplification') },
+  { name: 'context-engineering', kind: 'skill', description: t('slash.skill.context-engineering') },
+  { name: 'doubt-driven-development', kind: 'skill', description: t('slash.skill.doubt-driven-development') },
+  { name: 'git-workflow-and-versioning', kind: 'skill', description: t('slash.skill.git-workflow-and-versioning') },
+  { name: 'idea-refine', kind: 'skill', description: t('slash.skill.idea-refine') },
+  { name: 'incremental-implementation', kind: 'skill', description: t('slash.skill.incremental-implementation') },
+  { name: 'interview-me', kind: 'skill', description: t('slash.skill.interview-me') },
+  { name: 'memory-leak-debugging', kind: 'skill', description: t('slash.skill.memory-leak-debugging') },
+  { name: 'observability-and-instrumentation', kind: 'skill', description: t('slash.skill.observability-and-instrumentation') },
+  { name: 'planning-and-task-breakdown', kind: 'skill', description: t('slash.skill.planning-and-task-breakdown') },
+  { name: 'security-and-hardening', kind: 'skill', description: t('slash.skill.security-and-hardening') },
+  { name: 'shipping-and-launch', kind: 'skill', description: t('slash.skill.shipping-and-launch') },
+  { name: 'source-driven-development', kind: 'skill', description: t('slash.skill.source-driven-development') },
+  { name: 'spec-driven-development', kind: 'skill', description: t('slash.skill.spec-driven-development') },
+  { name: 'using-agent-skills', kind: 'skill', description: t('slash.skill.using-agent-skills') },
 ]
 
 /** Props for SlashPromptInput. */
@@ -79,13 +81,22 @@ export function SlashPromptInput({
   className,
   ariaLabel,
 }: SlashPromptInputProps) {
+  const t = useT()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // Autocomplete state
-  const [completions, setCompletions] = useState<{ commands: PromptCompletionItem[]; skills: PromptCompletionItem[] }>({
-    commands: DEFAULT_COMMANDS,
-    skills: DEFAULT_SKILLS,
-  })
+  // Autocomplete state: only HOST-provided items are stateful; the built-in
+  // defaults are re-derived per render so their descriptions follow the
+  // active locale live (host items override defaults by name).
+  const [hostCompletions, setHostCompletions] = useState<{ commands: PromptCompletionItem[]; skills: PromptCompletionItem[] } | undefined>(undefined)
+  const completions = useMemo<{ commands: PromptCompletionItem[]; skills: PromptCompletionItem[] }>(() => {
+    const merge = (defaults: PromptCompletionItem[], host: PromptCompletionItem[] | undefined): PromptCompletionItem[] => {
+      const map = new Map<string, PromptCompletionItem>()
+      for (const d of defaults) map.set(d.name, d)
+      for (const h of host ?? []) map.set(h.name, h)
+      return Array.from(map.values())
+    }
+    return { commands: merge(defaultCommands(t), hostCompletions?.commands), skills: merge(defaultSkills(t), hostCompletions?.skills) }
+  }, [t, hostCompletions])
   const [popupOpen, setPopupOpen] = useState(false)
   const [slashQuery, setSlashQuery] = useState('')
   const [slashStart, setSlashStart] = useState(-1)
@@ -97,21 +108,9 @@ export function SlashPromptInput({
     let alive = true
     void controller.fetchPromptCompletions().then(res => {
       if (!alive || res === undefined) return
-      setCompletions(prev => {
-        // Merge commands
-        const cmdMap = new Map<string, PromptCompletionItem>()
-        for (const c of prev.commands) cmdMap.set(c.name, c)
-        for (const c of res.commands) cmdMap.set(c.name, { ...c, kind: 'command' })
-
-        // Merge skills
-        const skillMap = new Map<string, PromptCompletionItem>()
-        for (const s of prev.skills) skillMap.set(s.name, s)
-        for (const s of res.skills) skillMap.set(s.name, { ...s, kind: 'skill' })
-
-        return {
-          commands: Array.from(cmdMap.values()),
-          skills: Array.from(skillMap.values()),
-        }
+      setHostCompletions({
+        commands: res.commands.map(c => ({ ...c, kind: 'command' })),
+        skills: res.skills.map(s => ({ ...s, kind: 'skill' })),
       })
     })
     return () => { alive = false }
@@ -232,10 +231,10 @@ export function SlashPromptInput({
 
         {/* Slash Autocomplete Popup */}
         {popupOpen && filteredItems.length > 0 && (
-          <div className="dsh-atb-slash-popup" role="listbox" aria-label="快捷命令与技能">
+          <div className="dsh-atb-slash-popup" role="listbox" aria-label={t('slash.aria')}>
             <div className="dsh-atb-slash-head">
-              <span className="dsh-atb-slash-title">快捷命令与技能补全</span>
-              <span className="dsh-atb-slash-hint">↑↓ 选择 · Enter / Tab 确认 · Esc 关闭</span>
+              <span className="dsh-atb-slash-title">{t('slash.title')}</span>
+              <span className="dsh-atb-slash-hint">{t('slash.hint')}</span>
             </div>
             <div className="dsh-atb-slash-list">
               {filteredItems.map((item, idx) => (
@@ -250,7 +249,7 @@ export function SlashPromptInput({
                   onMouseEnter={() => setSelectedIndex(idx)}
                 >
                   <span className="dsh-atb-slash-badge" data-kind={item.kind}>
-                    {item.kind === 'command' ? '⚡ 命令' : '🧩 技能'}
+                    {item.kind === 'command' ? t('slash.badge.command') : t('slash.badge.skill')}
                   </span>
                   <span className="dsh-atb-slash-name">/{item.name}</span>
                   {item.hint && <span className="dsh-atb-slash-param">{item.hint}</span>}
@@ -265,7 +264,7 @@ export function SlashPromptInput({
       {/* Bottom helper toolbar */}
       <div className="dsh-atb-prompt-foot">
         <span className="dsh-atb-prompt-tip">
-          💡 输入 <code>/</code> 可快速补全 Slash 命令与 Agent 技能
+          {t('slash.tipA')} <code>/</code> {t('slash.tipB')}
         </span>
       </div>
     </div>

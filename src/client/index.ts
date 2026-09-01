@@ -13,6 +13,7 @@
  */
 import { createClient } from './api.ts'
 import { BoardController } from './controller.ts'
+import { disposeI18n, initI18n } from './i18n/runtime.ts'
 import { injectStyles } from './styles.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
@@ -67,6 +68,10 @@ interface ClientContextFace {
 export function apply(ctx: ClientContextFace): void {
   try {
     injectStyles()
+    // Locale source (设置 → 通用设置 → 语言): soft-attached — absent on
+    // compositions without the DSH locale plugin, where the fallback
+    // (<html lang> / navigator) takes over. Never a hard inject.
+    initI18n(ctx.get?.('locale'))
     const client = createClient()
     const controller = new BoardController(client)
 
@@ -278,6 +283,7 @@ export function apply(ctx: ClientContextFace): void {
     ctx.effect?.(() => () => {
       for (const d of disposers.splice(0)) d()
       controller.dispose()
+      disposeI18n()
     }, 'dsh-taskboard: client mount')
   } catch (error) {
     console.error('[dsh-taskboard] client half failed to start:', error)

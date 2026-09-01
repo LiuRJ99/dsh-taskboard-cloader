@@ -1,5 +1,39 @@
 # 更新日志 / Changelog
 
+### 0.6.0
+
+- **任务弹窗左右双栏宽屏布局、输入框 / 快捷补全与执行权限选择： [@jw5555555555](https://github.com/jw5555555555)（[#14](https://github.com/cloader/dsh-taskboard/pull/14)）**
+  - 新建/编辑弹窗升级为左右双栏宽屏布局（左栏核心字段与执行配置、右栏描述与执行 Prompt）
+  - 描述与 Prompt 输入框支持输入 `/` 快捷补全 Slash 命令与 Agent 技能（↑↓ 选择、Enter/Tab 确认、Esc 关闭，宿主动态发现的命令技能与内置清单合并）
+  - 新增任务级「执行权限」三档选择（📁 可写入工作区 / 🔒 仅可查看 / ⚡ 完全权限），看板设置同步新增默认执行权限，卡片与详情页显示权限徽章
+  - 描述与 Prompt 中的 Markdown 图片渲染为可点击缩略图并支持灯箱放大
+  - 修复模型列表发现（运行时缺失时回落宿主 API）
+  - 会话自动同步过滤子代理会话，避免子会话误建卡
+- **界面中英双语，跟随 DSH 语言设置**
+  - 看板全部界面文案（列头 / 卡片 / 详情 / 表单 / 模板 / 导入导出 / 设置 / 诊断 / 侧边栏入口）接入 DSH locale 服务，「设置 → 通用设置 → 语言」切换 zh/en 即时生效（无需刷新）
+  - 语言偏好由 DSH 统一存储（settings.yaml 的 locale.preference），插件自身不新增任何配置
+  - 无 locale 服务的部署按浏览器语言自动降级（中文环境 zh，其余 en）
+  - 新增 src/client/i18n/（zh/en 双语字典 + 轻量适配器 + useT hook），labels 枚举文案改为键映射
+  - 字典键集中英强制一致（编译期类型 + 单测 + 源码扫描三重校验）
+  - 顺带修正 PLUGIN_VERSION 与 package.json 的版本漂移（0.5.4 → 0.5.5）
+
+**English:**
+
+- **Two-column wide task form, `/` slash completion and execution-permission picker: [@jw5555555555](https://github.com/jw5555555555) ([#14](https://github.com/cloader/dsh-taskboard/pull/14))**
+  - The create/edit modal becomes a two-column wide layout (core fields and execution config on the left, description and execution prompt on the right)
+  - The description and prompt inputs gain `/` slash autocomplete for slash commands and agent skills (↑↓ navigate, Enter/Tab pick, Esc close; host-discovered commands/skills merge over the built-in list)
+  - New per-task three-way "execution permission" picker (📁 workspace write / 🔒 read-only / ⚡ full access) plus a default-permission board setting, with permission badges on cards and the detail panel
+  - Markdown images in description/prompt render as clickable thumbnails with a lightbox
+  - Fixes model-catalog discovery (falls back to the host API when the runtime face is missing)
+  - Session auto-sync now filters out subagent sessions to avoid spurious cards
+- **Bilingual UI following the DSH language setting**
+  - All board copy (columns / cards / detail / form / templates / import-export / settings / diagnostics / sidebar entry) now consumes the DSH locale service — switching zh/en under "Settings → General → Language" applies live without a reload
+  - The preference stays stored by DSH itself (locale.preference in settings.yaml); the plugin adds no settings of its own
+  - Deployments without the locale service fall back to the browser language (zh on Chinese browsers, en otherwise)
+  - Adds src/client/i18n/ (zh/en dictionaries + a thin adapter + a useT hook); labels.ts becomes enum key maps
+  - zh/en key parity enforced three ways (compile-time types, unit tests, a source scan)
+  - Also fixes the PLUGIN_VERSION drift against package.json (0.5.4 → 0.5.5)
+
 ### 0.5.5
 
 - **外部工作区会话自动同步看板： [@jw5555555555](https://github.com/jw5555555555)（[#13](https://github.com/cloader/dsh-taskboard/pull/13)）**：看板「设置」新增「自动同步工作区会话」开关（出厂默认关闭）——开启后，工作区直接新建的会话自动在看板生成任务卡片：按会话工作目录（cwd）映射到对应项目，取首条用户消息与会话标题作为任务的描述与标题；运行中自动进入「进行中」并绑定会话 ID（卡片可一键跳转），执行成功自动流转「待验收」并生成系统评论，异常退回「待办」；自动过滤看板自身创建的内部执行会话防止重复建卡；多轮续跑延续同一张卡片

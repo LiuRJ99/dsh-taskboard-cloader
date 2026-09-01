@@ -2,22 +2,30 @@
 /**
  * Tests for SlashPromptInput and slash command/skill autocomplete (0.5.5).
  */
-import { describe, expect, it } from 'vitest'
-import {
-  DEFAULT_COMMANDS,
-  DEFAULT_SKILLS,
-} from '../src/client/board/SlashPromptInput.tsx'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { defaultCommands, defaultSkills } from '../src/client/board/SlashPromptInput.tsx'
+import { disposeI18n } from '../src/client/i18n/runtime.ts'
 
 describe('SlashPromptInput & autocomplete (0.5.5)', () => {
-  it('defines standard slash commands and skills with descriptions', () => {
-    expect(DEFAULT_COMMANDS.length).toBeGreaterThanOrEqual(8)
-    expect(DEFAULT_SKILLS.length).toBeGreaterThanOrEqual(15)
+  beforeEach(() => {
+    // i18n: the component resolves copy through the runtime (no DSH locale
+    // service in jsdom) — pin zh and force re-detection so the zh assertions
+    // below hold.
+    document.documentElement.lang = 'zh-CN'
+    disposeI18n()
+  })
 
-    const goalCmd = DEFAULT_COMMANDS.find(c => c.name === 'goal')
+  it('defines standard slash commands and skills with descriptions', () => {
+    const commands = defaultCommands(k => k)
+    const skills = defaultSkills(k => k)
+    expect(commands.length).toBeGreaterThanOrEqual(8)
+    expect(skills.length).toBeGreaterThanOrEqual(15)
+
+    const goalCmd = commands.find(c => c.name === 'goal')
     expect(goalCmd).toBeDefined()
     expect(goalCmd?.kind).toBe('command')
 
-    const uiSkill = DEFAULT_SKILLS.find(s => s.name === 'frontend-ui-engineering')
+    const uiSkill = skills.find(s => s.name === 'frontend-ui-engineering')
     expect(uiSkill).toBeDefined()
     expect(uiSkill?.kind).toBe('skill')
   })

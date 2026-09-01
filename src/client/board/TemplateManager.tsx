@@ -8,12 +8,14 @@
 import { useState } from 'react'
 import type { BoardController } from '../controller.ts'
 import { useAlert } from './AlertModal.tsx'
+import { useT } from '../i18n/runtime.ts'
 
 /**
  * The template manager modal.
  * @param controller - the controller.
  */
 export function TemplateManager({ controller }: { controller: BoardController }) {
+  const t = useT()
   const state = controller.getSnapshot()
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [confirmId, setConfirmId] = useState<string | undefined>(undefined)
@@ -30,79 +32,79 @@ export function TemplateManager({ controller }: { controller: BoardController })
     void controller.upsertTemplate({ id, name, task: template.task }).then(ok => {
       if (ok) {
         setEdits(prev => { const next = { ...prev }; delete next[id]; return next })
-        showAlert('模板已改名')
+        showAlert(t('tpl.renamed'))
       }
     })
   }
 
   return (
     <div className="dsh-atb-modal-backdrop" onClick={e => { if (e.target === e.currentTarget) close() }}>
-      <div className="dsh-atb-modal dsh-atb-tplm" role="dialog" aria-modal="true" aria-label="管理模板">
+      <div className="dsh-atb-modal dsh-atb-tplm" role="dialog" aria-modal="true" aria-label={t('tpl.aria')}>
         <div className="dsh-atb-modal-head">
           <span className="dsh-atb-modal-headicon">⌗</span>
           <div className="dsh-atb-modal-headtext">
-            <h3>任务模板</h3>
-            <p>新建任务 ▼ 下拉的模板：改名 / 删除 / 直接使用；任务详情页「存为模板」可新增</p>
+            <h3>{t('tpl.title')}</h3>
+            <p>{t('tpl.subtitle')}</p>
           </div>
-          <button type="button" className="dsh-atb-modal-close" aria-label="关闭" onClick={close}>✕</button>
+          <button type="button" className="dsh-atb-modal-close" aria-label={t('shared.close')} onClick={close}>✕</button>
         </div>
         <div className="dsh-atb-modal-body">
           {state.templates.length === 0
-            ? <div className="dsh-atb-empty2">暂无模板 — 在任务详情页点「存为模板」把常用配置沉淀下来</div>
+            ? <div className="dsh-atb-empty2">{t('tpl.empty')}</div>
             : (
                 <div className="dsh-atb-tplm-list">
-                  {state.templates.map(t => (
-                    <div key={t.id} className="dsh-atb-tplm-row">
+                  {state.templates.map(tpl => (
+                    <div key={tpl.id} className="dsh-atb-tplm-row">
                       <input
                         className="dsh-atb-tplm-name"
-                        value={nameOf(t.id, t.name)}
+                        value={nameOf(tpl.id, tpl.name)}
                         maxLength={60}
                         spellCheck={false}
-                        aria-label={`模板名 ${t.name}`}
-                        onChange={e => setEdits(prev => ({ ...prev, [t.id]: e.target.value }))}
+                        aria-label={t('tpl.name.aria', { name: tpl.name })}
+                        onChange={e => setEdits(prev => ({ ...prev, [tpl.id]: e.target.value }))}
                         onKeyDown={e => {
-                          if (e.key === 'Enter') save(t.id, nameOf(t.id, t.name))
+                          if (e.key === 'Enter') save(tpl.id, nameOf(tpl.id, tpl.name))
                         }}
                       />
                       <span
                         className="dsh-atb-tplm-meta"
-                        title={`${t.builtin === true ? '内置' : '自建'}${t.task.checklist !== undefined && t.task.checklist.length > 0 ? ` · 清单 ${t.task.checklist.length} 项` : ''}${t.task.urgency !== undefined ? ` · ${t.task.urgency}` : ''}${t.task.permission !== undefined ? ` · 权限: ${t.task.permission}` : ''}`}
+                        title={`${tpl.builtin === true ? t('tpl.builtin') : t('tpl.custom')}${tpl.task.checklist !== undefined && tpl.task.checklist.length > 0 ? t('tpl.meta.checklist', { n: tpl.task.checklist.length }) : ''}${tpl.task.urgency !== undefined ? ` · ${tpl.task.urgency}` : ''}${tpl.task.permission !== undefined ? ` · ${t('shared.permission')}: ${tpl.task.permission}` : ''}`}
                       >
-                        {t.builtin === true ? '内置' : '自建'}
-                        {t.task.checklist !== undefined && t.task.checklist.length > 0 ? ` · 清单 ${t.task.checklist.length} 项` : ''}
-                        {t.task.urgency !== undefined ? ` · ${t.task.urgency}` : ''}
-                        {t.task.permission !== undefined && t.task.permission !== 'workspace-write' ? ` · ${t.task.permission === 'read-only' ? '仅查看' : '全权限'}` : ''}
+                        {tpl.builtin === true ? t('tpl.builtin') : t('tpl.custom')}
+                        {tpl.task.checklist !== undefined && tpl.task.checklist.length > 0 ? t('tpl.meta.checklist', { n: tpl.task.checklist.length }) : ''}
+                        {tpl.task.urgency !== undefined ? ` · ${tpl.task.urgency}` : ''}
+                        {tpl.task.permission !== undefined && tpl.task.permission !== 'workspace-write' ? ` · ${tpl.task.permission === 'read-only' ? t('tpl.meta.permReadOnly') : t('tpl.meta.permFull')}` : ''}
                       </span>
                       <span className="dsh-atb-tplm-btns">
                         <button
                           type="button"
                           className="dsh-atb-btn"
-                          disabled={nameOf(t.id, t.name) === t.name || nameOf(t.id, t.name).trim().length === 0}
-                          title="保存改名"
-                          onClick={() => save(t.id, nameOf(t.id, t.name))}
+                          disabled={nameOf(tpl.id, tpl.name) === tpl.name || nameOf(tpl.id, tpl.name).trim().length === 0}
+                          title={t('tpl.rename.title')}
+                          onClick={() => save(tpl.id, nameOf(tpl.id, tpl.name))}
                         >
-                          改名
+                          {t('tpl.rename.button')}
                         </button>
                         <button
                           type="button"
                           className="dsh-atb-btn"
-                          title="用此模板打开新建表单"
+                          title={t('tpl.use.title')}
                           onClick={() => {
                             close()
-                            controller.newFromTemplate(t.task)
+                            controller.newFromTemplate(tpl.task)
                           }}
                         >
-                          用此新建
+                          {t('tpl.use.button')}
                         </button>
-                        {confirmId === t.id
+                        {confirmId === tpl.id
                           ? (
                             <>
-                              <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => { void controller.deleteTemplate(t.id); setConfirmId(undefined) }}>确认删除</button>
-                              <button type="button" className="dsh-atb-btn" onClick={() => setConfirmId(undefined)}>取消</button>
+                              <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => { void controller.deleteTemplate(tpl.id); setConfirmId(undefined) }}>{t('shared.confirmDelete')}</button>
+                              <button type="button" className="dsh-atb-btn" onClick={() => setConfirmId(undefined)}>{t('shared.cancel')}</button>
                             </>
                           )
                           : (
-                              <button type="button" className="dsh-atb-btn" data-danger="true" title="删除该模板" onClick={() => setConfirmId(t.id)}>
+                              <button type="button" className="dsh-atb-btn" data-danger="true" title={t('tpl.delete.title')} onClick={() => setConfirmId(tpl.id)}>
                                 🗑
                               </button>
                             )}
@@ -113,9 +115,9 @@ export function TemplateManager({ controller }: { controller: BoardController })
               )}
         </div>
         <div className="dsh-atb-modal-foot">
-          <span className="dsh-atb-modal-hint">模板随台账一同保存在 DSH 主目录，升级不丢</span>
+          <span className="dsh-atb-modal-hint">{t('tpl.foot.hint')}</span>
           <span className="dsh-atb-modal-footbtns">
-            <button type="button" className="dsh-atb-btn" onClick={close}>关闭</button>
+            <button type="button" className="dsh-atb-btn" onClick={close}>{t('shared.close')}</button>
           </span>
         </div>
       </div>
