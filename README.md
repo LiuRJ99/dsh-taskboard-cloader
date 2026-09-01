@@ -215,13 +215,17 @@ pnpm 的构建授权——按报错把 key 加进 profile 的 `pnpm-workspace.ya
 git clone https://github.com/cloader/dsh-taskboard.git
 cd dsh-taskboard
 npm install && npm run build    # host ESM + client CJS 双构建
-npm test                        # vitest 全量（232 项）
+npm test                        # vitest 全量（233 项）
 node tests/manual-git-e2e.mjs   # 真 git 端到端手测（worktree 全链路 + 续跑 + diff 查看器）
 node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 ```
 
 ## 升级日志
 
+### 0.6.1
+
+- **修复：`/` 快捷补全弹层被任务弹窗滚动容器裁剪**：弹层 portal 到 document.body 并 fixed 锚定输入框，不再被表单滚动容器裁剪；上方空间不足自动下翻、贴边收拢，并随滚动/缩放实时跟随
+- **修复：键盘 ↑/↓ 选择补全项时列表不滚动**：高亮项自动滚入视野（含 wrap-around），直调列表 scrollTop 避免连带滚动模态表体
 ### 0.6.0
 
 - **任务弹窗左右双栏宽屏布局、输入框 / 快捷补全与执行权限选择： [@jw5555555555](https://github.com/jw5555555555)（[#14](https://github.com/cloader/dsh-taskboard/pull/14)）**

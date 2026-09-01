@@ -1,5 +1,24 @@
 # 更新日志 / Changelog
 
+### 0.6.1
+
+- **修复：`/` 快捷补全弹层被任务弹窗滚动容器裁剪**
+  - 弹层改为 portal 到 document.body 并以 fixed 定位锚定输入框的视口矩形，滚动容器再也不会裁掉命令列表
+  - 优先向上展开，上方空间不足自动下翻；贴边时收拢最大高度，由列表内部滚动兜底
+  - 弹层打开期间跟随滚动与窗口缩放实时重定位（捕获阶段监听，覆盖表体内部滚动）
+- **修复：键盘 ↑/↓ 选择补全项时列表不滚动**
+  - 高亮项越出可视区时自动滚动列表使其完整可见（含首尾 wrap-around 跳变）
+  - 直接调整列表自身 scrollTop，不用 scrollIntoView，避免连带滚动弹层后面的模态表体
+
+**English:**
+
+- **Fix: the `/` completion popup was clipped by the task-modal scroll container**
+  - The popup now portals to document.body, fixed-positioned from the textarea's viewport rect — the scrollable form body can no longer clip the command list
+  - Opens above by preference and flips below when the top is tight; clamps its max height at the edges with the list scrolling internally
+  - Repositions live while open on scrolling and viewport resizes (a capture-phase listener covers the modal body's own scrolling)
+- **Fix: arrow-key selection did not scroll the completion list**
+  - The keyboard-highlighted item is scrolled fully into view automatically, including wrap-around jumps
+  - Adjusts the list's own scrollTop directly instead of scrollIntoView, which would also scroll the modal body behind the popup
 ### 0.6.0
 
 - **任务弹窗左右双栏宽屏布局、输入框 / 快捷补全与执行权限选择： [@jw5555555555](https://github.com/jw5555555555)（[#14](https://github.com/cloader/dsh-taskboard/pull/14)）**

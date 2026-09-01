@@ -215,13 +215,17 @@ That's pnpm build authorization — add the key printed in the error to `allowBu
 git clone https://github.com/cloader/dsh-taskboard.git
 cd dsh-taskboard
 npm install && npm run build    # dual build: host ESM + client CJS
-npm test                        # full vitest suite (232 cases)
+npm test                        # full vitest suite (233 cases)
 node tests/manual-git-e2e.mjs   # real-git end-to-end manual test (full worktree chain + resume + diff viewer)
 node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
 
+### 0.6.1
+
+- **Fix: the `/` completion popup was clipped by the task-modal scroll container**: the popup portals to document.body, fixed-anchored to the textarea, so the scrollable form body can no longer clip it; flips below when tight, clamps at the edges, and follows scrolling/resizes live
+- **Fix: arrow-key selection did not scroll the completion list**: the highlighted item is scrolled fully into view (wrap-around included) by adjusting the list's own scrollTop, never the modal body behind the popup
 ### 0.6.0
 
 - **Two-column wide task form, `/` slash completion and execution-permission picker: [@jw5555555555](https://github.com/jw5555555555) ([#14](https://github.com/cloader/dsh-taskboard/pull/14))**
