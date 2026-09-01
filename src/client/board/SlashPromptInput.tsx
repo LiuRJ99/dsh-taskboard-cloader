@@ -6,7 +6,8 @@
  *
  * @module dsh-taskboard/client/board/SlashPromptInput
  */
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent } from 'react'
+import { createPortal } from 'react-dom'
 import type { BoardController } from '../controller.ts'
 import type { PromptCompletionItem } from '../../shared/api.ts'
 import { useT, type Translate } from '../i18n/runtime.ts'
@@ -83,6 +84,10 @@ export function SlashPromptInput({
 }: SlashPromptInputProps) {
   const t = useT()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const popupRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  // Inline fixed-position style for the portaled popup (set by positionPopup).
+  const [popupStyle, setPopupStyle] = useState<CSSProperties>({})
 
   // Autocomplete state: only HOST-provided items are stateful; the built-in
   // defaults are re-derived per render so their descriptions follow the
@@ -130,6 +135,22 @@ export function SlashPromptInput({
       setSelectedIndex(Math.max(0, filteredItems.length - 1))
     }
   }, [filteredItems.length, selectedIndex])
+
+  // Keep the keyboard-highlighted option visible inside the scrolling list:
+  // mouse hovering only ever targets rendered rows, but ArrowUp/ArrowDown can
+  // move the highlight past the clipped edge. Adjust the list's scrollTop
+  // directly from rect deltas — NOT scrollIntoView, which would also scroll
+  // ancestor containers (the modal body behind the portaled popup).
+  useLayoutEffect(() => {
+    if (!popupOpen) return
+    const list = listRef.current
+    const active = list?.children[selectedIndex]
+    if (list === null || !(active instanceof HTMLElement)) return
+    const listRect = list.getBoundingClientRect()
+    const itemRect = active.getBoundingClientRect()
+    if (itemRect.top < listRect.top) list.scrollTop -= listRect.top - itemRect.top
+    else if (itemRect.bottom > listRect.bottom) list.scrollTop += itemRect.bottom - listRect.bottom
+  }, [popupOpen, selectedIndex, filteredItems])
 
   // Detect slash typing on cursor movement or text change
   const checkSlashTrigger = (): void => {
@@ -207,6 +228,51 @@ export function SlashPromptInput({
     }
   }
 
+  // The popup is portaled to document.body and fixed-positioned from the
+  // textarea's viewport rect: an absolute popup inside the scrollable modal
+  // body was clipped at the container's top edge (0.6.0 field report).
+  // Opens above by preference, flips below when the top is tight, and clamps
+  // to the viewport (maxHeight shrinks; the list scrolls internally).
+  const positionPopup = useCallback((): void => {
+    const anchor = textareaRef.current
+    if (anchor === null) return
+    const rect = anchor.getBoundingClientRect()
+    const gap = 6
+    const margin = 8
+    const vh = window.innerHeight
+    const measured = popupRef.current?.offsetHeight ?? 0
+    const natural = measured > 0 ? measured : 240
+    const roomAbove = rect.top - gap - margin
+    const roomBelow = vh - margin - (rect.bottom + gap)
+    const openBelow = roomBelow > roomAbove
+    const height = Math.min(natural, Math.max(openBelow ? roomBelow : roomAbove, 120))
+    const top = openBelow ? rect.bottom + gap : rect.top - gap - height
+    // Bail out (return prev) when unchanged: the layout effect below runs on
+    // every open render, and a fresh object here would re-render forever.
+    setPopupStyle(prev => (prev.left === rect.left && prev.top === top && prev.width === rect.width && prev.maxHeight === height
+      ? prev
+      : { position: 'fixed', left: rect.left, top, width: rect.width, maxHeight: height, zIndex: 100 }))
+  }, [])
+
+  // Reposition on every open render: the popup height follows the filtered
+  // item count, so typing changes the geometry too.
+  useLayoutEffect(() => {
+    if (!popupOpen) return
+    positionPopup()
+  })
+
+  // Follow scrolling and viewport resizes while open (capture phase: the
+  // modal body scrolls, the window itself does not).
+  useEffect(() => {
+    if (!popupOpen) return
+    window.addEventListener('scroll', positionPopup, true)
+    window.addEventListener('resize', positionPopup)
+    return () => {
+      window.removeEventListener('scroll', positionPopup, true)
+      window.removeEventListener('resize', positionPopup)
+    }
+  }, [popupOpen, positionPopup])
+
   return (
     <div className={`dsh-atb-prompt-wrap ${className ?? ''}`}>
       <div className="dsh-atb-prompt-inner">
@@ -229,14 +295,15 @@ export function SlashPromptInput({
           onKeyDown={handleKeyDown}
         />
 
-        {/* Slash Autocomplete Popup */}
-        {popupOpen && filteredItems.length > 0 && (
-          <div className="dsh-atb-slash-popup" role="listbox" aria-label={t('slash.aria')}>
+        {/* Slash Autocomplete Popup — portaled to document.body so the
+            scrollable modal body can never clip it (see positionPopup). */}
+        {popupOpen && filteredItems.length > 0 && createPortal(
+          <div ref={popupRef} className="dsh-atb-slash-popup" style={popupStyle} role="listbox" aria-label={t('slash.aria')}>
             <div className="dsh-atb-slash-head">
               <span className="dsh-atb-slash-title">{t('slash.title')}</span>
               <span className="dsh-atb-slash-hint">{t('slash.hint')}</span>
             </div>
-            <div className="dsh-atb-slash-list">
+            <div ref={listRef} className="dsh-atb-slash-list">
               {filteredItems.map((item, idx) => (
                 <div
                   key={`${item.kind}-${item.name}`}
@@ -257,7 +324,8 @@ export function SlashPromptInput({
                 </div>
               ))}
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
       </div>
 

@@ -868,9 +868,11 @@ button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #1f2328) 18%, transparent);
 }
 
-/* Slash Autocomplete Popup */
+/* Slash Autocomplete Popup. Fixed positioning (left/top/width/maxHeight/z-index)
+ * is set INLINE by SlashPromptInput: the popup is portaled to document.body and
+ * anchored to the textarea's viewport rect, so the scrollable modal body can no
+ * longer clip its top (0.6.0 field report). Only the visual shell lives here. */
 .dsh-atb-slash-popup {
-  position: absolute; left: 0; bottom: calc(100% + 6px); width: 100%; max-height: 240px; z-index: 100;
   display: flex; flex-direction: column; overflow: hidden; border-radius: 10px;
   background: var(--dsw-alias-bg-overlay, #fff); color: var(--dsw-alias-label-primary, inherit);
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
