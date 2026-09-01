@@ -15,6 +15,9 @@ export default defineConfig({
   sourcemap: false,
   external: [/^@deepseek-ai\//, /^react(-dom)?(\/.*)?$/, /^schemastery$/],
   target: 'chrome120',
-  minify: false,
+  // Minified on purpose: DSH STORE's bounded source review rejects any
+  // runtime file above 262144 bytes (256 KiB) and the unminified wrapped
+  // bundle sits at ~321 KB. Keep this on and watch tests/client-size-budget.spec.ts.
+  minify: true,
   outExtensions: () => ({ js: '.cjs' }),
 })

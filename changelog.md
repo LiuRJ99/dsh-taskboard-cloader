@@ -1,5 +1,21 @@
 # 更新日志 / Changelog
 
+### 0.6.2
+
+- **修复：DSH STORE 收录的两个确定性阻断（[DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321)）**
+  - client 打包开启压缩（rolldown minify）：wrap 后 `lib/client.js` 从 320,851 字节降至 203,793 字节，重新低于 DSH STORE 单文件 262,144 字节（256 KiB）审核上限，解除「更新暂缓」
+  - `package.json` 新增 `dsh.compatibility.dshReleases` 逐版本兼容声明（`0.1.1-rc.2: compatible`；`0.1.0-rc.8` / `0.1.1-rc.1: unknown`），并声明 `engines.node >=22`，解除「兼容性暂时下架」
+  - 新增 `tests/client-size-budget.spec.ts` 体积预算测试：client 产物超出 256 KiB 上限减 16 KiB 预算线即测试失败，防止未来增长无声撞线
+  - 无功能变化，纯构建配置与清单整改
+
+**English:**
+
+- **Fix: the two deterministic blockers to the DSH STORE listing ([DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321))**
+  - The client bundle is now minified (rolldown minify): the wrapped `lib/client.js` shrinks from 320,851 to 203,793 bytes, back under DSH STORE's 262,144-byte (256 KiB) per-file review bound — clearing "update deferred"
+  - `package.json` now declares per-release `dsh.compatibility.dshReleases` (`0.1.1-rc.2: compatible`; `0.1.0-rc.8` / `0.1.1-rc.1: unknown`) plus `engines.node >=22`, clearing "compatibility unlisted"
+  - New `tests/client-size-budget.spec.ts` size-budget test fails the suite whenever the client artifact exceeds the 256 KiB bound minus a 16 KiB headroom, so future growth cannot silently re-trip the gate
+  - No functional changes; build configuration and manifest remediation only
+
 ### 0.6.1
 
 - **修复：`/` 快捷补全弹层被任务弹窗滚动容器裁剪**
