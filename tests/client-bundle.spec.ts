@@ -34,6 +34,7 @@ function loadBundledRenderer(): (text: string) => string {
 
   expect(registration).toBeDefined()
   const fakeRequire = (specifier: string): unknown => {
+    if (specifier === 'react-dom') return { createPortal: (node: unknown) => node }
     if (specifier === 'react-dom/client') return {}
     if (specifier === 'react') return { useState: () => [null, () => {}], useEffect: () => {} }
     if (specifier === 'react/jsx-runtime') return { jsx: () => undefined, jsxs: () => undefined }

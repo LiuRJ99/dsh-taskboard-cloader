@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createRoot, type Root } from 'react-dom/client'
 import React from 'react'
 import { renderMarkdown } from '../src/client/markdown.tsx'
-import { MermaidMarkdown } from '../src/client/mermaid.tsx'
+import { MermaidMarkdown, writeClipboard } from '../src/client/mermaid.tsx'
 import { loadMermaid, setMermaidRuntimeForTests, type MermaidRuntime } from '../src/client/mermaid-chunk-loader.ts'
 import { hasMermaidFence } from '../src/client/mermaid-blocks.ts'
 import { sanitizeSvg } from '../src/client/mermaid-sanitize.ts'
@@ -29,11 +29,11 @@ function fakeRuntime(render: MermaidRuntime['render']): MermaidRuntime {
 }
 
 afterEach(async () => {
-  // Let the Mermaid enhancement effect settle before the outer test root is
-  // unmounted.
+  // Let the Mermaid enhancement effect settle before the outer test root is unmounted.
   await new Promise(resolve => setTimeout(resolve, 0))
   for (const root of roots.splice(0)) root.unmount()
   document.body.innerHTML = ''
+  document.body.removeAttribute('data-ds-dark-theme')
   setMermaidRuntimeForTests(undefined)
   delete (globalThis as { __dshTaskboardChunks__?: unknown }).__dshTaskboardChunks__
   vi.restoreAllMocks()
@@ -77,7 +77,7 @@ describe('Mermaid SVG sanitization', () => {
 })
 
 describe('detail Markdown Mermaid enhancement', () => {
-  it('replaces a successful Mermaid code block with sanitized SVG', async () => {
+  it('replaces a successful Mermaid code block with sanitized SVG and card header', async () => {
     const runtime = fakeRuntime(async (_id, _code) => ({
       svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Rendered</text></svg>',
     }))
@@ -86,6 +86,8 @@ describe('detail Markdown Mermaid enhancement', () => {
 
     await waitFor(() => host.querySelector('[data-mermaid-diagram] svg') !== null)
     expect(host.querySelector('[data-mermaid-diagram]')?.textContent).toContain('Rendered')
+    expect(host.querySelector('.dsh-atb-mermaid-title')?.textContent).toBe('mermaid')
+    expect(host.querySelector('.dsh-atb-mermaid-copy')).not.toBeNull()
     expect(host.querySelector('pre')).toBeNull()
     expect(runtime.initialize).toHaveBeenCalledWith(expect.objectContaining({
       securityLevel: 'strict',
@@ -116,5 +118,66 @@ describe('detail Markdown Mermaid enhancement', () => {
 
     await waitFor(() => host.querySelector('[data-mermaid-state="error"]') !== null)
     expect(host.querySelector('code')?.textContent).toBe(`${source}\n`)
+  })
+
+  it('allows copying diagram source code', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+
+    const runtime = fakeRuntime(async () => ({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Graph</text></svg>',
+    }))
+    setMermaidRuntimeForTests(runtime)
+    const source = 'flowchart TD\nA-->B'
+    const host = mount(renderMarkdown(`\`\`\`mermaid\n${source}\n\`\`\``))
+
+    await waitFor(() => host.querySelector('[data-mermaid-diagram] svg') !== null)
+    const copyBtn = host.querySelector<HTMLButtonElement>('.dsh-atb-mermaid-copy')
+    expect(copyBtn).not.toBeNull()
+    expect(copyBtn?.textContent).toContain('复制')
+
+    // Click copy button
+    copyBtn?.click()
+    await waitFor(() => copyBtn?.textContent?.includes('已复制') === true)
+    expect(writeText).toHaveBeenCalledWith(source)
+  })
+
+  it('opens and closes the click-to-enlarge zoom modal', async () => {
+    const runtime = fakeRuntime(async () => ({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><text>Clickable</text></svg>',
+    }))
+    setMermaidRuntimeForTests(runtime)
+    const host = mount(renderMarkdown('```mermaid\nflowchart TD\nA-->B\n```'))
+
+    await waitFor(() => host.querySelector('[data-mermaid-diagram] svg') !== null)
+    const body = host.querySelector<HTMLDivElement>('.dsh-atb-mermaid-body')
+    expect(body).not.toBeNull()
+
+    // Click to open zoom modal
+    body?.click()
+    await waitFor(() => document.querySelector('[data-mermaid-modal]') !== null)
+
+    const modal = document.querySelector<HTMLDivElement>('[data-mermaid-modal]')
+    expect(modal).not.toBeNull()
+    expect(modal?.querySelector('.dsh-atb-mermaid-modal-stage svg')).not.toBeNull()
+
+    // Close via Esc key
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await waitFor(() => document.querySelector('[data-mermaid-modal]') === null)
+  })
+
+  it('re-renders diagram when theme changes to dark mode', async () => {
+    const runtime = fakeRuntime(async () => ({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Themed</text></svg>',
+    }))
+    setMermaidRuntimeForTests(runtime)
+    const host = mount(renderMarkdown('```mermaid\nflowchart TD\nA-->B\n```'))
+
+    await waitFor(() => host.querySelector('[data-mermaid-diagram] svg') !== null)
+    expect(runtime.initialize).toHaveBeenCalledWith(expect.objectContaining({ theme: 'default' }))
+
+    // Switch to dark mode
+    document.body.setAttribute('data-ds-dark-theme', 'true')
+    await waitFor(() => (runtime.initialize as any).mock.calls.some((call: any[]) => call[0]?.theme === 'dark'))
   })
 })

@@ -45,6 +45,8 @@ declare module 'dsh-better-sidebar/client/service' {
     registerTab(descriptor: TabDescriptor): () => void
     /** Optional in older peers; present in Better Sidebar >= 0.12.0. */
     openTab?(seed: OpenTabSeed, scope?: SessionScope): void
+    /** Optional in older peers; close active or specific tab. */
+    closeTab?(id: string, scope?: SessionScope): void
     readonly features: readonly string[]
     /** Optional in older peers; absent means enabled by default. */
     isTabEnabled?(id: string): boolean
