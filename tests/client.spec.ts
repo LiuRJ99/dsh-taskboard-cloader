@@ -2468,4 +2468,60 @@ describe('client half', () => {
     controller.dispose()
     localStorage.clear()
   })
+
+  it('lazy-gate discovery extracts skills from either enabledSkills or skills array', async () => {
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { apply } = await import('../src/client/index.ts')
+
+    let rpcResponse: any = { ok: true, value: { skills: [{ name: 'browser' }, { name: 'computer-use' }] } }
+    const connection = {
+      rpc: {
+        call: vi.fn(async (_path: string, _endpoint: string) => rpcResponse),
+      },
+      api: {
+        llm: {
+          models: async () => ({ result: { ok: true, value: { groups: [] } } }),
+        },
+        agentPresets: {
+          list: async () => ({ result: { ok: true, value: { presets: [] } } }),
+        },
+      },
+    }
+
+    let tabDescriptor: any
+    const service = {
+      registerTab: vi.fn((desc: any) => {
+        tabDescriptor = desc
+        return () => undefined
+      }),
+      features: [],
+    }
+
+    const ctx = {
+      get: (name: string) => name === 'connection' ? connection : name === 'betterSidebar' ? service : undefined,
+      effect: (fn: () => unknown) => { fn() },
+      on: () => () => undefined,
+    }
+
+    // Apply client entry
+    apply(ctx as never)
+    await new Promise(r => setTimeout(r, 20))
+
+    expect(service.registerTab).toHaveBeenCalled()
+    const element = tabDescriptor.component({ visible: true }) as any
+    const ctrl = element.props.children.props.controller
+    expect(ctrl).toBeDefined()
+    const catalog = ctrl.capabilityCatalog
+    expect(catalog).toBeDefined()
+
+    // 1. Test with skills response
+    const caps1 = await catalog()
+    expect(caps1).toEqual([{ name: 'browser' }, { name: 'computer-use' }])
+
+    // 2. Test with enabledSkills response
+    rpcResponse = { ok: true, value: { enabledSkills: [{ name: 'browser' }] } }
+    const caps2 = await catalog()
+    expect(caps2).toEqual([{ name: 'browser' }])
+  })
 })

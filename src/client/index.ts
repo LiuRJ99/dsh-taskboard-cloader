@@ -170,7 +170,12 @@ export function apply(ctx: ClientContextFace): void {
               if (!response.ok || typeof response.value !== 'object' || response.value === null) return undefined
               // The host keeps `skills` complete for the lazy-gate settings page;
               // Taskboard intentionally consumes only its active-only projection.
-              const skills = (response.value as { enabledSkills?: unknown }).enabledSkills
+              const val = response.value as { enabledSkills?: unknown; skills?: unknown }
+              const skills = Array.isArray(val.enabledSkills)
+                ? val.enabledSkills
+                : Array.isArray(val.skills)
+                  ? val.skills
+                  : undefined
               if (!Array.isArray(skills)) return undefined
               return skills
                 .filter((skill): skill is { name: string } => typeof skill === 'object' && skill !== null && typeof (skill as { name?: unknown }).name === 'string')
