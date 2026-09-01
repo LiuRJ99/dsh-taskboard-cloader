@@ -635,57 +635,12 @@ export function TaskDetail({
   return (
     <div className="dsh-atb-detail" data-urgency={task.urgency}>
       <div className="dsh-atb-detail-head">
-        <div className="dsh-atb-detail-titlewrap">
+        <div className="dsh-atb-detail-topbar">
           <div className="dsh-atb-detail-titlebar">
             <h3>{task.title}</h3>
             <span className="dsh-atb-statuspill" data-status={task.status}>{STATUS_LABEL[task.status] ?? task.status}</span>
           </div>
-          <div className="dsh-atb-detail-chips">
-            <Chip tone={task.urgency}>● {URGENCY_LABEL[task.urgency] ?? task.urgency}</Chip>
-            <Chip icon="📁">{ws?.title ?? shortId(task.workspaceId)}</Chip>
-            {task.model !== undefined && (
-              <Chip
-                icon="✦"
-                title={`固定模型: ${task.model.provider}/${task.model.model}${task.model.reasoningEffort !== undefined ? ` · 思考强度: ${task.model.reasoningEffort}` : ''}`}
-              >
-                {task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}
-              </Chip>
-            )}
-            {task.speed === 'fast' && <Chip icon="⚡">快速</Chip>}
-            {task.permissionMode !== undefined && <Chip icon="🛡">{task.permissionMode === 'danger-full-access' ? 'Full access' : task.permissionMode === 'workspace-write' ? 'Workspace Write' : 'Read Only'}</Chip>}
-            {task.presetId !== undefined && <Chip icon="🎛" >{task.presetId}</Chip>}
-                         {task.requiredCapabilities !== undefined && <Chip icon="🔐">能力 · {task.requiredCapabilities.join(', ')}</Chip>}
-            {task.execution.mode === 'scheduled' && (
-              <Chip icon="⏰">{task.execution.cron} · 下次 {fmtTime(task.execution.nextRunAt)}</Chip>
-            )}
-            {task.blocked && <Chip icon="⛔" tone="urgent">受阻</Chip>}
-            {task.checklist !== undefined && task.checklist.length > 0 && (
-              <Chip icon="☑" tone={task.status === 'in_review' && task.checklist.some(i => !i.checked) ? 'urgent' : undefined}>
-                清单 {checklistProgress(task).done}/{task.checklist.length}
-              </Chip>
-            )}
-            {task.branch !== undefined && (
-              <Chip icon="🌿" tone={undefined}>Worktree · {task.branch.length > 28 ? `${task.branch.slice(0, 28)}…` : task.branch}</Chip>
-            )}
-            {(task.isolation === undefined || task.isolation === 'worktree') && task.branch === undefined && <Chip icon="🌿">Worktree 隔离</Chip>}
-            {holder !== undefined && (
-              <button
-                type="button"
-                className="dsh-atb-chip2 dsh-atb-chip-btn"
-                data-tone={stale ? 'urgent' : undefined}
-                title={`点击跳转至该会话：${holder}`}
-                onClick={() => jumpToSession(holder)}
-              >
-                <span className="dsh-atb-chip2-icon">{stale ? '⏱' : '🤖'}</span>
-                {stale ? '认领超时 · ' : '由 '}{shortId(holder)} 持有 ↗
-              </button>
-            )}
-            {task.trashedAt !== undefined && <Chip icon="🗑" tone="urgent">已删除待清除</Chip>}
-            <Chip>v{task.version}</Chip>
-          </div>
-          <div className="dsh-atb-detail-sub">
-            更新 {fmtTime(task.updatedAt)} · 最近操作 {task.updatedBy.kind === 'agent' ? `🤖 ${shortId(task.updatedBy.sessionId)}` : task.updatedBy.kind === 'system' ? '⚙️ 系统' : '👤 用户'}
-          </div>
+          <button type="button" className="dsh-atb-detail-close" aria-label="关闭" onClick={() => controller.select(undefined)}>✕</button>
         </div>
         <div className="dsh-atb-detail-topbtns">
           {targetSessionId !== undefined && (
@@ -695,7 +650,7 @@ export function TaskDetail({
               title={`一键跳转到对应会话：${targetSessionId}`}
               onClick={() => jumpToSession(targetSessionId)}
             >
-              🤖 跳转会话 ↗
+              🤖 跳转会话 ({shortId(targetSessionId)}) ↗
             </button>
           )}
           <button
@@ -783,7 +738,45 @@ export function TaskDetail({
                 ■ 停止执行
               </button>
             ))}
-          <button type="button" className="dsh-atb-detail-close" aria-label="关闭" onClick={() => controller.select(undefined)}>✕</button>
+        </div>
+        <div className="dsh-atb-detail-chips">
+          <Chip tone={task.urgency}>● {URGENCY_LABEL[task.urgency] ?? task.urgency}</Chip>
+          <Chip icon="📁">{ws?.title ?? shortId(task.workspaceId)}</Chip>
+          {task.model !== undefined && (
+            <Chip
+              icon="✦"
+              title={`固定模型: ${task.model.provider}/${task.model.model}${task.model.reasoningEffort !== undefined ? ` · 思考强度: ${task.model.reasoningEffort}` : ''}`}
+            >
+              {task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}
+            </Chip>
+          )}
+          {task.speed === 'fast' && <Chip icon="⚡">快速</Chip>}
+          {task.permissionMode !== undefined && <Chip icon="🛡">{task.permissionMode === 'danger-full-access' ? 'Full access' : task.permissionMode === 'workspace-write' ? 'Workspace Write' : 'Read Only'}</Chip>}
+          {task.presetId !== undefined && <Chip icon="🎛" >{task.presetId}</Chip>}
+          {task.requiredCapabilities !== undefined && <Chip icon="🔐">能力 · {task.requiredCapabilities.join(', ')}</Chip>}
+          {task.execution.mode === 'scheduled' && (
+            <Chip icon="⏰">{task.execution.cron} · 下次 {fmtTime(task.execution.nextRunAt)}</Chip>
+          )}
+          {task.blocked && <Chip icon="⛔" tone="urgent">受阻</Chip>}
+          {task.checklist !== undefined && task.checklist.length > 0 && (
+            <Chip icon="☑" tone={task.status === 'in_review' && task.checklist.some(i => !i.checked) ? 'urgent' : undefined}>
+              清单 {checklistProgress(task).done}/{task.checklist.length}
+            </Chip>
+          )}
+          {task.branch !== undefined && (
+            <Chip icon="🌿" tone={undefined}>Worktree · {task.branch.length > 28 ? `${task.branch.slice(0, 28)}…` : task.branch}</Chip>
+          )}
+          {(task.isolation === undefined || task.isolation === 'worktree') && task.branch === undefined && <Chip icon="🌿">Worktree 隔离</Chip>}
+          {holder !== undefined && (
+            <Chip icon={stale ? '⏱' : '🤖'} tone={stale ? 'urgent' : undefined}>
+              {stale ? '认领超时 · ' : '由 '}{shortId(holder)} 持有
+            </Chip>
+          )}
+          {task.trashedAt !== undefined && <Chip icon="🗑" tone="urgent">已删除待清除</Chip>}
+          <Chip>v{task.version}</Chip>
+        </div>
+        <div className="dsh-atb-detail-sub">
+          更新 {fmtTime(task.updatedAt)} · 最近操作 {task.updatedBy.kind === 'agent' ? `🤖 ${shortId(task.updatedBy.sessionId)}` : task.updatedBy.kind === 'system' ? '⚙️ 系统' : '👤 用户'}
         </div>
       </div>
 

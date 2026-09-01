@@ -9,6 +9,25 @@
 
 /** The stylesheet text. */
 export const STYLES = `
+/* Session-header deep link: hidden by the component when the session has no
+ * task association, otherwise compact enough to sit beside the title and
+ * other DSH header actions. */
+.dsh-atb-session-link {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 180px;
+  min-height: 22px; padding: 1px 7px; border: 0; border-radius: 6px;
+  background: var(--dsw-alias-fill-tsp-secondary, rgba(128,128,128,.12));
+  color: var(--dsw-alias-label-secondary, var(--dsw-text-secondary, inherit));
+  font: inherit; font-size: 12px; line-height: 20px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+.dsh-atb-session-link:hover,
+.dsh-atb-session-link:focus-visible {
+  background: var(--dsw-alias-fill-tsp-hover, var(--dsw-hover, rgba(128,128,128,.18)));
+  color: var(--dsw-alias-label-primary, var(--dsw-text-primary, inherit));
+  outline: none;
+}
+.dsh-atb-session-link-icon { flex: none; font-size: 14px; line-height: 1; }
+
 .dsh-atb-entry {
   display: flex; align-items: center; gap: 8px; position: relative;
   width: calc(100% - 8px); margin: 2px 4px; padding: 6px 10px;
@@ -223,6 +242,7 @@ body[data-ds-dark-theme] .dsh-atb-modal-body select option {
 .dsh-atb-column { display: flex; flex-direction: column; min-width: 200px; min-height: 0; border-radius: 10px; background: var(--dsw-bg-inset, rgba(128,128,128,.07)); padding: 8px; gap: 8px; }
 .dsh-atb-colhead { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; padding: 2px 4px; }
 .dsh-atb-colcount { font-size: 11px; font-weight: 400; color: var(--dsw-text-secondary, gray); }
+.dsh-atb-coltoggle { display: none; }
 .dsh-atb-cards { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; min-height: 0; flex: 1; padding: 2px; }
 
 .dsh-atb-card {
@@ -295,19 +315,23 @@ body[data-ds-dark-theme] .dsh-atb-modal-body select option {
 
 .dsh-atb-detail-head {
   position: sticky; top: 0; z-index: 5;
-  display: flex; align-items: flex-start; gap: 10px;
+  display: flex; flex-direction: column; gap: 8px;
   padding: 6px 0 8px;
   background: var(--dsw-alias-bg-layer-1, Canvas);
 }
-.dsh-atb-detail-titlewrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.dsh-atb-detail-titlebar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.dsh-atb-detail-titlebar h3 { margin: 0; font-size: 15.5px; line-height: 1.35; word-break: break-word; }
+.dsh-atb-detail-topbar {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; min-width: 0;
+}
+.dsh-atb-detail-titlewrap { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.dsh-atb-detail-titlebar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.dsh-atb-detail-titlebar h3 { margin: 0; font-size: 15.5px; line-height: 1.35; word-break: break-word; min-width: 0; }
 .dsh-atb-detail-close {
   flex: none; width: 26px; height: 26px; border-radius: 7px; border: none; cursor: pointer;
   background: transparent; color: var(--dsw-text-secondary, gray); font-size: 13px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .dsh-atb-detail-close:hover { background: var(--dsw-hover, rgba(128,128,128,.18)); color: inherit; }
-.dsh-atb-detail-topbtns { display: flex; align-items: center; gap: 6px; flex: none; }
+.dsh-atb-detail-topbtns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .dsh-atb-detail-edit {
   font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 7px; cursor: pointer;
   border: 1px solid var(--dsw-border, rgba(128,128,128,.32));
@@ -1007,12 +1031,33 @@ button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
   .dsh-atb-select { min-width: 0; flex: 1 1 120px; }
   .dsh-atb-chip { flex: 1 1 auto; min-width: 0; padding-inline: 6px; }
   .dsh-atb-columns {
-    grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); grid-auto-columns: auto;
-    overflow-x: hidden; overflow-y: auto; min-height: 120px;
+    display: flex; flex-direction: column; gap: 8px;
+    overflow-x: hidden; overflow-y: auto; min-height: 0;
   }
-  .dsh-atb-column { min-width: 0; min-height: 120px; }
-  .dsh-atb-cards { max-height: 240px; }
-  .dsh-atb-detailpanel { max-height: 50%; min-height: 160px; padding: 8px; }
+  .dsh-atb-column {
+    min-width: 0; min-height: auto; flex: none; padding: 8px 10px; gap: 8px; border-radius: 9px;
+  }
+  .dsh-atb-column[data-collapsed="true"] {
+    min-height: auto; padding: 6px 10px; gap: 0;
+  }
+  .dsh-atb-column[data-collapsed="true"] .dsh-atb-cards {
+    display: none;
+  }
+  .dsh-atb-colhead {
+    cursor: pointer; user-select: none; border-radius: 6px; padding: 2px 4px;
+  }
+  .dsh-atb-colhead:hover {
+    background: var(--dsw-hover, rgba(128,128,128,.1));
+  }
+  .dsh-atb-coltoggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    margin-left: auto; font-size: 11px; opacity: .65; transition: transform .18s ease;
+  }
+  .dsh-atb-column[data-collapsed="true"] .dsh-atb-coltoggle {
+    transform: rotate(-90deg);
+  }
+  .dsh-atb-cards { max-height: none; overflow-y: visible; flex: none; padding: 0; gap: 8px; }
+  .dsh-atb-detailpanel { max-height: 55%; min-height: 160px; padding: 8px; }
   .dsh-atb-detail-topbtns { flex-wrap: wrap; }
   .dsh-atb-file-row { align-items: flex-start; flex-wrap: wrap; }
   .dsh-atb-file-actions { margin-left: auto; }

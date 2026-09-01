@@ -31,11 +31,25 @@ declare module 'dsh-better-sidebar/client/service' {
     component: (props: TabComponentProps) => unknown
   }
 
+  interface OpenTabSeed {
+    type: string
+    title?: string
+    path?: string
+    diff?: unknown
+    id?: string
+    url?: string
+    meta?: unknown
+  }
+
   interface BetterSidebarService {
     registerTab(descriptor: TabDescriptor): () => void
+    /** Optional in older peers; present in Better Sidebar >= 0.12.0. */
+    openTab?(seed: OpenTabSeed, scope?: SessionScope): void
     readonly features: readonly string[]
+    /** Optional in older peers; absent means enabled by default. */
+    isTabEnabled?(id: string): boolean
     openFile(scope: SessionScope, path: string, title?: string): void
   }
 
-  export type { SessionScope, TabComponentProps, TabDescriptor, BetterSidebarService }
+  export type { SessionScope, TabComponentProps, TabDescriptor, OpenTabSeed, BetterSidebarService }
 }

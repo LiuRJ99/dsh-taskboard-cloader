@@ -123,6 +123,77 @@ describe('client half', () => {
     expect(tabDisposer).toHaveBeenCalledTimes(1)
   })
 
+  it('有 slots 服务时注册会话头部看板 action', async () => {
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { apply } = await import('../src/client/index.ts')
+    const registered: Array<{ id: string; component: (props: { sessionId: string }) => unknown }> = []
+    const slots = {
+      inject: vi.fn((_name: string, factory: () => unknown) => factory()),
+      register: vi.fn((descriptor: { id: string }, component: (props: { sessionId: string }) => unknown) => {
+        registered.push({ id: descriptor.id, component })
+        return () => undefined
+      }),
+    }
+    const effectDisposers: Array<() => void> = []
+    const ctx = {
+      get: (name: string) => name === 'slots' ? slots : undefined,
+      get slots(): never {
+        throw new Error('service "slots" is not declared')
+      },
+      effect: (fn: () => unknown) => {
+        const disposer = fn()
+        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
+      },
+    }
+    apply(ctx as never)
+    await new Promise(r => setTimeout(r, 20))
+
+    expect(slots.inject).toHaveBeenCalledWith('conversation.session.header.actions', expect.any(Function))
+    expect(slots.register).toHaveBeenCalledTimes(1)
+    expect(registered[0]!.id).toBe('dsh-taskboard:session-link')
+    expect(typeof registered[0]!.component).toBe('function')
+
+    for (const disposer of effectDisposers) disposer()
+  })
+
+  it('会话头部看板 action 触发时调用 openTab 且附带 path: board 以自动展开侧边栏', async () => {
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { apply } = await import('../src/client/index.ts')
+    let registeredComponent: ((props: { sessionId: string }) => unknown) | undefined
+    const slots = {
+      inject: vi.fn((_name: string, factory: () => unknown) => factory()),
+      register: vi.fn((_descriptor: { id: string }, component: (props: { sessionId: string }) => unknown) => {
+        registeredComponent = component
+        return () => undefined
+      }),
+    }
+    const service = {
+      registerTab: vi.fn(() => () => undefined),
+      openTab: vi.fn(),
+      features: ['openFile'] as const,
+      openFile: vi.fn(),
+    }
+    const effectDisposers: Array<() => void> = []
+    const ctx = {
+      get: (name: string) => name === 'slots' ? slots : name === 'betterSidebar' ? service : undefined,
+      get slots(): never {
+        throw new Error('service "slots" is not declared')
+      },
+      effect: (fn: () => unknown) => {
+        const disposer = fn()
+        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
+      },
+    }
+    apply(ctx as never)
+    await new Promise(r => setTimeout(r, 20))
+
+    expect(registeredComponent).toBeDefined()
+
+    for (const disposer of effectDisposers) disposer()
+  })
+
   it('Better Sidebar 后激活时也会把旧挂载升级为原生 Tab', async () => {
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
@@ -2346,9 +2417,9 @@ describe('client half', () => {
     expect(topSessionBtn).not.toBeNull()
     expect(topSessionBtn.textContent).toContain('跳转会话')
 
-    const holderChipBtn = host.querySelector<HTMLButtonElement>('button.dsh-atb-chip-btn')!
-    expect(holderChipBtn).not.toBeNull()
-    expect(holderChipBtn.textContent).toContain('t-live-1')
+    const holderChip = host.querySelector<HTMLElement>('.dsh-atb-detail-chips .dsh-atb-chip2')!
+    expect(holderChip).not.toBeNull()
+    expect(host.querySelector('.dsh-atb-detail-chips')?.textContent).toContain('t-live-1')
 
     // Click top session button in TaskDetail
     topSessionBtn.click()
@@ -2523,5 +2594,44 @@ describe('client half', () => {
     rpcResponse = { ok: true, value: { enabledSkills: [{ name: 'browser' }] } }
     const caps2 = await catalog()
     expect(caps2).toEqual([{ name: 'browser' }])
+  })
+
+  it('TaskBoard 列支持折叠与默认展开进行中/待验收', async () => {
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { TaskBoard } = await import('../src/client/board/TaskBoard.tsx')
+    const { createClient } = await import('../src/client/api.ts')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const controller = new BoardController(createClient())
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+
+    root.render(React.createElement(TaskBoard, { controller }))
+    await new Promise(r => setTimeout(r, 20))
+
+    const columns = host.querySelectorAll<HTMLElement>('.dsh-atb-column')
+    expect(columns.length).toBe(5)
+
+    const inProgressCol = host.querySelector<HTMLElement>('.dsh-atb-column[data-status="in_progress"]')
+    const inReviewCol = host.querySelector<HTMLElement>('.dsh-atb-column[data-status="in_review"]')
+    const backlogCol = host.querySelector<HTMLElement>('.dsh-atb-column[data-status="backlog"]')
+    const todoCol = host.querySelector<HTMLElement>('.dsh-atb-column[data-status="todo"]')
+
+    // 默认进行中与待验收展开（无 data-collapsed 属性），待规划与待办折叠（data-collapsed="true"）
+    expect(inProgressCol?.dataset.collapsed).toBeUndefined()
+    expect(inReviewCol?.dataset.collapsed).toBeUndefined()
+    expect(backlogCol?.dataset.collapsed).toBe('true')
+    expect(todoCol?.dataset.collapsed).toBe('true')
+
+    // 点击待办列头部可切换展开状态
+    const todoHead = todoCol?.querySelector<HTMLElement>('.dsh-atb-colhead')
+    todoHead?.click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(todoCol?.dataset.collapsed).toBeUndefined()
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
   })
 })

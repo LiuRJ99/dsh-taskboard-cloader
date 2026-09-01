@@ -92,6 +92,18 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
   // templates belonging to that globally selected category.
   const templateMenuCategory = state.ledger.settings?.templateMenuCategory
   const visibleTemplates = state.templates.filter(template => matchesTemplateCategory(template, templateMenuCategory))
+  // Collapsible columns in narrow resolution: default expand in_progress and in_review
+  const [collapsedColumns, setCollapsedColumns] = useState<Record<string, boolean>>({
+    backlog: true,
+    todo: true,
+    in_progress: false,
+    in_review: false,
+    done: true,
+  })
+  const toggleColumn = (status: TaskStatus): void => {
+    setCollapsedColumns(prev => ({ ...prev, [status]: !prev[status] }))
+  }
+
   // ⬇ 导出 ▼ dropdown (0.5.1): whole-ledger JSON backup or task-list CSV.
   const [exportOpen, setExportOpen] = useState(false)
   const closeExport = (): void => setExportOpen(false)
@@ -245,15 +257,21 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
           <div className="dsh-atb-columns">
             {MAIN_STATUSES.map(status => {
               const columnTasks = live.filter(t => t.status === status)
+              const isCollapsed = collapsedColumns[status] ?? false
               return (
                 <div
                   className="dsh-atb-column"
                   key={status}
+                  data-status={status}
+                  data-collapsed={isCollapsed ? 'true' : undefined}
                   onDragOver={(e) => {
                     if (e.dataTransfer.types.includes(DRAG_TYPE)) {
                       e.preventDefault()
                       e.dataTransfer.dropEffect = 'move'
                       e.currentTarget.dataset.dragover = 'true'
+                      if (isCollapsed) {
+                        setCollapsedColumns(prev => ({ ...prev, [status]: false }))
+                      }
                     }
                   }}
                   onDragLeave={(e) => { delete e.currentTarget.dataset.dragover }}
@@ -271,10 +289,23 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
                     void controller.move(id, task.version, status)
                   }}
                 >
-                  <div className="dsh-atb-colhead">
+                  <div
+                    className="dsh-atb-colhead"
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={!isCollapsed}
+                    onClick={() => toggleColumn(status)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        toggleColumn(status)
+                      }
+                    }}
+                  >
                     <span className="dsh-atb-dot" data-status={status} />
-                    {COLUMN_LABELS[status]}
+                    <span>{COLUMN_LABELS[status]}</span>
                     <span className="dsh-atb-colcount">{columnTasks.length}</span>
+                    <span className="dsh-atb-coltoggle" aria-hidden="true">▾</span>
                   </div>
                   <div className="dsh-atb-cards">
                     {columnTasks.map(task => (
@@ -403,15 +434,20 @@ function DiagnosticsPanel({ controller }: { controller: BoardController }) {
 
 /** Secondary tab: tasks grouped into canceled / archived / trashed columns. */
 function SecondaryTab({ controller, tasks }: { controller: BoardController; tasks: TaskRecord[] }) {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({
+    canceled: true,
+    archived: true,
+    trashed: true,
+  })
   // Trashed takes precedence (a trashed task still carries its old status,
   // but what matters to the user is the pending purge).
   const trashed = tasks.filter(t => t.trashedAt !== undefined)
   const archived = tasks.filter(t => t.trashedAt === undefined && t.status === 'archived')
   const canceled = tasks.filter(t => t.trashedAt === undefined && t.status === 'canceled')
   const groups = [
-    { label: '已取消', dot: 'canceled', rows: canceled },
-    { label: '已归档', dot: 'archived', rows: archived },
-    { label: '已删除', dot: 'trashed', rows: trashed },
+    { key: 'canceled', label: '已取消', dot: 'canceled', rows: canceled },
+    { key: 'archived', label: '已归档', dot: 'archived', rows: archived },
+    { key: 'trashed', label: '已删除', dot: 'trashed', rows: trashed },
   ]
   if (trashed.length + archived.length + canceled.length === 0) {
     return (
@@ -422,21 +458,42 @@ function SecondaryTab({ controller, tasks }: { controller: BoardController; task
   }
   return (
     <div className="dsh-atb-columns">
-      {groups.map(group => (
-        <div className="dsh-atb-column" key={group.label}>
-          <div className="dsh-atb-colhead">
-            <span className="dsh-atb-dot" data-status={group.dot} />
-            {group.label}
-            <span className="dsh-atb-colcount">{group.rows.length}</span>
+      {groups.map(group => {
+        const isCollapsed = collapsed[group.key] ?? false
+        return (
+          <div
+            className="dsh-atb-column"
+            key={group.label}
+            data-status={group.key}
+            data-collapsed={isCollapsed ? 'true' : undefined}
+          >
+            <div
+              className="dsh-atb-colhead"
+              role="button"
+              tabIndex={0}
+              aria-expanded={!isCollapsed}
+              onClick={() => setCollapsed(prev => ({ ...prev, [group.key]: !prev[group.key] }))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setCollapsed(prev => ({ ...prev, [group.key]: !prev[group.key] }))
+                }
+              }}
+            >
+              <span className="dsh-atb-dot" data-status={group.dot} />
+              <span>{group.label}</span>
+              <span className="dsh-atb-colcount">{group.rows.length}</span>
+              <span className="dsh-atb-coltoggle" aria-hidden="true">▾</span>
+            </div>
+            <div className="dsh-atb-cards">
+              {group.rows.map(task => (
+                <TaskCard key={task.id} task={task} controller={controller} />
+              ))}
+              {group.rows.length === 0 && <div className="dsh-atb-empty">无任务</div>}
+            </div>
           </div>
-          <div className="dsh-atb-cards">
-            {group.rows.map(task => (
-              <TaskCard key={task.id} task={task} controller={controller} />
-            ))}
-            {group.rows.length === 0 && <div className="dsh-atb-empty">无任务</div>}
-          </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
