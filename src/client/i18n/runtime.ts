@@ -55,6 +55,24 @@ let unsubscribeService: (() => void) | undefined
 let snapshot: TaskboardLocaleSnapshot = { active: detectFallbackLocale(), revision: 0 }
 const listeners = new Set<() => void>()
 
+// Late attach (issue #16): the taskboard client injects NOTHING, so it can
+// activate BEFORE the locale service provides — and before the locale
+// runtime syncs <html lang> (the server-rendered static value is "en").
+// Until a real service attaches, a MutationObserver re-detects on every
+// <html lang> change and a short poll re-tries ctx.get('locale').
+let langObserver: MutationObserver | undefined
+let retryTimer: ReturnType<typeof setInterval> | undefined
+
+/** Stop every late-attach mechanism (a service took over, or dispose). */
+function clearLateAttach(): void {
+  if (retryTimer !== undefined) {
+    clearInterval(retryTimer)
+    retryTimer = undefined
+  }
+  try { langObserver?.disconnect() } catch { /* observer already dead */ }
+  langObserver = undefined
+}
+
 function isLocaleId(value: string): value is LocaleId {
   return value === 'zh' || value === 'en'
 }
@@ -80,6 +98,45 @@ function detectFallbackLocale(): LocaleId {
   return 'en'
 }
 
+/** Coerce an unknown ctx value into a usable service face, else undefined. */
+function asLocaleService(value: unknown): LocaleServiceFace | undefined {
+  const face = value as LocaleServiceFace | null | undefined
+  if (face === null || face === undefined || typeof face.getSnapshot !== 'function' || typeof face.subscribe !== 'function') return undefined
+  return face
+}
+
+/**
+ * Watch for the late locale activation while no service is attached
+ * (issue #16): re-detect on <html lang> changes (the locale runtime syncs
+ * it once up) and poll ctx.get('locale') briefly (inject ordering — the
+ * service may provide a moment after our apply).
+ */
+function startLateAttach(retryGetLocale: (() => unknown) | undefined): void {
+  clearLateAttach()
+  try {
+    if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
+      langObserver = new MutationObserver(() => {
+        if (service !== undefined) return // a real service owns the state
+        const next = detectFallbackLocale()
+        if (next !== snapshot.active) publish({ active: next, revision: snapshot.revision + 1 })
+      })
+      langObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['lang'] })
+    }
+  } catch { /* no DOM — the poll below still covers service-side activation */ }
+  if (retryGetLocale === undefined) return
+  let tries = 0
+  retryTimer = setInterval(() => {
+    tries += 1
+    let face: LocaleServiceFace | undefined
+    try { face = asLocaleService(retryGetLocale()) } catch { face = undefined }
+    if (face !== undefined) {
+      initI18n(face) // attaches the service and tears the late attach down
+      return
+    }
+    if (tries >= 8) clearLateAttach() // ~2s at 250ms — enough for boot ordering
+  }, 250)
+}
+
 function publish(next: TaskboardLocaleSnapshot): void {
   if (next.active === snapshot.active && next.revision === snapshot.revision) return
   snapshot = next
@@ -89,18 +146,26 @@ function publish(next: TaskboardLocaleSnapshot): void {
 /**
  * Attach the DSH locale service (call from the client entry's apply with
  * ctx.get('locale')). Absent/malformed services are ignored — the fallback
- * detection stays in charge.
+ * detection stays in charge, and (issue #16) a late attach keeps watching:
+ * the locale service can provide AFTER our activation (inject ordering), so
+ * pass `retryGetLocale` to re-poll ctx.get('locale') for ~2s and pick the
+ * service up the moment it exists; <html lang> changes re-run detection in
+ * the meantime.
  * @param localeService - the ctx 'locale' service, when provided.
+ * @param retryGetLocale - re-lookup for the service (the client entry passes
+ *   `() => ctx.get?.('locale')`); polled only while no service is attached.
  */
-export function initI18n(localeService: unknown): void {
-  const face = localeService as LocaleServiceFace | null | undefined
-  if (face === null || face === undefined || typeof face.getSnapshot !== 'function' || typeof face.subscribe !== 'function') {
+export function initI18n(localeService: unknown, retryGetLocale?: () => unknown): void {
+  const face = asLocaleService(localeService)
+  if (face === undefined) {
     // No usable service: resolve the fallback NOW so a caller that inits
     // after the DOM is up gets the current detection, never a stale
-    // module-load snapshot.
+    // module-load snapshot — then keep watching for the late activation.
     publish({ active: detectFallbackLocale(), revision: 0 })
+    startLateAttach(retryGetLocale)
     return
   }
+  clearLateAttach()
   service = face
   const sync = (): void => {
     try {
@@ -115,6 +180,7 @@ export function initI18n(localeService: unknown): void {
 
 /** Detach the service and return to fallback detection (tests, dispose). */
 export function disposeI18n(): void {
+  clearLateAttach()
   try { unsubscribeService?.() } catch { /* source already gone */ }
   unsubscribeService = undefined
   service = undefined

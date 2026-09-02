@@ -119,6 +119,60 @@ describe('DSH locale service soft-attach', () => {
   })
 })
 
+describe('late locale activation (issue #16)', () => {
+  /** Minimal LocaleRuntime double (same shape as the soft-attach suite). */
+  function fakeService(initial: string): { face: unknown; set(active: string): void } {
+    let snap = { active: initial, revision: 1 }
+    const listeners = new Set<() => void>()
+    return {
+      face: {
+        getSnapshot: () => snap,
+        subscribe: (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn) } },
+      },
+      set(active: string) { snap = { active, revision: snap.revision + 1 }; for (const fn of listeners) fn() },
+    }
+  }
+
+  it('no service at apply: a later <html lang> sync re-detects (SSR "en" → zh)', async () => {
+    document.documentElement.lang = 'en' // the static server-rendered value
+    initI18n(undefined)
+    expect(localeStore.getSnapshot().active).toBe('en') // the one-shot fallback…
+    document.documentElement.lang = 'zh-CN' // …but the locale runtime syncs late
+    await new Promise(r => setTimeout(r, 50)) // MutationObserver delivery
+    expect(localeStore.getSnapshot().active).toBe('zh') // …and we follow (#16)
+    expect(translate('board.title')).toBe(zh['board.title'])
+    disposeI18n()
+  })
+
+  it('no service at apply: the retry poll attaches the late-provided service', async () => {
+    document.documentElement.lang = 'en'
+    const svc = fakeService('zh')
+    let provided = false
+    initI18n(undefined, () => (provided ? svc.face : undefined))
+    expect(localeStore.getSnapshot().active).toBe('en') // fallback until then
+    await new Promise(r => setTimeout(r, 50))
+    provided = true // the locale plugin provides after our activation
+    await new Promise(r => setTimeout(r, 400)) // the next 250ms poll tick
+    expect(localeStore.getSnapshot().active).toBe('zh') // service took over
+    svc.set('en') // and live switches flow through the subscription
+    expect(localeStore.getSnapshot().active).toBe('en')
+    disposeI18n()
+  })
+
+  it('dispose tears the late attach down (no post-dispose flips)', async () => {
+    document.documentElement.lang = 'en'
+    initI18n(undefined)
+    disposeI18n() // re-detects NOW (lang still "en") and removes the observer
+    expect(localeStore.getSnapshot().active).toBe('en')
+    document.documentElement.lang = 'zh-CN'
+    await new Promise(r => setTimeout(r, 50))
+    expect(localeStore.getSnapshot().active).toBe('en') // observer is gone — stays put
+    document.documentElement.lang = 'en'
+    await new Promise(r => setTimeout(r, 50))
+    expect(localeStore.getSnapshot().active).toBe('en')
+  })
+})
+
 describe('source scan', () => {
   const clientDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client')
 

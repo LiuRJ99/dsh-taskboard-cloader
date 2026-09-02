@@ -223,6 +223,10 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 
 ## 升级日志
 
+### 0.6.4
+
+- **修复：界面语言可能被永久定型为英文（[#16](https://github.com/cloader/dsh-taskboard/issues/16)）**：client 激活早于 locale 服务时，一次性回退检测读到服务端渲染的静态 `<html lang="en">` 后不再重试——现在会监听 `<html lang>` 变化即时跟随，并短暂轮询 locale 服务、出现即接管
+
 ### 0.6.3
 
 - **并列多仓库工作空间的 Worktree 镜像模式**：worktree 隔离自动升级为「任务镜像」——有界扫描发现工作区内全部并列 git 仓库（深度 ≤3、上限 8、60s 缓存；submodule / linked worktree 跳过），每仓库各建同名任务分支的 worktree 并按相对路径挂进 `<项目>/.dsh-worktrees/<任务ID>/`；提交证据、diff 查看（`?repo=`）、合并（逐仓库 `--no-ff`，一仓冲突不阻断他仓）与清理（聚合未提交检查、先子后根）全部分仓库进行，未镜像仓库在执行引导中标「禁改」；新增 `branches` / `repos` 附加字段，单仓库行为与旧数据零变化

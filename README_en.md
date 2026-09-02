@@ -223,6 +223,10 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 
 ## Changelog
 
+### 0.6.4
+
+- **Fix: the UI language could freeze to English ([#16](https://github.com/cloader/dsh-taskboard/issues/16))**: when the client activated before the locale service, the one-shot fallback read the server-rendered static `<html lang="en">` and never retried — it now follows `<html lang>` changes live and briefly polls for the locale service, attaching it the moment it provides
+
 ### 0.6.3
 
 - **Worktree mirror mode for parallel multi-repo workspaces**: worktree isolation upgrades into a whole-workspace task mirror — a bounded scan (depth ≤3, capped at 8 repos, 60s cache; submodule / linked-worktree shapes skipped) discovers every parallel git repo, gives each its own worktree on the same task branch mounted at its relative path under `<project>/.dsh-worktrees/<taskId>/`; commit evidence, diff viewing (`?repo=`), merging (per-repo `--no-ff`, one conflict never blocking the others) and cleanup (aggregated dirty checks, children before root) all work per repo, and un-mirrored repos are marked do-not-touch in the framing; the new `branches` / `repos` fields are purely additive — single-repo behavior and old data untouched

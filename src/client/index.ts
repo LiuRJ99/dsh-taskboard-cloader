@@ -70,8 +70,11 @@ export function apply(ctx: ClientContextFace): void {
     injectStyles()
     // Locale source (设置 → 通用设置 → 语言): soft-attached — absent on
     // compositions without the DSH locale plugin, where the fallback
-    // (<html lang> / navigator) takes over. Never a hard inject.
-    initI18n(ctx.get?.('locale'))
+    // (<html lang> / navigator) takes over. Never a hard inject. The getter
+    // rides along (issue #16): our client bundle activates with zero service
+    // deps, potentially BEFORE the locale service provides — the runtime
+    // re-polls it for ~2s and watches <html lang> until it does.
+    initI18n(ctx.get?.('locale'), () => ctx.get?.('locale'))
     const client = createClient()
     const controller = new BoardController(client)
 

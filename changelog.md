@@ -1,5 +1,13 @@
 # 更新日志 / Changelog
 
+### 0.6.4
+
+- **修复：client 激活早于 locale 服务时界面语言被永久定型为英文（[#16](https://github.com/cloader/dsh-taskboard/issues/16)，@imroc 报告并验证方案）**：taskboard client 零依赖、先于 `dsh-client-locale` 激活，`initI18n` 拿不到服务时的一次性回退检测撞上服务端渲染的静态 `<html lang="en">`，此后无重试。修复：无服务分支增加「迟挂载」——MutationObserver 监听 `<html lang>` 变化即时重新检测发布（locale 运行时激活同步 lang 后立即跟随），并以 250ms×8 轮询重试 `ctx.get('locale')`、服务出现即正常订阅接管；dispose 全量拆除
+
+**English:**
+
+- **Fix: the board language froze to English when the client activated before the locale service ([#16](https://github.com/cloader/dsh-taskboard/issues/16), reported and fix verified by @imroc)**: the taskboard client has zero service deps and activates BEFORE `dsh-client-locale` provides; the one-shot fallback detection in `initI18n` then hit the server-rendered static `<html lang="en">` and never retried. Fix: a LATE ATTACH on the no-service path — a MutationObserver on `<html lang>` re-detects and publishes the moment the locale runtime syncs it, and a 250ms×8 poll retries `ctx.get('locale')`, attaching (and subscribing to) the real service as soon as it exists; dispose tears everything down
+
 ### 0.6.3
 
 - **并列多仓库工作空间的 Worktree 镜像模式**
