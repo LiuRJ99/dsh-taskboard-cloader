@@ -336,7 +336,8 @@ export function apply(ctx: ClientContextFace): void {
         slots.inject('conversation.session.header.actions', () => slots.register({
           name: 'conversation.session.header.actions',
           id: 'dsh-taskboard:session-link',
-          order: 10,
+          // Order after session-internal metrics (preset: -10, subagents: 10, jobs: 20)
+          order: 100,
         }, component))
         registeredHeaderSlots = slots
       } catch (error) {
