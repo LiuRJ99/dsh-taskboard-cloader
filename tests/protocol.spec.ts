@@ -32,6 +32,9 @@ import {
   parseCron,
   summarize,
   validateImportedTask,
+  isValidRelRepoPath,
+  normalizeBranchesMap,
+  normalizeRepoEvidence,
   validateLedgerImport,
   isValidTaskId,
   type TaskRecord,
@@ -909,5 +912,79 @@ describe('R4: task id charset gate (import + path building)', () => {
       expect(validateImportedTask({ ...base, id }, 0)).toMatchObject({ ok: false })
     }
     expect(validateImportedTask({ ...base, id: 't-abc-def' }, 0)).toMatchObject({ ok: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 0.6.3 multi-repo mirror: rel-path keys, branches map, per-repo evidence
+// ---------------------------------------------------------------------------
+
+describe('mirror protocol additions (0.6.3)', () => {
+  it('isValidRelRepoPath: "" and clean relative paths pass; traversal/absolute/dot shapes fail', () => {
+    expect(isValidRelRepoPath('')).toBe(true)
+    expect(isValidRelRepoPath('dsh-taskboard')).toBe(true)
+    expect(isValidRelRepoPath('a/b/c')).toBe(true)
+    for (const bad of ['..', 'a/../b', '../x', '/abs', 'C:\\repo', '\\\\srv\\share', '.', 'a/', '.hidden/x']) {
+      expect(isValidRelRepoPath(bad)).toBe(false)
+    }
+  })
+
+  it('normalizeBranchesMap keeps legal entries, drops junk, caps at MAX_MIRROR_REPOS', () => {
+    expect(normalizeBranchesMap(undefined)).toBeUndefined()
+    expect(normalizeBranchesMap({})).toBeUndefined()
+    expect(normalizeBranchesMap({ 'dsh-taskboard': 'task/x', 'bad/../key': 'task/y', '': 'task/z', k: 42 })).toEqual({ 'dsh-taskboard': 'task/x' })
+    const many: Record<string, string> = {}
+    for (let i = 0; i < 12; i++) many['r' + i] = 'task/x'
+    const out = normalizeBranchesMap(many)!
+    expect(Object.keys(out)).toHaveLength(8)
+  })
+
+  it('normalizeRepoEvidence rebuilds legal entries, drops structurally broken ones, caps evidence', () => {
+    const good = {
+      repo: 'dsh-taskboard',
+      branch: 'task/x',
+      worktreePath: '/ws/.dsh-worktrees/t-1/dsh-taskboard',
+      baseCommit: 'a1',
+      headCommit: 'b2',
+      commits: [{ hash: 'b2', subject: 'feat: done' }, { hash: 5 }],
+      dirtyFiles: [' M a', 7],
+      commitsTotal: 2,
+      dirtyFilesTotal: 1,
+    }
+    const out = normalizeRepoEvidence(good)!
+    expect(out.commits).toEqual([{ hash: 'b2', subject: 'feat: done' }])
+    expect(out.dirtyFiles).toEqual([' M a'])
+    expect(normalizeRepoEvidence({ ...good, repo: '../escape' })).toBeUndefined()
+    expect(normalizeRepoEvidence({ ...good, branch: '' })).toBeUndefined()
+    expect(normalizeRepoEvidence({ ...good, worktreePath: '' })).toBeUndefined()
+    expect(normalizeRepoEvidence('nope')).toBeUndefined()
+  })
+
+  it('validateImportedTask carries branches + per-repo evidence through a round trip', () => {
+    const base = {
+      id: 't-mirror-1',
+      title: 'Mirror',
+      workspaceId: 'ws-a',
+      comments: [],
+      executions: [{
+        id: 'e-1', trigger: 'manual', outcome: 'succeeded',
+        isolation: 'worktree', branch: 'task/x', worktreePath: '/ws/.dsh-worktrees/t-mirror-1',
+        repos: [{
+          repo: 'sub', branch: 'task/x', worktreePath: '/ws/.dsh-worktrees/t-mirror-1/sub',
+          baseCommit: 'a1', headCommit: 'b2', commits: [{ hash: 'b2', subject: 's' }], commitsTotal: 1,
+        }],
+      }],
+      branches: { sub: 'task/x' },
+    }
+    const result = validateImportedTask(base, 0)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.task.branches).toEqual({ sub: 'task/x' })
+    const execution = result.task.executions[0]!
+    expect(execution.repos).toHaveLength(1)
+    expect(execution.repos![0]).toMatchObject({ repo: 'sub', branch: 'task/x', headCommit: 'b2' })
+    // An illegal branches key is silently dropped (legal ones survive).
+    const mixed = validateImportedTask({ ...base, branches: { sub: 'task/x', '../evil': 'task/y' } }, 0)
+    expect(mixed.ok && mixed.task.branches).toEqual({ sub: 'task/x' })
   })
 })

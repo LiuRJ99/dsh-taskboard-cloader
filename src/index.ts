@@ -22,6 +22,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import { PROTOCOL_SECTION_NAME, PROTOCOL_SECTION_ORDER, TASKBOARD_PROTOCOL } from './host/protocol-text.ts'
 import { DEFAULT_MAX_CONCURRENT, ExecutionService, type EventsFace } from './host/execution.ts'
 import { createGitFace } from './host/git.ts'
+import { createRepoScanner } from './host/repos.ts'
 import { registerTaskboardRoutes } from './host/routes.ts'
 import { SchedulerService } from './host/scheduler.ts'
 import { dshHomePath } from './host/sdk.ts'
@@ -124,8 +125,10 @@ export function apply(ctx: Context): void {
     disposers.push(() => sessionSync.dispose())
 
     // The narrow git face shared by execution (worktree isolation) and the
-    // routes (merge / remove / workspace detection).
+    // routes (merge / remove / workspace detection), plus the shared
+    // nested-repo scanner for multi-repo mirrors (0.6.3).
     const git = createGitFace()
+    const scanner = createRepoScanner()
 
     wsCtx.inject(['agents'], (agentCtx: Context) => {
       agentSessions = agentCtx.get('sessions') as { get?: (id: string) => unknown; list?: () => unknown[] } | undefined
@@ -144,6 +147,7 @@ export function apply(ctx: Context): void {
         events,
         now,
         git,
+        scanner,
         // Preset composition (0.3.3): mirror apiproxy's composeAgent — resolve
         // the id BEFORE creation (the session header snapshots meta), mount
         // inside the factory's setup callback. No roster service → undefined
@@ -201,6 +205,7 @@ export function apply(ctx: Context): void {
           cancel: (taskId: string) => execution.cancel(taskId),
           modelProviders,
           git,
+          scanner,
           templates,
           promptCompletions: async () => {
             try {

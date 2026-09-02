@@ -40,8 +40,12 @@ export type ApiResult<T> = ApiOk<T> | ApiFail
 /** Full-state response (the reconnect baseline after an SSE gap). */
 export type StateResponse = TaskLedger
 
-/** Workspace listing for the UI pickers. */
-export type WorkspaceView = { id: string; path: string; title: string; sessionCount: number; gitAvailable?: boolean }
+/**
+ * Workspace listing for the UI pickers. `repoCount` (0.6.3): how many repos a
+ * task mirror of this workspace would cover (root repo + nested) — the form's
+ * worktree option shows the mirror badge when it exceeds 1.
+ */
+export type WorkspaceView = { id: string; path: string; title: string; sessionCount: number; gitAvailable?: boolean; repoCount?: number }
 
 /** Create-task request body (actor is always the GUI user). */
 export type CreateTaskBody = {
@@ -103,8 +107,28 @@ export type DeleteTaskBody = { ifVersion?: number; purge?: boolean }
 /** Run request body; `reuse: true` = 续跑 (keep a live worktree as-is). */
 export type RunTaskBody = { reuse?: boolean }
 
-/** Merge outcome: `noop: true` = the branch had no commits over HEAD (nothing merged). */
-export type MergeBranchResponse = { merged: boolean; noop?: boolean; branch: string }
+/** One repo's merge outcome in a multi-repo merge (0.6.3; `repo: ''` = the workspace root repo). */
+export type MergeRepoResult = {
+  repo: string
+  branch: string
+  outcome: 'merged' | 'noop' | 'failed'
+  /** Failure reason (verbatim git message) when outcome = 'failed'. */
+  error?: string
+}
+
+/**
+ * Merge outcome. Legacy single-repo tasks keep the flat shape; multi-repo
+ * mirror tasks (0.6.3) additionally return per-repo results — merges run
+ * sequentially and a failed repo does not block the others (plan §4.5).
+ */
+export type MergeBranchResponse = {
+  merged: boolean
+  noop?: boolean
+  /** The merged task branch (legacy single-repo shape; multi-repo responses omit it). */
+  branch?: string
+  /** Present only on multi-repo mirror merges (0.6.3). */
+  results?: MergeRepoResult[]
+}
 
 /** Remove a task's worktree; optionally delete its branch too. */
 export type WorktreeRemoveBody = { deleteBranch?: boolean }

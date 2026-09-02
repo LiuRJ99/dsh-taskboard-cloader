@@ -18,6 +18,7 @@ import { registerTaskboardRoutes } from '../src/host/routes.ts'
 import { TaskStore, type LedgerChange } from '../src/host/store.ts'
 import { TemplateStore } from '../src/host/templates.ts'
 import type { GitFace } from '../src/host/git.ts'
+import type { RepoScanner } from '../src/host/repos.ts'
 import type { WorkspaceFace } from '../src/host/tools.ts'
 import type { TaskTemplate } from '../src/shared/api.ts'
 import type { TaskLedger, TaskRecord } from '../src/shared/protocol.ts'
@@ -58,16 +59,28 @@ function freshGitBehavior() {
     /** When true, isAncestor reports "branch already merged" (no-op merge). */
     noop: false,
     detect: async (_root: string) => false,
-    merged: [] as Array<{ root: string; branch: string }>,
+    merged: [] as Array<{ root: string; branch: string; exempt?: string[] }>,
     removed: [] as string[],
     deletedBranches: [] as string[],
     /** Diff viewer: commit hash → patch text (undefined = fail-soft miss). */
     showCommit: undefined as string | undefined,
     /** Diff viewer: path → patch text (undefined = fail-soft miss). */
     showPath: undefined as string | undefined,
+    /** 0.6.3 mirror removal: cwd → uncommitted-change lines ([] = clean). */
+    dirty: undefined as undefined | ((cwd: string) => string[] | undefined),
+    /** 0.6.3 review fix: the nested repos the scanner reports (merge exemptions). */
+    nestedRepos: [] as string[],
+    /** 0.6.3 per-repo merge failures: repo root → error (checked before the global mergeError). */
+    mergeErrorByRoot: undefined as undefined | Record<string, string>,
     showCommitCalls: [] as Array<{ cwd: string; hash: string }>,
     showPathCalls: [] as Array<{ cwd: string; path: string; base?: string }>,
   }
+}
+
+/** Swappable nested-repo scanner face: mirrors `gitBehavior.nestedRepos`. */
+const scannerFace: RepoScanner = {
+  findNestedRepos: async () => gitBehavior.nestedRepos.map(rel => ({ relPath: rel, absPath: `/proj/a/${rel}` })),
+  clearCache() {},
 }
 
 /** Swappable git behavior for the routes under test (fields reset per test). */
@@ -77,10 +90,12 @@ const gitFace: GitFace = {
   binaryAvailable: async () => true,
   prepareWorktree: async () => undefined,
   collect: async () => ({ commits: [], commitsTotal: 0, dirtyFiles: [], dirtyFilesTotal: 0, changedFiles: 0 }),
+  dirtyLines: async cwd => (gitBehavior.dirty?.(cwd) ?? []),
   isAncestor: async () => gitBehavior.noop === true,
-  merge: async (root, branch) => {
-    gitBehavior.merged.push({ root, branch })
-    if (gitBehavior.mergeError !== undefined) throw new Error(gitBehavior.mergeError)
+  merge: async (root, branch, exempt) => {
+    gitBehavior.merged.push({ root, branch, ...(exempt !== undefined && exempt.length > 0 ? { exempt: [...exempt] } : {}) })
+    const error = gitBehavior.mergeErrorByRoot?.[root] ?? gitBehavior.mergeError
+    if (error !== undefined) throw new Error(error)
   },
   removeWorktree: async (_root, path) => {
     gitBehavior.removed.push(path)
@@ -170,6 +185,7 @@ beforeAll(async () => {
     cancel: async id => { cancelCalls.push(id); return { ok: true, executionId: 'e-x' } },
     modelProviders: () => ['prov-a'],
     git: gitFace,
+    scanner: scannerFace,
     templates: templatesFace as unknown as InstanceType<typeof TemplateStore>,
     modelCatalog: async () => ({
       models: [{ provider: 'prov-a', model: 'model-a', name: 'Model A' }],
@@ -232,9 +248,40 @@ describe('taskboard routes', () => {
     const res = await fetch(`${base}/dsh-taskboard/workspaces`)
     const body = await res.json()
     expect(body.value).toEqual([
-      { id: 'ws-a', path: '/proj/a', title: 'A', sessionCount: 0, gitAvailable: false },
-      { id: 'ws-b', path: '/proj/b', title: 'B', sessionCount: 0, gitAvailable: false },
+      { id: 'ws-a', path: '/proj/a', title: 'A', sessionCount: 0, gitAvailable: false, repoCount: 0 },
+      { id: 'ws-b', path: '/proj/b', title: 'B', sessionCount: 0, gitAvailable: false, repoCount: 0 },
     ])
+  })
+
+  it('workspaces repoCount (0.6.3): root+nested and pure-container shapes enable worktree and feed the mirror badge', async () => {
+    // The detect cache never expires under the fixed test clock, so each
+    // shape gets its own DEDICATED workspace, pushed only for its phase and
+    // spliced out afterwards (the ws-tmp pattern above).
+    const prevDetect = gitBehavior.detect
+    const prevNested = gitBehavior.nestedRepos
+    const spliceOut = (id: string): void => {
+      wsList.splice(wsList.findIndex(w => w.id === id), 1)
+    }
+    try {
+      // Root repo + one nested repo → available; the mirror would cover 2.
+      wsList.push({ id: 'ws-rm1', path: '/proj/rm1', title: 'RM1' })
+      gitBehavior.detect = async root => root === '/proj/rm1'
+      gitBehavior.nestedRepos = ['dsh-taskboard']
+      let body = await (await fetch(`${base}/dsh-taskboard/workspaces`)).json()
+      expect(body.value.find((w: { id: string }) => w.id === 'ws-rm1')).toMatchObject({ gitAvailable: true, repoCount: 2 })
+      spliceOut('ws-rm1')
+      // Pure container (root NOT a repo) with two nested repos → STILL
+      // available — prepareMirror isolates exactly this shape.
+      wsList.push({ id: 'ws-rm2', path: '/proj/rm2', title: 'RM2' })
+      gitBehavior.detect = async () => false
+      gitBehavior.nestedRepos = ['r-one', 'r-two']
+      body = await (await fetch(`${base}/dsh-taskboard/workspaces`)).json()
+      expect(body.value.find((w: { id: string }) => w.id === 'ws-rm2')).toMatchObject({ gitAvailable: true, repoCount: 2 })
+      spliceOut('ws-rm2')
+    } finally {
+      gitBehavior.detect = prevDetect
+      gitBehavior.nestedRepos = prevNested
+    }
   })
 
   it('creates a task and rejects bad payloads', async () => {
@@ -971,4 +1018,140 @@ describe('taskboard routes 0.5.0 (board settings → default isolation)', () => 
     expect(res.value.presets).toEqual([{ id: 'standard', name: '标准模式' }])
     expect(res.value.defaultPresetId).toBe('standard')
   })
+
+})
+describe('taskboard routes multi-repo mirror (0.6.3)', () => {
+   /** Create a task carrying a full mirror footprint (root branch + branches map). */
+   async function mirrorTask(title: string): Promise<string> {
+     const created = await post('/dsh-taskboard/tasks', { title, workspaceId: 'ws-a', urgency: 'normal' })
+     const id = created.json.value.id as string
+     await store.mutate('task-updated', ledger => {
+       const target = ledger.tasks.find(t => t.id === id)!
+       target.branch = 'task/' + title.replace(/\s+/g, '-') + '+' + id
+       target.branches = {
+         'dsh-taskboard': 'task/' + title.replace(/\s+/g, '-') + '+' + id,
+         'dsh-devlaunch': 'task/' + title.replace(/\s+/g, '-') + '+' + id,
+       }
+       return [target]
+     })
+     return id
+   }
+
+   it('merge with branches: merges PER REPO sequentially, one failure never blocks the others', async () => {
+     const id = await mirrorTask('Mirror merge')
+     gitBehavior.merged = []
+     gitBehavior.mergeError = undefined
+     gitBehavior.mergeErrorByRoot = { '/proj/a/dsh-devlaunch': 'Auto-merging failed: conflict in x' }
+     const res = await post('/dsh-taskboard/tasks/' + id + '/merge', {})
+     expect(res.status).toBe(200)
+     expect(res.json.value.merged).toBe(true)
+     expect(res.json.value.results).toEqual([
+       { repo: '', branch: 'task/Mirror-merge+' + id, outcome: 'merged' },
+       { repo: 'dsh-taskboard', branch: 'task/Mirror-merge+' + id, outcome: 'merged' },
+       { repo: 'dsh-devlaunch', branch: 'task/Mirror-merge+' + id, outcome: 'failed', error: 'Auto-merging failed: conflict in x' },
+     ])
+     expect(gitBehavior.merged.map(m => m.root)).toEqual(['/proj/a', '/proj/a/dsh-taskboard', '/proj/a/dsh-devlaunch'])
+     const full = await (await fetch(base + '/dsh-taskboard/tasks/' + id)).json()
+     const comment = (full.value.comments as Array<{ body: string }>).find(c => c.body.includes('已按仓库合并'))
+     expect(comment).toBeTruthy()
+     expect(comment!.body).toContain('dsh-devlaunch ✗')
+     gitBehavior.mergeErrorByRoot = undefined
+   })
+
+   it('merge with branches where every repo is a no-op reports merged:false + noop', async () => {
+     const id = await mirrorTask('Mirror noop')
+     gitBehavior.noop = true
+     gitBehavior.merged = []
+     const res = await post('/dsh-taskboard/tasks/' + id + '/merge', {})
+     expect(res.status).toBe(200)
+     expect(res.json.value.merged).toBe(false)
+     expect(res.json.value.noop).toBe(true)
+     expect(res.json.value.results).toHaveLength(3)
+     expect(res.json.value.results.every((r: { outcome: string }) => r.outcome === 'noop')).toBe(true)
+     expect(gitBehavior.merged).toEqual([])
+     gitBehavior.noop = false
+   })
+
+   it('merge: the ROOT repo merge is exempt from parallel-repo noise (self-governing), child merges are not', async () => {
+     const id = await mirrorTask('Exempt merge')
+     gitBehavior.nestedRepos = ['dsh-taskboard', 'dsh-devlaunch']
+     gitBehavior.merged = []
+     const res = await post(`/dsh-taskboard/tasks/${id}/merge`, {})
+     expect(res.status).toBe(200)
+     expect(res.json.value.merged).toBe(true)
+     // The root target carries the scanner's rel paths as merge exemptions;
+     // child targets merge with no extra exemption.
+     expect(gitBehavior.merged[0]).toEqual({ root: '/proj/a', branch: 'task/Exempt-merge+' + id, exempt: ['dsh-taskboard', 'dsh-devlaunch'] })
+     expect(gitBehavior.merged[1]).toEqual({ root: '/proj/a/dsh-taskboard', branch: 'task/Exempt-merge+' + id })
+     expect(gitBehavior.merged[2]).toEqual({ root: '/proj/a/dsh-devlaunch', branch: 'task/Exempt-merge+' + id })
+   })
+
+   it('legacy tasks (branch only) keep the flat merge response shape', async () => {
+     const created = await post('/dsh-taskboard/tasks', { title: 'Legacy merge', workspaceId: 'ws-a', urgency: 'normal' })
+     const id = created.json.value.id as string
+     await store.mutate('task-updated', ledger => {
+       const target = ledger.tasks.find(t => t.id === id)!
+       target.branch = 'task/Legacy+' + id
+       return [target]
+     })
+     gitBehavior.merged = []
+     const res = await post('/dsh-taskboard/tasks/' + id + '/merge', {})
+     expect(res.status).toBe(200)
+     expect(res.json.value).toEqual({ merged: true, branch: 'task/Legacy+' + id })
+     expect(res.json.value.results).toBeUndefined()
+   })
+
+   it('purge with branches deletes EVERY repo branch and removes the mirror root', async () => {
+     const id = await mirrorTask('Mirror purge')
+     await post('/dsh-taskboard/tasks/' + id + '/delete', { ifVersion: 1 })
+     gitBehavior.removed = []
+     gitBehavior.deletedBranches = []
+     const ok = await post('/dsh-taskboard/tasks/' + id + '/delete', { purge: true })
+     expect(ok.status).toBe(200)
+     expect(ok.json.value.purged).toBe(true)
+     expect(gitBehavior.removed).toEqual(['/proj/a/.dsh-worktrees/' + id])
+     expect(gitBehavior.deletedBranches).toEqual([
+       'task/Mirror-purge+' + id,
+       'task/Mirror-purge+' + id,
+       'task/Mirror-purge+' + id,
+     ])
+     expect(store.get(id)).toBeUndefined()
+   })
+
+   it('diff ?repo= resolves the mirror worktree, falls back to that repo main checkout, 400 on unknown repo', async () => {
+     const created = await post('/dsh-taskboard/tasks', { title: 'Mirror diff', workspaceId: 'ws-a', urgency: 'normal' })
+     const id = created.json.value.id as string
+     await store.mutate('execution-recorded', ledger => {
+       const target = ledger.tasks.find(t => t.id === id)!
+       target.executions.push({
+         id: 'e-mirror', trigger: 'manual', startedAt: 1, outcome: 'succeeded',
+         isolation: 'worktree', branch: 'task/md', worktreePath: '/proj/a/.dsh-worktrees/t-md', baseCommit: 'r0',
+         repos: [
+           { repo: '', branch: 'task/md', worktreePath: '/proj/a/.dsh-worktrees/t-md', baseCommit: 'r0' },
+           { repo: 'sub', branch: 'task/md', worktreePath: '/proj/a/.dsh-worktrees/t-md/sub', baseCommit: 's0' },
+         ],
+       })
+       return [target]
+     })
+
+     gitBehavior.showCommit = 'sub patch'
+     const hit = await (await fetch(base + '/dsh-taskboard/tasks/' + id + '/diff?execution=e-mirror&commit=s0&repo=sub')).json()
+     expect(hit.value.diff).toBe('sub patch')
+     expect(gitBehavior.showCommitCalls.at(-1)).toEqual({ cwd: '/proj/a/.dsh-worktrees/t-md/sub', hash: 's0' })
+
+     gitBehavior.showCommit = undefined
+     gitBehavior.showCommitCalls = []
+     const miss = await (await fetch(base + '/dsh-taskboard/tasks/' + id + '/diff?execution=e-mirror&commit=s0&repo=sub')).json()
+     expect(gitBehavior.showCommitCalls.map(c => c.cwd)).toEqual(['/proj/a/.dsh-worktrees/t-md/sub', '/proj/a/sub'])
+
+     gitBehavior.showCommit = 'root patch'
+     gitBehavior.showCommitCalls = []
+     const root = await (await fetch(base + '/dsh-taskboard/tasks/' + id + '/diff?execution=e-mirror&commit=r0')).json()
+     expect(root.value.diff).toBe('root patch')
+     expect(gitBehavior.showCommitCalls.at(-1)!.cwd).toBe('/proj/a/.dsh-worktrees/t-md')
+
+     const unknown = await (await fetch(base + '/dsh-taskboard/tasks/' + id + '/diff?execution=e-mirror&commit=s0&repo=ghost')).json()
+     expect(unknown.ok).toBe(false)
+     expect(unknown.error.code).toBe('invalid_input')
+   })
 })

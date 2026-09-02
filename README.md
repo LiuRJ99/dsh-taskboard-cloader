@@ -10,7 +10,7 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 - **闭环协作**：人建卡 → agent 认领执行 → 结构化报告 → 人验收（✓ 完成 / ✗ 退回附原因）
 - **10 个 `taskboard_*` agent 工具** + 代码级协议闸：agent 永远移不到 done、任务被持有时不可抢、跨项目不可认领
 - **执行**：手动或 cron 定时（host 侧调度，浏览器关了照跑）；每次执行在任务项目内开全新会话，可指定模型与 preset
-- **Git Worktree 隔离**：每次执行独立 worktree + 任务分支，验收时一键合并；非 git 项目自动降级
+- **Git Worktree 隔离**：每次执行独立 worktree + 任务分支，验收时一键合并；并列多仓库工作区整区镜像隔离（0.6.3）；非 git 项目自动降级
 - **验收效率**：DoD 验收清单（agent 勾选附证据）、结构化执行报告（摘要/改动文件/自验/产物/风险）、看板内 diff 查看器
 - **实时看板**：SSE 实时刷新、五列流转、筛选排序持久化、JSON 导入导出、任务模板
 
@@ -153,6 +153,7 @@ agent：
 - 手动执行或 cron 定时：每次执行在任务项目内新建全新会话（干净上下文、可指定模型、可指定 preset）；开场两条消息同一回合送达——插件上下文行携带任务框架与交接协议（含失败回退路径），卡片内容（标题+描述+提示词）以正常用户消息呈现
 - **任务级 preset（0.3.3）**：新建/编辑表单「执行模式（preset）」下拉——执行会话按该 preset 组合（工具集与人设由此而来，对齐 GUI 新会话的组合方式）；默认预选部署默认 preset，也可选「跟随部署默认」；preset 损坏时执行直接失败并把原因写进执行记录（不产出半组合会话）；随时可改，下轮执行生效
 - **Git Worktree 隔离执行（0.3.0）**：任务级开关（0.5.0 起新建任务的默认值由「看板设置」统一决定，出厂默认原目录执行），每次执行在 `<项目>/.dsh-worktrees/<任务ID>` 独立 worktree 上进行，分支 `task/<标题>+<任务ID>`（首次创建后定死，改名不改）；执行会话归属项目根目录（分组、工具与文件沙箱完整可用——DSH 要求会话 cwd 即工作区根，0.3.2 修正），worktree 路径与边界纪律在开场指令中明确下达；结算自动采集提交列表 / 未提交修改警告 / 改动统计；非 git 项目或 git 不可用时自动降级原目录执行（执行记录注明降级原因，台账与执行主流程永不因 git 失败而失败）；验收时详情页一键 `--no-ff` 合并到主工作区（主区脏或冲突原样报告，不自动解决）、删除 worktree（有未提交修改时拒绝）、可选删分支；支持「↻ 续跑」在现有 worktree/分支上继续执行（保留上次改动与提交）
+- **多仓库镜像隔离（0.6.3）**：工作区内并列多个 git 仓库时（根仓库 + 嵌套独立仓库），worktree 模式自动升级为「任务镜像」——有界扫描发现全部仓库（深度 ≤3、上限 8 个、60s 缓存；submodule 与 linked worktree 形态跳过），每仓库各自建立同名任务分支的 worktree，按相对路径挂进 `<项目>/.dsh-worktrees/<任务ID>/` 形成结构同构镜像；执行引导逐仓库给出镜像路径与分支并声明边界纪律（未镜像仓库禁改）；提交证据、diff 查看（`?repo=` 按仓库）与合并（逐仓库 `--no-ff`，一仓冲突不阻断他仓，按仓库汇总）均分仓库进行；镜像清理聚合全部仓库的未提交检查后「先子后根」删除；任务与执行记录新增 `branches` / `repos` 附加字段，单仓库行为与旧数据零变化；根仓库以 gitlink（embedded repo）形式跟踪子仓的容器工作区同样完全可用——嵌套子镜像在根镜像 status 中的结构性噪音（未跟踪目录 / gitlink 漂移）已在证据采集、合并检查与镜像清理中自动豁免；新建任务表单在多仓库工作区显示「将镜像 N 个仓库」提示，纯容器工作区（根非仓库、只有并列子仓）同样可选 Worktree 隔离
 - **看板设置（0.5.0）**：顶栏「🛠 设置」——选择新建任务默认怎么执行（🌿 Worktree 隔离 / 📁 原目录执行，出厂默认后者）。保存后新建的任务都按它来；之后改设置，已建好的任务不受影响
   > Worktree 隔离是协作约定而非沙箱：执行会话拥有完整工具权限，隔离依赖分支约定，不适用于运行不可信代码的场景。
 - host 侧调度：关掉浏览器照常触发；错过窗口跳过不补跑
@@ -182,7 +183,7 @@ agent：
 | `dsh-taskboard.json` | 任务台账（全部任务/执行/评论） |
 | `dsh-taskboard-templates.json` | 任务模板 |
 | `dsh-taskboard.json.backup-<时间戳>` | 整册导入替换前的自动备份 |
-| `<项目>/.dsh-worktrees/<任务ID>/` | 任务执行 worktree |
+| `<项目>/.dsh-worktrees/<任务ID>/` | 任务执行 worktree（多仓库工作区：整区任务镜像，每仓库一个子 worktree） |
 
 随时可顶栏「⬇ JSON」全量备份、「⬇ CSV」导出任务清单（带 BOM，Excel 直接打开）。
 
@@ -215,12 +216,22 @@ pnpm 的构建授权——按报错把 key 加进 profile 的 `pnpm-workspace.ya
 git clone https://github.com/cloader/dsh-taskboard.git
 cd dsh-taskboard
 npm install && npm run build    # host ESM + client CJS 双构建
-npm test                        # vitest 全量（233 项）
+npm test                        # vitest 全量（266 项，含真实 git 镜像集成测试）
 node tests/manual-git-e2e.mjs   # 真 git 端到端手测（worktree 全链路 + 续跑 + diff 查看器）
 node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 ```
 
 ## 升级日志
+
+### 0.6.3
+
+- **并列多仓库工作空间的 Worktree 镜像模式**：worktree 隔离自动升级为「任务镜像」——有界扫描发现工作区内全部并列 git 仓库（深度 ≤3、上限 8、60s 缓存；submodule / linked worktree 跳过），每仓库各建同名任务分支的 worktree 并按相对路径挂进 `<项目>/.dsh-worktrees/<任务ID>/`；提交证据、diff 查看（`?repo=`）、合并（逐仓库 `--no-ff`，一仓冲突不阻断他仓）与清理（聚合未提交检查、先子后根）全部分仓库进行，未镜像仓库在执行引导中标「禁改」；新增 `branches` / `repos` 附加字段，单仓库行为与旧数据零变化
+- **容器仓库（根仓库以 gitlink 跟踪子仓）完全可用**：嵌套子镜像在根镜像 status 中的结构性噪音（未跟踪目录 / gitlink 漂移 `M 子仓`）已在证据采集、合并 clean 检查与镜像删除预检中豁免——此前真实 git 下已全部提交的镜像仍被清理路由永久拒绝、结算证据出现幻影未提交修改；新增真实 git 端到端集成测试（未跟踪 + gitlink 两形态）锁定
+- **DSH STORE 兼容矩阵扩展至 0.1.2-alpha 线**：0.1.2-alpha.2 / alpha.3 / alpha.4 逐项声明 `compatible`（各版本一次性 Profile 实测：安装 → 挂插件 → 无头启动 → 路由探活 200 → 卸载），解除「最新 3 个官方版本无兼容结论」的暂时下架（[DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321)）
+
+### 0.6.2
+
+- **修复 DSH STORE 收录的两个阻断（[DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321)）**：client 产物开启压缩（320,851 → 203,793 字节，回到 256 KiB 单文件审核线内）；`package.json` 增补 `dsh.compatibility.dshReleases` 兼容矩阵与 `engines.node >= 22`；新增 client 体积预算测试防无声回退——纯构建与清单整改，无功能变化
 
 ### 0.6.1
 

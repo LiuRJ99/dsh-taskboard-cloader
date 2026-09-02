@@ -7,7 +7,7 @@
  *
  * @module dsh-taskboard/client/controller
  */
-import type { ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, PromptCompletionsResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
+import type { ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, MergeRepoResult, PromptCompletionsResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
 import type { ChecklistItem, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
@@ -277,6 +277,12 @@ export class BoardController {
     return this.state.workspaces.find(w => w.id === workspaceId)?.gitAvailable === true
   }
 
+  /** How many repos a task mirror of this workspace would cover (0.6.3 mirror badge). */
+  repoCount(workspaceId: string | undefined): number {
+    if (workspaceId === undefined) return 1
+    return this.state.workspaces.find(w => w.id === workspaceId)?.repoCount ?? 1
+  }
+
   /**
    * Install the session-jump bridge (built from the runtime sessions service
    * by the client entry). Without it openSession reports 'unavailable'.
@@ -473,8 +479,8 @@ export class BoardController {
     }
   }
 
-  /** Diff view (0.4.0): one execution's commit or changed path; errors surface via throw. */
-  async fetchDiff(taskId: string, query: { execution: string; commit?: string; path?: string }): Promise<DiffResponse | undefined> {
+  /** Diff view (0.4.0): one execution's commit or changed path; `repo` picks a mirror repo (0.6.3). */
+  async fetchDiff(taskId: string, query: { execution: string; commit?: string; path?: string; repo?: string }): Promise<DiffResponse | undefined> {
     try {
       return await this.client.diff(taskId, query)
     } catch (error) {
@@ -520,13 +526,16 @@ export class BoardController {
 
   /**
    * ⇥ 合并 (detail page): merge the task branch into the main worktree.
-   * @returns the outcome; `noop` means the branch had no new commits (nothing merged).
+   * @returns the outcome; `noop` means the branch had no new commits (nothing
+   * merged); multi-repo tasks (0.6.3) additionally carry per-repo `results`.
    */
-  async mergeBranch(id: string): Promise<{ ok: true; noop?: boolean } | { ok: false; error: string }> {
+  async mergeBranch(id: string): Promise<{ ok: true; noop?: boolean; results?: MergeRepoResult[] } | { ok: false; error: string }> {
     try {
       const value = await this.client.mergeBranch(id)
       await this.refresh()
-      return value.noop === true ? { ok: true, noop: true } : { ok: true }
+      return value.noop === true
+        ? { ok: true, noop: true }
+        : value.results !== undefined ? { ok: true, results: value.results } : { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }

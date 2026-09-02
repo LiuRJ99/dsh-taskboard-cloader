@@ -5,7 +5,7 @@
  * No real git is invoked anywhere.
  */
 import { describe, expect, it } from 'vitest'
-import { createGitFace, sanitizeBranchName, worktreePathOf, type ExecFn, type ExecResult } from '../src/host/git.ts'
+import { createGitFace, sanitizeBranchName, statusLineUnder, worktreePathOf, type ExecFn, type ExecResult } from '../src/host/git.ts'
 
 describe('sanitizeBranchName', () => {
   it('builds task/<标题>+<taskId> with whitespace collapsed to dashes', () => {
@@ -412,5 +412,72 @@ describe('createGitFace (scripted exec)', () => {
     ])
     const cleanExec = createGitFace(clean)
     expect(await cleanExec.showPathDiff('/wt', 'tracked.ts')).toEqual({ text: '（该文件无差异）', truncated: false })
+  })
+
+  // ------------------------------------------------- 0.6.3 review-fix additions
+
+  it('statusLineUnder matches the porcelain path segment in RAW and TRIMMED line shapes', () => {
+    // Raw porcelain `XY path` — path at index 3.
+    expect(statusLineUnder('?? sub/', ['sub'])).toBe(true)
+    expect(statusLineUnder(' M sub/x.txt', ['sub'])).toBe(true)
+    // Trimmed evidence `X path` — a leading-space status collapsed the index;
+    // a fixed slice(3) would misparse exactly this shape ('M sub' → 'ub').
+    expect(statusLineUnder('M sub', ['sub'])).toBe(true)
+    expect(statusLineUnder('M dsh-taskboard', ['dsh-taskboard'])).toBe(true)
+    expect(statusLineUnder('?? subx/', ['sub'])).toBe(false)
+    expect(statusLineUnder('M other.txt', ['sub'])).toBe(false)
+    expect(statusLineUnder('?? anything/', [])).toBe(false)
+  })
+
+  it('collect: excludeRelPaths drops nested-mirror noise (untracked + gitlink drift) from dirty evidence', async () => {
+    const exec = scripted([
+      { match: a => a[0] === 'rev-parse', result: ok('base\n') },
+      { match: a => a[0] === 'log', result: ok('abc root work\n') },
+      { match: a => a[0] === 'status' && a[1] === '--porcelain', result: ok('?? sub/\n M s.txt\n?? README.md\n M dsh-taskboard\n') },
+      { match: a => a[0] === 'diff' && a.includes('--shortstat'), result: ok('') },
+      { match: a => a[0] === 'diff' && a.includes('--name-only'), result: ok('') },
+    ])
+    const facts = await createGitFace(exec).collect('/wt', 'base', ['sub', 'dsh-taskboard'])
+    // Real work stays (trimmed, the 0.3.x evidence shape); mirror noise goes.
+    expect(facts.dirtyFiles).toEqual(['M s.txt', '?? README.md'])
+    expect(facts.dirtyFilesTotal).toBe(2)
+    expect(facts.commits.map(c => c.subject)).toEqual(['root work'])
+  })
+
+  it('merge: exemptRelPaths extends the main-clean exemption (parallel repos / gitlinks)', async () => {
+    // Real container workspaces show `?? sub/` AND a modified gitlink
+    // `M dsh-taskboard` — without exemptions both refuse every root merge.
+    const refusing = createGitFace(scripted([
+      { match: a => a[0] === 'status', result: ok('?? sub/\n M dsh-taskboard\n M real.txt\n') },
+    ]))
+    await expect(refusing.merge('/r', 'task/x')).rejects.toThrow('主工作区有 3 处未提交修改')
+    const merging = createGitFace(scripted([
+      { match: a => a[0] === 'status', result: ok('?? sub/\n M dsh-taskboard\n') },
+      { match: a => a[0] === 'merge', result: ok('') },
+    ]))
+    await expect(merging.merge('/r', 'task/x', ['sub', 'dsh-taskboard'])).resolves.toBeUndefined()
+    // Unrelated dirt still refuses with the exemptions in place.
+    const still = createGitFace(scripted([
+      { match: a => a[0] === 'status', result: ok(' M real.txt\n') },
+    ]))
+    await expect(still.merge('/r', 'task/x', ['sub', 'dsh-taskboard'])).rejects.toThrow('主工作区有 1 处未提交修改')
+  })
+
+  it('removeWorktree: exempt+force passes structural mirror noise, real dirt still refuses', async () => {
+    const refusing = createGitFace(scripted([
+      { match: a => a[0] === 'status', result: ok('?? sub/\n M real.txt\n') },
+    ]))
+    await expect(refusing.removeWorktree('/r', '/wt', { exempt: ['sub'], force: true }))
+      .rejects.toThrow('worktree 有 1 处未提交修改')
+    const removing = createGitFace(scripted([
+      { match: a => a[0] === 'status', result: ok('?? sub/\n') },
+      { match: a => a[0] === 'worktree' && a.includes('--force'), result: ok('') },
+    ]))
+    await expect(removing.removeWorktree('/r', '/wt', { exempt: ['sub'], force: true })).resolves.toBe('removed')
+    // Without opts the noise refuses as before (legacy callers unchanged).
+    const legacy = createGitFace(scripted([
+      { match: a => a[0] === 'status', result: ok('?? sub/\n') },
+    ]))
+    await expect(legacy.removeWorktree('/r', '/wt')).rejects.toThrow('worktree 有 1 处未提交修改')
   })
 })

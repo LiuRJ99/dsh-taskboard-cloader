@@ -1,5 +1,31 @@
 # 更新日志 / Changelog
 
+### 0.6.3
+
+- **并列多仓库工作空间的 Worktree 镜像模式**
+  - Worktree 隔离升级为「任务镜像」：自动发现工作区内的并列 git 仓库（根仓库 + 有界扫描嵌套仓库，深度 ≤3、上限 8 个、60s 缓存），每个仓库各自建立同名任务分支的 worktree，按其在工作区中的相对路径挂进 `<项目>/.dsh-worktrees/<任务ID>/`，形成结构同构的任务镜像
+  - 每仓库独立的提交证据（commits / 未提交修改 / diff 统计）与合并：详情页「合并」按仓库顺序逐个 `--no-ff` 合并，一个仓库冲突不阻断其他仓库，系统评论与弹窗按仓库汇总结果（✓ 已合并 / ⟲ 无新提交 / ✗ 失败原因）
+  - 部分失败不破界：某仓库镜像准备失败仅将其从镜像中剔除并在执行引导中标注「禁改」，首个（根）仓库失败仍整体降级原目录执行；仓库数超上限整体降级并注明原因
+  - Diff 查看器支持 `?repo=` 按仓库查看：镜像 worktree 优先，回落该仓库主检出；任务镜像清理（删 worktree / 物理清除 / 孤儿清理）聚合所有仓库的未提交检查后「先子后根」删除，任一仓库有未提交修改则整体拒绝
+  - 任务记录新增 `branches`（各仓库分支 pin）与执行记录 `repos`（各仓库证据），纯附加字段——单仓库工作区行为、账本格式、旧数据完全不变
+  - 不支持 git submodule / linked worktree 形态的嵌套目录（发现阶段跳过）
+  - 镜像清理与证据的评审修复：根镜像的 dirty 检查/证据采集/合并 clean 检查现在豁免镜像结构性噪声（嵌套子镜像的 untracked 目录与 gitlink 漂移 `M 子仓`）——此前真实 git 下已全部提交的镜像仍被判 dirty，三条清理路由永远拒绝、settle 证据永远显示有未提交修改、容器工作区（根仓库以 gitlink 跟踪子仓）根分支无法合并；镜像删除修正为真正的「先子后根」并在聚合预检查通过后对根镜像以豁免+force 移除；新增真实 git 端到端集成测试（`tests/mirror-real-git.spec.ts`）覆盖整条闭环
+  - DSH STORE 复检修复：`dsh.compatibility.dshReleases` 兼容矩阵扩展至 0.1.2-alpha 线（0.1.2-alpha.2 / alpha.3 / alpha.4 逐项声明 `compatible`），解除「最新 3 个官方版本无兼容结论」的暂时下架（[DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321)）；三个版本均以一次性 Profile 实测通过——独立 DSH_HOME 安装对应 dsh 版本 + link 挂载本插件 → 无头启动 `dsh web` → `/dsh-taskboard/state`、`/dsh-taskboard/workspaces` 探活 HTTP 200 → 卸载
+  - 表单镜像徽章与纯容器工作区修复：新建任务表单的 Worktree 隔离选项在多仓库工作区显示「将自动整区镜像 N 个仓库」提示（workspaces 路由新增 `repoCount`）；工作区可用性判定从「根目录是 git 仓库」扩展为「根仓库或扫描到并列嵌套仓库」——纯容器工作区（根非仓库、只有并列子仓）不再被误标「非 git 仓库」而禁用 worktree 选项（host 端 prepareMirror 本就支持该形态）；看板设置默认隔离的 worktree 说明补充多仓库自动镜像
+
+**English:**
+
+- **Worktree mirror mode for parallel multi-repo workspaces**
+  - Worktree isolation becomes a whole-workspace task mirror: the plugin discovers every parallel git repository in the workspace (root repo plus a bounded nested scan — depth ≤3, capped at 8 repos, 60s cache) and prepares one worktree per repo on the same task branch, mounted at its relative path under `<project>/.dsh-worktrees/<taskId>/`
+  - Per-repo commit evidence (commits / dirty files / diff stats) and merging: the detail-page merge runs `--no-ff` per repo sequentially — one repo's conflict never blocks the others; the system comment and the alert summarize per-repo outcomes (✓ merged / ⟲ nothing to merge / ✗ failed)
+  - Partial failure never blurs the boundary: a repo whose mirror preparation fails is dropped from the mirror and marked do-not-touch in the session framing; a failing first (root) repo still degrades the whole run; exceeding the repo cap degrades with a readable note
+  - The diff viewer accepts `?repo=` per repo (mirror worktree first, falling back to that repo's main checkout); mirror cleanup (worktree-remove / purge / orphan cleanup) aggregates dirty checks across ALL repo worktrees and removes children before the root — any dirty repo refuses everything
+  - Additive records only: `TaskRecord.branches` and `ExecutionRecord.repos` are new optional fields — single-repo workspaces keep byte-identical behavior, ledger format, and old data
+  - Nested directories in submodule / linked-worktree form (.git as a file) are skipped by discovery
+  - Review fixes for mirror cleanup and evidence: the root mirror's dirty checks, evidence collection, and merge clean-check now EXEMPT mirror-structural noise (untracked nested child worktrees and gitlink drift `M sub-repo`) — on real git a fully committed mirror still read as dirty, every cleanup route refused forever, settlement evidence always showed phantom uncommitted changes, and container workspaces (root repo tracking sub-repos as gitlinks) could never merge the root branch; mirror removal is now genuinely children-first and force-removes the root through that exempted noise once the aggregated real-dirty check has passed; a new real-git end-to-end integration test (`tests/mirror-real-git.spec.ts`) covers the whole loop
+  - DSH STORE recheck fix: the `dsh.compatibility.dshReleases` matrix now covers the 0.1.2-alpha line (0.1.2-alpha.2 / alpha.3 / alpha.4 each declared `compatible`), clearing the "no compatible verdict for the latest 3 official releases" temporary unlisting ([DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321)); all three verified on disposable profiles — per-version install with an isolated DSH_HOME + link-mounted plugin → headless `dsh web` → `/dsh-taskboard/state` and `/dsh-taskboard/workspaces` probed at HTTP 200 → uninstalled
+  - Form mirror badge + pure-container fix: the create-task form's worktree option now shows an "automatically mirrors N repos" note on multi-repo workspaces (the workspaces route gains `repoCount`); workspace availability widens from "the root is a git repo" to "a root repo OR any parallel nested repo" — pure-container workspaces (root not a repo, parallel sub-repos only) are no longer mislabeled non-git with the worktree option locked away (prepareMirror has supported that shape all along); the board-settings worktree hint mentions the auto-mirror
+
 ### 0.6.2
 
 - **修复：DSH STORE 收录的两个确定性阻断（[DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321)）**

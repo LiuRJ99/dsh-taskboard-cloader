@@ -119,27 +119,29 @@ function porcelainPath(line: string): string {
 
 /**
  * Lazy diff viewer (0.4.0): loads on mount, renders inside a capped <pre>.
+ * `repo` picks one repo of a multi-repo mirror (0.6.3; absent = legacy root).
  * @param spec - what to show: one commit hash, or one changed path.
  */
-function DiffView({ controller, task, execution, commit, path }: {
+function DiffView({ controller, task, execution, commit, path, repo }: {
   controller: BoardController
   task: TaskRecord
   execution: ExecutionRecord
   commit?: string
   path?: string
+  repo?: string
 }) {
   const t = useT()
   const [state, setState] = useState<{ loading: boolean; diff?: string; truncated?: boolean; failed?: boolean }>({ loading: true })
   useEffect(() => {
     let alive = true
     setState({ loading: true })
-    void controller.fetchDiff(task.id, { execution: execution.id, ...(commit !== undefined ? { commit } : { path: path ?? '' }) }).then(result => {
+    void controller.fetchDiff(task.id, { execution: execution.id, ...(commit !== undefined ? { commit } : { path: path ?? '' }), ...(repo !== undefined ? { repo } : {}) }).then(result => {
       if (!alive) return
       if (result === undefined) setState({ loading: false, failed: true })
       else setState({ loading: false, diff: result.diff, truncated: result.truncated })
     })
     return () => { alive = false }
-  }, [controller, task.id, execution.id, commit, path])
+  }, [controller, task.id, execution.id, commit, path, repo])
   return (
     <div className="dsh-atb-diffview">
       <div className="dsh-atb-diffview-head">
@@ -245,8 +247,8 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
   const [confirmMerge, setConfirmMerge] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState<'wt' | 'wtb' | null>(null)
   const [busy, setBusy] = useState(false)
-  // Diff viewer (0.4.0): which commit / changed path is expanded.
-  const [openDiff, setOpenDiff] = useState<{ commit?: string; path?: string } | null>(null)
+  // Diff viewer (0.4.0): which commit / changed path is expanded (0.6.3: + repo).
+  const [openDiff, setOpenDiff] = useState<{ commit?: string; path?: string; repo?: string } | null>(null)
   const [dirtyOpen, setDirtyOpen] = useState(false)
   const execution = latestIsolated(task)
   const running = task.executions.some(e => e.outcome === 'running')
@@ -258,6 +260,18 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
       setBusy(false)
       setConfirmMerge(false)
       if (!result.ok) showAlert(t('iso.merge.failed', { error: result.error }))
+      else if (result.results !== undefined) {
+        // Multi-repo mirror (0.6.3): one compact per-repo outcome line.
+        const labelOf = (repo: string): string => repo === '' ? t('iso.repo.root') : repo
+        const summary = result.results
+          .map(r => `${labelOf(r.repo)} ${r.outcome === 'merged' ? '✓' : r.outcome === 'noop' ? '⟲' : '✗'}`)
+          .join(' · ')
+        const failed = result.results.some(r => r.outcome === 'failed')
+        const failedError = result.results.find(r => r.outcome === 'failed')?.error
+        showAlert(failed
+          ? t('iso.merge.partial', { summary, error: failedError ?? '' })
+          : t('iso.merge.done', { summary }))
+      }
       else if (result.noop === true) showAlert(t('iso.merge.noop'))
     })
   }
@@ -283,55 +297,102 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
     )
   }
 
-  const commits = execution.commits ?? []
-  const commitTotal = execution.commitsTotal ?? commits.length
-  const dirty = execution.dirtyFiles ?? []
-  const dirtyTotal = execution.dirtyFilesTotal ?? dirty.length
+  // 0.6.3: multi-repo mirrors render ONE section per repo (execution.repos);
+  // legacy single-repo records keep the exact old shape (a synthetic view).
+  const multi = execution.repos !== undefined && execution.repos.length > 0
+  const views: Array<{
+    repo?: string
+    label: string
+    branch?: string
+    worktreePath?: string
+    baseCommit?: string
+    headCommit?: string
+    commits: NonNullable<ExecutionRecord['commits']>
+    commitTotal: number
+    dirty: string[]
+    dirtyTotal: number
+    diffStat?: string
+    changedFiles?: number
+  }> = multi
+    ? (execution.repos ?? []).map(r => ({
+        repo: r.repo,
+        label: r.repo === '' ? t('iso.repo.root') : r.repo,
+        branch: r.branch,
+        worktreePath: r.worktreePath,
+        baseCommit: r.baseCommit,
+        headCommit: r.headCommit,
+        commits: r.commits ?? [],
+        commitTotal: r.commitsTotal ?? (r.commits ?? []).length,
+        dirty: r.dirtyFiles ?? [],
+        dirtyTotal: r.dirtyFilesTotal ?? (r.dirtyFiles ?? []).length,
+        ...(r.diffStat !== undefined ? { diffStat: r.diffStat } : {}),
+        ...(r.changedFiles !== undefined ? { changedFiles: r.changedFiles } : {}),
+      }))
+    : [{
+        label: t('iso.repo.root'),
+        branch: execution.branch ?? task.branch,
+        worktreePath: execution.worktreePath,
+        baseCommit: execution.baseCommit,
+        headCommit: execution.headCommit,
+        commits: execution.commits ?? [],
+        commitTotal: execution.commitsTotal ?? (execution.commits ?? []).length,
+        dirty: execution.dirtyFiles ?? [],
+        dirtyTotal: execution.dirtyFilesTotal ?? (execution.dirtyFiles ?? []).length,
+        ...(execution.diffStat !== undefined ? { diffStat: execution.diffStat } : {}),
+        ...(execution.changedFiles !== undefined ? { changedFiles: execution.changedFiles } : {}),
+      }]
 
-  return (
-    <div className="dsh-atb-fieldcard" data-kind="isolation">
-      <div className="dsh-atb-fieldcard-label">{t('iso.worktreeTitle')}</div>
+  const renderRepo = (view: (typeof views)[number]): ReactNode => (
+    <section key={view.repo ?? 'root'} className="dsh-atb-iso-repo" data-multi={multi ? 'true' : undefined}>
+      {multi && (
+        <div className="dsh-atb-iso-repohead" title={view.worktreePath}>
+          <code>{view.label}</code>
+          <span className="dsh-atb-iso-fact">{t('iso.branch')} <b>{view.branch}</b></span>
+        </div>
+      )}
       <div className="dsh-atb-iso-facts">
-        <span className="dsh-atb-iso-fact" title={execution.worktreePath}>{t('iso.branch')} <b>{execution.branch ?? task.branch}</b></span>
-        <span className="dsh-atb-iso-fact">{t('iso.baseline', { base: shortHash(execution.baseCommit), head: shortHash(execution.headCommit) })}</span>
-        {execution.changedFiles !== undefined && execution.changedFiles > 0 && (
-          <span className="dsh-atb-iso-fact">{t('iso.changed', { n: execution.changedFiles })}</span>
+        {!multi && (
+          <span className="dsh-atb-iso-fact" title={view.worktreePath}>{t('iso.branch')} <b>{view.branch}</b></span>
         )}
-        {execution.diffStat !== undefined && <span className="dsh-atb-iso-fact" title={execution.diffStat}>{execution.diffStat}</span>}
+        <span className="dsh-atb-iso-fact">{t('iso.baseline', { base: shortHash(view.baseCommit), head: shortHash(view.headCommit) })}</span>
+        {view.changedFiles !== undefined && view.changedFiles > 0 && (
+          <span className="dsh-atb-iso-fact">{t('iso.changed', { n: view.changedFiles })}</span>
+        )}
+        {view.diffStat !== undefined && <span className="dsh-atb-iso-fact" title={view.diffStat}>{view.diffStat}</span>}
       </div>
 
-      {commits.length > 0
+      {view.commits.length > 0
         ? (
             <div className="dsh-atb-iso-commits">
-              {commits.slice(0, 10).map(c => (
-                <div key={c.hash} className="dsh-atb-iso-commit" data-open={openDiff?.commit === c.hash ? 'true' : undefined}>
+              {view.commits.slice(0, 10).map(c => (
+                <div key={c.hash} className="dsh-atb-iso-commit" data-open={openDiff?.commit === c.hash && openDiff?.repo === view.repo ? 'true' : undefined}>
                   <button
                     type="button"
                     className="dsh-atb-iso-commit-btn"
                     title={t('iso.commit.openTitle')}
-                    onClick={() => setOpenDiff(openDiff?.commit === c.hash ? null : { commit: c.hash })}
+                    onClick={() => setOpenDiff(openDiff?.commit === c.hash && openDiff?.repo === view.repo ? null : { commit: c.hash, ...(view.repo !== undefined ? { repo: view.repo } : {}) })}
                   >
                     <code>{shortHash(c.hash)}</code>
                     <span>{c.subject}</span>
                   </button>
-                  {openDiff?.commit === c.hash && (
-                    <DiffView controller={controller} task={task} execution={execution} commit={c.hash} />
+                  {openDiff?.commit === c.hash && openDiff?.repo === view.repo && (
+                    <DiffView controller={controller} task={task} execution={execution} commit={c.hash} repo={view.repo} />
                   )}
                 </div>
               ))}
-              {commitTotal > 10 && <div className="dsh-atb-iso-more">{t('iso.commits.more', { n: commitTotal })}</div>}
+              {view.commitTotal > 10 && <div className="dsh-atb-iso-more">{t('iso.commits.more', { n: view.commitTotal })}</div>}
             </div>
           )
         : <div className="dsh-atb-iso-nocommit">{t('iso.nocommit')}</div>}
 
-      {dirtyTotal > 0 && (
+      {view.dirtyTotal > 0 && (
         <div className="dsh-atb-iso-dirty">
           <button type="button" className="dsh-atb-iso-dirty-toggle" onClick={() => setDirtyOpen(!dirtyOpen)}>
-            {t('iso.dirty.toggle', { n: dirtyTotal })}{dirtyOpen ? t('iso.dirty.collapse') : t('iso.dirty.expand')}
+            {t('iso.dirty.toggle', { n: view.dirtyTotal })}{dirtyOpen ? t('iso.dirty.collapse') : t('iso.dirty.expand')}
           </button>
           {dirtyOpen && (
             <div className="dsh-atb-iso-dirty-files">
-              {dirty.slice(0, 30).map((line, index) => {
+              {view.dirty.slice(0, 30).map((line, index) => {
                 const filePath = porcelainPath(line)
                 return (
                   <button
@@ -339,20 +400,27 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
                     type="button"
                     className="dsh-atb-iso-dirty-file"
                     title={t('iso.dirty.openTitle')}
-                    onClick={() => setOpenDiff(openDiff?.path === filePath ? null : { path: filePath })}
+                    onClick={() => setOpenDiff(openDiff?.path === filePath && openDiff?.repo === view.repo ? null : { path: filePath, ...(view.repo !== undefined ? { repo: view.repo } : {}) })}
                   >
                     <code>{line.slice(0, 2)}</code> {filePath}
                   </button>
                 )
               })}
-              {dirtyTotal > 30 && <div className="dsh-atb-iso-more">{t('iso.dirty.more', { n: dirtyTotal })}</div>}
+              {view.dirtyTotal > 30 && <div className="dsh-atb-iso-more">{t('iso.dirty.more', { n: view.dirtyTotal })}</div>}
             </div>
           )}
-          {openDiff?.path !== undefined && dirtyOpen && (
-            <DiffView controller={controller} task={task} execution={execution} path={openDiff.path} />
+          {openDiff?.path !== undefined && openDiff?.repo === view.repo && dirtyOpen && (
+            <DiffView controller={controller} task={task} execution={execution} path={openDiff.path} repo={view.repo} />
           )}
         </div>
       )}
+    </section>
+  )
+
+  return (
+    <div className="dsh-atb-fieldcard" data-kind="isolation">
+      <div className="dsh-atb-fieldcard-label">{t('iso.worktreeTitle')}</div>
+      {views.map(renderRepo)}
 
       <div className="dsh-atb-iso-actions">
         {running

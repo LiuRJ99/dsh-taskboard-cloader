@@ -83,7 +83,7 @@ export interface TaskboardClient {
   /** Clean up one orphan worktree directory (task no longer in the ledger). */
   worktreeCleanup(workspaceId: string, taskId: string): Promise<{ cleaned: true; path: string }>
   /** Diff view: one execution's commit or changed path (read-only, capped). */
-  diff(taskId: string, query: { execution: string; commit?: string; path?: string }): Promise<DiffResponse>
+  diff(taskId: string, query: { execution: string; commit?: string; path?: string; repo?: string }): Promise<DiffResponse>
   /** Import dry-run: classify the uploaded ledger against the live one. */
   importPreview(file: unknown): Promise<ImportPreviewResponse>
   /** Commit an import (merge upserts; replace swaps the whole ledger, backing it up first). */
@@ -128,6 +128,7 @@ export function createClient(): TaskboardClient {
       const params = new URLSearchParams({ execution: query.execution })
       if (query.commit !== undefined) params.set('commit', query.commit)
       if (query.path !== undefined) params.set('path', query.path)
+      if (query.repo !== undefined) params.set('repo', query.repo)
       return get<DiffResponse>(`/dsh-taskboard/tasks/${encodeURIComponent(taskId)}/diff?${params.toString()}`)
     },
     importPreview: file => post('/dsh-taskboard/import/preview', file),

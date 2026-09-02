@@ -622,6 +622,13 @@ button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
 .dsh-atb-isolation-note { display: block; margin-top: 6px; font-size: 11px; color: var(--dsw-alias-label-tertiary, gray); }
 .dsh-atb-mode-picker[data-disabled="true"] .dsh-atb-mode-opt { cursor: not-allowed; opacity: .55; }
 .dsh-atb-iso-none { font-size: 12.5px; color: var(--dsw-alias-label-secondary, inherit); }
+.dsh-atb-iso-repo[data-multi="true"] { padding: 6px 0 2px; border-top: 1px dashed var(--dsw-alias-border-secondary, #ddd2); }
+.dsh-atb-iso-repo[data-multi="true"]:first-of-type { border-top: none; padding-top: 0; }
+.dsh-atb-iso-repohead { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 6px; align-items: baseline; }
+.dsh-atb-iso-repohead code {
+font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; font-weight: 600;
+color: var(--dsw-alias-state-business-primary, #3e63dd);
+}
 .dsh-atb-iso-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 8px; }
 .dsh-atb-iso-fact { font-size: 11.5px; color: var(--dsw-alias-label-secondary, inherit); }
 .dsh-atb-iso-fact b { font-weight: 600; color: var(--dsw-alias-state-business-primary, #3e63dd); }

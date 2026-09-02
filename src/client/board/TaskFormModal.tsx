@@ -256,6 +256,10 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   // branch and its baseline depend on the choice — plan §3.1).
   const isolationLocked = editing && ((task.executions?.length ?? 0) > 0 || task.status === 'in_progress')
   const gitOk = controller.gitAvailable(workspaceId)
+  // 0.6.3: how many repos a task mirror of this workspace would cover — >1
+  // shows the auto-mirror note under the picker (multi-repo is automatic,
+  // there is deliberately no per-task repo selection this release).
+  const repoCount = controller.repoCount(workspaceId)
   // Non-git project: the worktree option is disabled; submitting keeps the
   // default (runtime auto-degrades with a note) instead of persisting 'none'.
   const isolationDisabled = isolationLocked || !gitOk
@@ -578,6 +582,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
               </div>
               {!gitOk && !isolationLocked && (
                 <span className="dsh-atb-isolation-note">{t('form.iso.nonGitNote')}</span>
+              )}
+              {gitOk && !isolationLocked && repoCount > 1 && (
+                <span className="dsh-atb-isolation-note" data-mirror="true">{t('form.iso.mirrorNote', { n: repoCount })}</span>
               )}
             </Field>
 

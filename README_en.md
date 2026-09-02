@@ -10,7 +10,7 @@ A **task board plugin for DeepSeek Harness**: humans create cards, agents claim 
 - **Closed loop**: human creates a card → agent claims & executes → structured hand-off report → human accepts (✓ done / ✗ send back with a reason)
 - **10 `taskboard_*` agent tools** plus code-level protocol gates: agents can never move a task to *done*, held tasks cannot be snatched away, cross-project claims are rejected
 - **Execution**: manual or cron-scheduled (host-side scheduling keeps firing with the browser closed); every execution opens a brand-new session inside the task's project, optionally pinned to a model and preset
-- **Git worktree isolation**: each run works on its own worktree + dedicated task branch, one-click merge at acceptance; non-git projects fall back automatically
+- **Git worktree isolation**: each run works on its own worktree + dedicated task branch, one-click merge at acceptance; parallel multi-repo workspaces are mirrored whole (0.6.3); non-git projects fall back automatically
 - **Efficient acceptance**: DoD acceptance checklists (agent checks items off with evidence), structured execution reports (summary / changed files / checks / artifacts / risks), in-board diff viewer
 - **Live board**: SSE real-time refresh, five-column flow, persisted filters & sorting, JSON import/export, task templates
 
@@ -153,6 +153,7 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - Manual runs or cron schedules: each execution opens a brand-new session in the task's project (clean context, optional model, optional preset); two opening messages arrive in the same turn — the plugin context line carries the task frame and hand-off protocol (including failure fallback guidance), while the card payload (title+description+prompt) arrives as a normal user message
 - **Per-task presets (0.3.3)**: an "execution mode (preset)" dropdown in the create/edit form — execution sessions are composed from that preset (tool sets and persona come from it, matching how the GUI composes new sessions); defaults to the deployment default preset, or pick "follow deployment default"; a broken preset fails the execution outright and records why in the execution history (no half-composed sessions); changeable anytime, effective next round
 - **Git worktree isolated execution (0.3.0)**: per-task toggle (since 0.5.0 the default for newly created tasks comes from Board Settings; factory default runs in place). Every execution happens on a dedicated worktree at `<project>/.dsh-worktrees/<taskId>`, branch `task/<title>+<taskId>` (fixed after first creation; renaming doesn't rename branches). The executing session stays rooted at the project directory (grouping, tools, and the file sandbox fully available — DSH requires session cwd === workspace root, fixed in 0.3.2), and the worktree path plus boundary rules are spelled out in the opening instructions. Settlement collects commit lists / uncommitted-changes warnings / change stats automatically. Non-git projects or missing git degrade gracefully to in-place execution (the reason is recorded; the ledger and execution flow never fail because of git). At acceptance: one-click `--no-ff` merge into the main working tree (dirty tree / conflicts reported verbatim, never auto-resolved), worktree deletion (refused with uncommitted changes), optional branch deletion. "↻ Resume" continues on the existing worktree/branch (previous commits and edits kept)
+- **Multi-repo mirror isolation (0.6.3)**: when a workspace holds several parallel git repositories (a root repo plus nested independent ones), worktree mode upgrades into a whole-workspace task mirror — a bounded scan discovers every repo (depth ≤3, capped at 8, 60s cache; submodule / linked-worktree shapes are skipped), each repo gets its own worktree on the same task branch mounted at its relative path under `<project>/.dsh-worktrees/<taskId>/`; the session framing lists every repo's mirror path and branch and marks un-mirrored repos do-not-touch; commit evidence, diff viewing (`?repo=`) and merging (per-repo `--no-ff`, one conflict never blocking the others, per-repo summaries) all work per repo; mirror cleanup aggregates dirty checks across all repo worktrees and removes children before the root; the new `branches` / `repos` record fields are purely additive — single-repo behavior and old data are untouched; container workspaces whose root repo tracks sub-repos as gitlinks (embedded repos) are fully supported too — the structural noise nested child mirrors produce in the root mirror's status (untracked directories / gitlink drift) is exempted automatically from evidence collection, merge clean-checks, and mirror removal; the create-task form shows an "mirrors N repos" note on multi-repo workspaces, and pure-container workspaces (root not a repo, parallel sub-repos only) can pick worktree isolation too
 - **Board settings (0.5.0)**: "🛠 Settings" in the toolbar — choose how new tasks execute by default (🌿 Worktree isolation / 📁 run in place; factory default is the latter). Saving applies to newly created tasks; later changes never affect existing ones
   > Worktree isolation is a collaboration convention, not a sandbox: execution sessions hold full tool permissions, isolation rests on the branch convention, and it is not suitable for running untrusted code.
 - Host-side scheduling: fires with the browser closed; missed windows are skipped, never replayed
@@ -182,7 +183,7 @@ Data files (all under the DSH home directory; uninstalling the plugin keeps them
 | `dsh-taskboard.json` | Task ledger (all tasks / executions / comments) |
 | `dsh-taskboard-templates.json` | Task templates |
 | `dsh-taskboard.json.backup-<timestamp>` | Automatic backup taken before a full-replace import |
-| `<project>/.dsh-worktrees/<taskId>/` | Per-task execution worktree |
+| `<project>/.dsh-worktrees/<taskId>/` | Per-task execution worktree (multi-repo workspaces: a whole-workspace mirror with one sub-worktree per repo) |
 
 Export a full backup anytime with "⬇ JSON" in the toolbar, or the task list as CSV ("⬇ Export", BOM included, opens straight in Excel).
 
@@ -215,12 +216,22 @@ That's pnpm build authorization — add the key printed in the error to `allowBu
 git clone https://github.com/cloader/dsh-taskboard.git
 cd dsh-taskboard
 npm install && npm run build    # dual build: host ESM + client CJS
-npm test                        # full vitest suite (233 cases)
+npm test                        # full vitest suite (266 cases, incl. the real-git mirror integration spec)
 node tests/manual-git-e2e.mjs   # real-git end-to-end manual test (full worktree chain + resume + diff viewer)
 node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
+
+### 0.6.3
+
+- **Worktree mirror mode for parallel multi-repo workspaces**: worktree isolation upgrades into a whole-workspace task mirror — a bounded scan (depth ≤3, capped at 8 repos, 60s cache; submodule / linked-worktree shapes skipped) discovers every parallel git repo, gives each its own worktree on the same task branch mounted at its relative path under `<project>/.dsh-worktrees/<taskId>/`; commit evidence, diff viewing (`?repo=`), merging (per-repo `--no-ff`, one conflict never blocking the others) and cleanup (aggregated dirty checks, children before root) all work per repo, and un-mirrored repos are marked do-not-touch in the framing; the new `branches` / `repos` fields are purely additive — single-repo behavior and old data untouched
+- **Container workspaces (root repo tracking sub-repos as gitlinks) fully supported**: the structural noise nested child mirrors produce in the root mirror's status (untracked directories / gitlink drift `M sub-repo`) is exempted from evidence collection, merge clean-checks, and mirror-removal pre-checks — previously a fully committed mirror was refused forever by every cleanup route on real git and settlement evidence showed phantom uncommitted changes; a real-git end-to-end spec (untracked + gitlink shapes) locks the loop
+- **DSH STORE compatibility matrix extended to the 0.1.2-alpha line**: 0.1.2-alpha.2 / alpha.3 / alpha.4 each declared `compatible` (every version smoke-tested on a disposable profile: install → link-mount the plugin → headless `dsh web` → route probes at HTTP 200 → uninstall), clearing the "no compatible verdict for the latest 3 official releases" temporary unlisting ([DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321))
+
+### 0.6.2
+
+- **Fix the two DSH STORE listing blockers ([DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321))**: the client bundle is minified (320,851 → 203,793 bytes, back under the 256 KiB per-file review bound); `package.json` gains the `dsh.compatibility.dshReleases` matrix and `engines.node >= 22`; a client size-budget test prevents silent regression — build & manifest remediation only, no functional changes
 
 ### 0.6.1
 

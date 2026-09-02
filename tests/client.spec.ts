@@ -422,6 +422,8 @@ describe('client half', () => {
       workspaces: async () => [
         { id: 'ws-git', path: '/p/g', title: 'G', sessionCount: 0, gitAvailable: true },
         { id: 'ws-plain', path: '/p/n', title: 'N', sessionCount: 0, gitAvailable: false },
+        // 0.6.3: a multi-repo workspace (repoCount > 1) shows the mirror note.
+        { id: 'ws-mirror', path: '/p/m', title: 'M', sessionCount: 0, gitAvailable: true, repoCount: 3 },
       ],
       stream: () => () => {},
       create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
@@ -468,6 +470,14 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     expect(creates[1]).toMatchObject({ workspaceId: 'ws-plain' })
     expect((creates[1] as Record<string, unknown>).isolation).toBeUndefined()
+
+    // Multi-repo workspace (0.6.3): worktree stays enabled and the mirror
+    // note names the repo count (auto-mirror, no per-task repo selection).
+    wsSelect.value = 'ws-mirror'
+    wsSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    expect(isoOpts().every(o => !o.disabled)).toBe(true)
+    expect(host.querySelector('.dsh-atb-isolation-note[data-mirror]')?.textContent).toContain('3')
 
     root.unmount()
     host.remove()
