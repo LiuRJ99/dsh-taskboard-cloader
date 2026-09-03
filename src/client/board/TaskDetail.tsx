@@ -8,10 +8,15 @@
  * @module dsh-taskboard/client/board/TaskDetail
  */
 import { useEffect, useState, type ReactNode } from 'react'
+import type { SessionScope } from 'dsh-better-sidebar/client/service'
+import type { WorkspaceView } from '../../shared/api.ts'
 import type { BoardController } from '../controller.ts'
 import type { ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
+import { cleanReportedPath, isAbsolutePath, resolveTaskFilePath, type TaskFileTarget } from '../file-paths.ts'
 import { canTransition, checklistProgress } from '../../shared/protocol.ts'
 import { useAlert } from './AlertModal.tsx'
+import { InitialAvatar } from './Avatar.tsx'
+import { Markdown } from '../markdown.tsx'
 import { fmtTime, isStaleClaim } from './format.ts'
 import { MOVE_KEYS, OUTCOME_KEYS, STATUS_KEYS, URGENCY_KEYS } from './labels.ts'
 import { useT } from '../i18n/runtime.ts'
@@ -42,62 +47,6 @@ function Chip({ icon, children, tone, title }: { icon?: string; children: ReactN
   return <span className="dsh-atb-chip2" data-tone={tone} title={title}>{icon !== undefined && <span className="dsh-atb-chip2-icon">{icon}</span>}{children}</span>
 }
 
-/** Render markdown text with embedded clickable images and lightbox preview. */
-function MarkdownContent({ text }: { text: string }) {
-  const t = useT()
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
-  const regex = /!\[(.*?)\]\(((?:data:image\/[^)]+)|(?:https?:\/\/[^)]+)|(?:[^)]+\.(?:png|jpg|jpeg|gif|webp|svg)))\)/gi
-  const parts: ReactNode[] = []
-  let lastIndex = 0
-  let match: RegExpExecArray | null
-  let count = 0
-
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(<span key={`txt-${lastIndex}`}>{text.slice(lastIndex, match.index)}</span>)
-    }
-    const alt = match[1] || t('md.imageAlt', { n: ++count })
-    const url = match[2] ?? ''
-    parts.push(
-      <div key={`img-${match.index}`} className="dsh-atb-detail-img-wrap">
-        <img
-          src={url}
-          alt={alt}
-          className="dsh-atb-detail-img"
-          onClick={() => setLightboxUrl(url)}
-          title={t('md.imageTitle', { alt })}
-        />
-        <span className="dsh-atb-detail-img-caption">{alt}</span>
-      </div>,
-    )
-    lastIndex = regex.lastIndex
-  }
-  if (lastIndex < text.length) {
-    parts.push(<span key={`txt-${lastIndex}`}>{text.slice(lastIndex)}</span>)
-  }
-
-  return (
-    <>
-      <div className="dsh-atb-markdown-body">{parts}</div>
-      {lightboxUrl !== null && (
-        <div className="dsh-atb-lightbox-backdrop" onClick={() => setLightboxUrl(null)}>
-          <div className="dsh-atb-lightbox-content" onClick={e => e.stopPropagation()}>
-            <img src={lightboxUrl} alt={t('md.lightboxAlt')} className="dsh-atb-lightbox-img" />
-            <button
-              type="button"
-              className="dsh-atb-lightbox-close"
-              title={t('md.closePreview')}
-              onClick={() => setLightboxUrl(null)}
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
-    </>
-  )
-}
-
 /** The most recent execution carrying isolation facts, newest first. */
 function latestIsolated(task: TaskRecord): ExecutionRecord | undefined {
   return [...task.executions].reverse().find(e => e.isolation !== undefined || e.worktreePath !== undefined || e.isolationNote !== undefined)
@@ -115,6 +64,139 @@ function porcelainPath(line: string): string {
   if (arrow >= 0) p = p.slice(arrow + 4)
   if (p.startsWith('"') && p.endsWith('"') && p.length > 1) p = p.slice(1, -1)
   return p
+}
+
+/** Do not reinterpret URLs or prose labels in report.artifacts as files. */
+function isLocalFileCandidate(raw: string, assumePath: boolean): boolean {
+  const value = cleanReportedPath(raw)
+  if (value === '' || /^(?:[A-Za-z][A-Za-z0-9+.-]*:)?\/\//.test(value)) return false
+  if (/^(?:https?|mailto|data):/i.test(value)) return false
+  if (!assumePath && (/(?:https?|file):\/\//i.test(value) || /:\s/.test(value))) return false
+  if (!assumePath && /\s/.test(value) && !isAbsolutePath(value) && !value.startsWith('./') && !value.startsWith('../')) return false
+  return assumePath
+    || isAbsolutePath(value)
+    || value.includes('/')
+    || value.includes(String.fromCharCode(92))
+    || /^[^:]+\.[^:]+$/.test(value)
+}
+
+/** Resolve an inline Markdown code token to a safe file opener target. */
+function taskFileMentionResolver(
+  task: TaskRecord,
+  workspaces: readonly WorkspaceView[],
+  execution: ExecutionRecord | undefined,
+  scope: SessionScope | undefined,
+  onOpenFile: ((path: string) => void) | undefined,
+): ((value: string) => string | undefined) | undefined {
+  if (onOpenFile === undefined) return undefined
+  return value => {
+    if (!isLocalFileCandidate(value, false)) return undefined
+    const target = resolveTaskFilePath(value, task, workspaces, execution, scope)
+    return target?.available === true ? target.path : undefined
+  }
+}
+
+/** Render one report path as the shell's underlined open-file link. */
+function OpenFileLink({
+  raw,
+  target,
+  onOpenFile,
+}: {
+  raw: string
+  target: TaskFileTarget | undefined
+  onOpenFile?: (path: string) => void
+}): ReactNode {
+  if (onOpenFile === undefined) return <code className="dsh-atb-file-path">{raw}</code>
+  if (target === undefined || !target.available) {
+    const reason = target?.reason === 'outside-session-workspace'
+      ? '当前会话 workspace 外，暂不可打开'
+      : target?.reason === 'missing-session-cwd'
+        ? '当前会话路径尚未就绪'
+        : '无法解析文件路径'
+    return (
+      <span className="dsh-atb-file-unavailable-wrap">
+        <code className="dsh-atb-file-path" title={target?.path ?? reason}>{raw}</code>
+        <span className="dsh-atb-file-unavailable" title={target?.path ?? reason}>不可访问</span>
+      </span>
+    )
+  }
+  return (
+    <button
+      type="button"
+      className="dsh-atb-file-link"
+      title={target.path}
+      aria-label={`打开文件 ${raw}`}
+      onClick={event => {
+        event.stopPropagation()
+        onOpenFile(target.path)
+      }}
+      onKeyDown={event => {
+        if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
+      }}
+    >
+      {raw}
+    </button>
+  )
+}
+
+/** The compact open action retained beside rows that also expand a diff. */
+function FileOpenAction({
+  target,
+  onOpenFile,
+}: {
+  target: TaskFileTarget | undefined
+  onOpenFile?: (path: string) => void
+}): ReactNode {
+  if (onOpenFile === undefined) return null
+  if (target === undefined || !target.available) {
+    const reason = target?.reason === 'outside-session-workspace'
+      ? '当前会话 workspace 外，暂不可打开'
+      : target?.reason === 'missing-session-cwd'
+        ? '当前会话路径尚未就绪'
+        : '无法解析文件路径'
+    return <span className="dsh-atb-file-unavailable" title={target?.path ?? reason}>不可访问</span>
+  }
+  return (
+    <button
+      type="button"
+      className="dsh-atb-file-action"
+      title={`打开文件 ${target.path}`}
+      aria-label={`打开文件 ${target.path}`}
+      onClick={event => {
+        event.stopPropagation()
+        onOpenFile(target.path)
+      }}
+    >
+      打开
+    </button>
+  )
+}
+
+/** Render one local report path with controlled sidebar actions. */
+function ReportFileRow({
+  raw,
+  task,
+  execution,
+  workspaces,
+  scope,
+  assumePath,
+  onOpenFile,
+}: {
+  raw: string
+  task: TaskRecord
+  execution: ExecutionRecord
+  workspaces: readonly WorkspaceView[]
+  scope?: SessionScope
+  assumePath: boolean
+  onOpenFile?: (path: string) => void
+}): ReactNode {
+  if (!isLocalFileCandidate(raw, assumePath)) return raw
+  const target = resolveTaskFilePath(raw, task, workspaces, execution, scope)
+  return (
+    <span className="dsh-atb-file-row">
+      <OpenFileLink raw={raw} target={target} onOpenFile={onOpenFile} />
+    </span>
+  )
 }
 
 /**
@@ -203,33 +285,96 @@ function ChecklistBlock({ task, controller }: { task: TaskRecord; controller: Bo
 }
 
 /**
+ * Render one of the task's long-text fields either as Markdown or as the
+ * original source. Raw mode deliberately uses React text children, never the
+ * HTML sink, so reviewers can compare the stored Markdown safely.
+ */
+function PreviewText({
+  text,
+  className,
+  raw,
+  resolveFileMention,
+  onOpenFile,
+}: {
+  text: string
+  className: string
+  raw: boolean
+  resolveFileMention?: (value: string) => string | undefined
+  onOpenFile?: (path: string) => void
+}): ReactNode {
+  if (raw) return <div className={`${className} dsh-atb-raw`}>{text}</div>
+  return <Markdown className={className} text={text} resolveFileMention={resolveFileMention} onOpenFile={onOpenFile} />
+}
+
+/**
  * The structured execution report block (0.4.0): the newest execution that
  * carries one, rendered section by section for the reviewer.
  */
-function ReportBlock({ task }: { task: TaskRecord }) {
+function ReportBlock({
+  task,
+  raw,
+  workspaces,
+  scope,
+  onOpenFile,
+}: {
+  task: TaskRecord
+  raw: boolean
+  workspaces: readonly WorkspaceView[]
+  scope?: SessionScope
+  onOpenFile?: (path: string) => void
+}) {
   const t = useT()
   const execution = [...task.executions].reverse().find(e => e.report !== undefined)
   const report = execution?.report
   if (execution === undefined || report === undefined) return null
-  const section = (label: string, rows: string[] | undefined): ReactNode => rows !== undefined && rows.length > 0
+  const resolveFileMention = taskFileMentionResolver(task, workspaces, execution, scope, onOpenFile)
+  const section = (label: string, rows: string[] | undefined, fileKind?: 'changed' | 'artifact'): ReactNode => rows !== undefined && rows.length > 0
     ? (
         <div className="dsh-atb-rpt-sec">
           <div className="dsh-atb-rpt-label">{label}</div>
-          <ul className="dsh-atb-rpt-list">{rows.map((row, i) => <li key={i}>{row}</li>)}</ul>
+          <ul className="dsh-atb-rpt-list">
+            {rows.map((row, i) => (
+              <li key={i}>
+                {fileKind !== undefined
+                  ? <ReportFileRow
+                      raw={row}
+                      task={task}
+                      execution={execution}
+                      workspaces={workspaces}
+                      scope={scope}
+                      assumePath={fileKind === 'changed'}
+                      onOpenFile={onOpenFile}
+                    />
+                  : row}
+              </li>
+            ))}
+          </ul>
         </div>
       )
     : null
   return (
     <div className="dsh-atb-fieldcard" data-kind="report">
       <div className="dsh-atb-fieldcard-label">{t('report.title')}<span className="dsh-atb-cl-progress">{t('report.submitted', { time: fmtTime(execution.endedAt ?? execution.startedAt) })}</span></div>
-      <div className="dsh-atb-rpt-summary">{report.summary}</div>
-      {section(t('report.changedFiles'), report.changedFiles)}
+      <PreviewText
+        className="dsh-atb-rpt-summary"
+        text={report.summary}
+        raw={raw}
+        resolveFileMention={resolveFileMention}
+        onOpenFile={onOpenFile}
+      />
+      {section(t('report.changedFiles'), report.changedFiles, 'changed')}
       {section(t('report.checks'), report.checks)}
-      {section(t('report.artifacts'), report.artifacts)}
+      {section(t('report.artifacts'), report.artifacts, 'artifact')}
       {report.risk.length > 0 && (
         <div className="dsh-atb-rpt-sec">
           <div className="dsh-atb-rpt-label">{t('report.risk')}</div>
-          <div className="dsh-atb-rpt-risk">{report.risk}</div>
+          <PreviewText
+            className="dsh-atb-rpt-risk"
+            text={report.risk}
+            raw={raw}
+            resolveFileMention={resolveFileMention}
+            onOpenFile={onOpenFile}
+          />
         </div>
       )}
     </div>
@@ -241,7 +386,19 @@ function ReportBlock({ task }: { task: TaskRecord }) {
  * uncommitted-changes warning, plus the user-only git actions (merge /
  * remove worktree — plan §3.3).
  */
-function IsolationBlock({ task, controller }: { task: TaskRecord; controller: BoardController }) {
+function IsolationBlock({
+  task,
+  controller,
+  workspaces,
+  scope,
+  onOpenFile,
+}: {
+  task: TaskRecord
+  controller: BoardController
+  workspaces: readonly WorkspaceView[]
+  scope?: SessionScope
+  onOpenFile?: (path: string) => void
+}) {
   const t = useT()
   const { alert: showAlert, el: alertEl } = useAlert()
   const [confirmMerge, setConfirmMerge] = useState(false)
@@ -394,16 +551,19 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
             <div className="dsh-atb-iso-dirty-files">
               {view.dirty.slice(0, 30).map((line, index) => {
                 const filePath = porcelainPath(line)
+                const target = resolveTaskFilePath(filePath, task, workspaces, execution, scope)
                 return (
-                  <button
-                    key={`${line}-${index}`}
-                    type="button"
-                    className="dsh-atb-iso-dirty-file"
-                    title={t('iso.dirty.openTitle')}
-                    onClick={() => setOpenDiff(openDiff?.path === filePath && openDiff?.repo === view.repo ? null : { path: filePath, ...(view.repo !== undefined ? { repo: view.repo } : {}) })}
-                  >
-                    <code>{line.slice(0, 2)}</code> {filePath}
-                  </button>
+                  <div key={`${line}-${index}`} className="dsh-atb-iso-dirty-row">
+                    <button
+                      type="button"
+                      className="dsh-atb-iso-dirty-file"
+                      title={t('iso.dirty.openTitle')}
+                      onClick={() => setOpenDiff(openDiff?.path === filePath && openDiff?.repo === view.repo ? null : { path: filePath, ...(view.repo !== undefined ? { repo: view.repo } : {}) })}
+                    >
+                      <code>{line.slice(0, 2)}</code> {filePath}
+                    </button>
+                    <FileOpenAction target={target} onOpenFile={onOpenFile} />
+                  </div>
                 )
               })}
               {view.dirtyTotal > 30 && <div className="dsh-atb-iso-more">{t('iso.dirty.more', { n: view.dirtyTotal })}</div>}
@@ -491,9 +651,26 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
  * @param controller - the controller.
  * @param now - current epoch ms (stale-claim highlight).
  */
-export function TaskDetail({ task, controller, now }: { task: TaskRecord; controller: BoardController; now?: number }) {
+export function TaskDetail({
+  task,
+  controller,
+  now,
+  fullScreen = false,
+  onToggleFullScreen,
+  scope,
+  onOpenFile,
+}: {
+  task: TaskRecord
+  controller: BoardController
+  now?: number
+  fullScreen?: boolean
+  onToggleFullScreen?: () => void
+  scope?: SessionScope
+  onOpenFile?: (path: string) => void
+}) {
   const t = useT()
   const [comment, setComment] = useState('')
+  const [showRawMarkdown, setShowRawMarkdown] = useState(false)
   const [confirmDone, setConfirmDone] = useState(false)
   const [confirmPurge, setConfirmPurge] = useState(false)
   const [confirmCancel, setConfirmCancel] = useState(false)
@@ -502,7 +679,9 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
   // copies while the first round-trip was still pending (review P0).
   const [actionBusy, setActionBusy] = useState(false)
   const { alert: showAlert, el: alertEl } = useAlert()
-  const ws = controller.getSnapshot().workspaces.find(w => w.id === task.workspaceId)
+  const workspaces = controller.getSnapshot().workspaces
+  const ws = workspaces.find(w => w.id === task.workspaceId)
+  const resolveFileMention = taskFileMentionResolver(task, workspaces, latestIsolated(task), scope, onOpenFile)
   const canRun = task.status !== 'in_progress' && task.status !== 'done' && task.status !== 'archived'
   const runningExecution = task.executions.find(e => e.outcome === 'running')
   const holder = task.status === 'in_progress' ? task.claimedBy : undefined
@@ -530,57 +709,61 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
   return (
     <div className="dsh-atb-detail" data-urgency={task.urgency}>
       <div className="dsh-atb-detail-head">
-        <div className="dsh-atb-detail-titlewrap">
+        <div className="dsh-atb-detail-topbar">
           <div className="dsh-atb-detail-titlebar">
             <h3>{task.title}</h3>
             <span className="dsh-atb-statuspill" data-status={task.status}>{t(STATUS_KEYS[task.status] ?? task.status)}</span>
           </div>
-          <div className="dsh-atb-detail-chips">
-            <Chip tone={task.urgency}>● {t(URGENCY_KEYS[task.urgency] ?? task.urgency)}</Chip>
-            <Chip icon="📁">{ws?.title ?? shortId(task.workspaceId)}</Chip>
-            {task.model !== undefined && (
-              <Chip
-                icon="✦"
-                title={t('card.badge.modelTitle', { model: task.model.provider + '/' + task.model.model }) + (task.model.reasoningEffort !== undefined ? t('card.badge.modelEffort', { effort: task.model.reasoningEffort }) : '')}
-              >
-                {task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}
-              </Chip>
-            )}
-            {task.presetId !== undefined && <Chip icon="🎛" >{task.presetId}</Chip>}
-            {task.execution.mode === 'scheduled' && (
-              <Chip icon="⏰">{t('detail.chip.nextRun', { cron: task.execution.cron ?? '', time: fmtTime(task.execution.nextRunAt) })}</Chip>
-            )}
-            {task.blocked && <Chip icon="⛔" tone="urgent">{t('shared.blocked')}</Chip>}
-            {task.checklist !== undefined && task.checklist.length > 0 && (
-              <Chip icon="☑" tone={task.status === 'in_review' && task.checklist.some(i => !i.checked) ? 'urgent' : undefined}>
-                {t('detail.chip.checklist', { done: checklistProgress(task).done, total: task.checklist.length })}
-              </Chip>
-            )}
-            {task.branch !== undefined && (
-              <Chip icon="🌿" tone={undefined}>Worktree · {task.branch.length > 28 ? `${task.branch.slice(0, 28)}…` : task.branch}</Chip>
-            )}
-            {(task.isolation === undefined || task.isolation === 'worktree') && task.branch === undefined && <Chip icon="🌿">{t('detail.chip.isolated')}</Chip>}
-            {task.permission === 'read-only' && <Chip icon="🔒" tone="urgent">{t('detail.chip.permReadOnly')}</Chip>}
-            {task.permission === 'danger-full-access' && <Chip icon="⚡" tone="urgent">{t('detail.chip.permFull')}</Chip>}
-            {(task.permission === 'workspace-write' || task.permission === undefined) && <Chip icon="📁">{t('detail.chip.permWrite')}</Chip>}
-            {holder !== undefined && (
-              <button
-                type="button"
-                className="dsh-atb-chip2 dsh-atb-chip-btn"
-                data-tone={stale ? 'urgent' : undefined}
-                title={t('detail.chip.holderTitle', { id: holder })}
-                onClick={() => jumpToSession(holder)}
-              >
-                <span className="dsh-atb-chip2-icon">{stale ? '⏱' : '🤖'}</span>
-                {stale ? t('detail.chip.holderStale') : t('detail.chip.holderBy')}{shortId(holder)}{t('detail.chip.holderSuffix')}
-              </button>
-            )}
-            {task.trashedAt !== undefined && <Chip icon="🗑" tone="urgent">{t('detail.chip.trashed')}</Chip>}
-            <Chip>v{task.version}</Chip>
-          </div>
-          <div className="dsh-atb-detail-sub">
-            {t('detail.sub.line', { time: fmtTime(task.updatedAt), who: task.updatedBy.kind === 'agent' ? `🤖 ${shortId(task.updatedBy.sessionId)}` : task.updatedBy.kind === 'system' ? t('detail.updatedBy.system') : t('detail.updatedBy.user') })}
-          </div>
+          <button type="button" className="dsh-atb-detail-close" aria-label={t('shared.close')} onClick={() => controller.select(undefined)}>✕</button>
+        </div>
+        <div className="dsh-atb-detail-chips">
+          <Chip tone={task.urgency}>● {t(URGENCY_KEYS[task.urgency] ?? task.urgency)}</Chip>
+          <Chip icon="📁">{ws?.title ?? shortId(task.workspaceId)}</Chip>
+          {task.model !== undefined && (
+            <Chip
+              icon="✦"
+              title={t('card.badge.modelTitle', { model: task.model.provider + '/' + task.model.model }) + (task.model.reasoningEffort !== undefined ? t('card.badge.modelEffort', { effort: task.model.reasoningEffort }) : '')}
+            >
+              {task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}
+            </Chip>
+          )}
+          {task.speed === 'fast' && <Chip icon="⚡">{t('detail.chip.speedFast')}</Chip>}
+          {task.permission === 'read-only' && <Chip icon="🔒" tone="urgent">{t('detail.chip.permReadOnly')}</Chip>}
+          {task.permission === 'danger-full-access' && <Chip icon="⚡" tone="urgent">{t('detail.chip.permFull')}</Chip>}
+          {task.presetId !== undefined && <Chip icon="🎛">{task.presetId}</Chip>}
+          {task.requiredCapabilities !== undefined && task.requiredCapabilities.length > 0 && (
+            <Chip icon="🔐">{t('detail.chip.capabilities', { names: task.requiredCapabilities.join(', ') })}</Chip>
+          )}
+          {task.execution.mode === 'scheduled' && (
+            <Chip icon="⏰">{t('detail.chip.nextRun', { cron: task.execution.cron ?? '', time: fmtTime(task.execution.nextRunAt) })}</Chip>
+          )}
+          {task.blocked && <Chip icon="⛔" tone="urgent">{t('shared.blocked')}</Chip>}
+          {task.checklist !== undefined && task.checklist.length > 0 && (
+            <Chip icon="☑" tone={task.status === 'in_review' && task.checklist.some(i => !i.checked) ? 'urgent' : undefined}>
+              {t('detail.chip.checklist', { done: checklistProgress(task).done, total: task.checklist.length })}
+            </Chip>
+          )}
+          {task.branch !== undefined && (
+            <Chip icon="🌿" tone={undefined}>Worktree · {task.branch.length > 28 ? `${task.branch.slice(0, 28)}…` : task.branch}</Chip>
+          )}
+          {(task.isolation === undefined || task.isolation === 'worktree') && task.branch === undefined && <Chip icon="🌿">{t('detail.chip.isolated')}</Chip>}
+          {holder !== undefined && (
+            <button
+              type="button"
+              className="dsh-atb-chip2 dsh-atb-chip-btn"
+              data-tone={stale ? 'urgent' : undefined}
+              title={t('detail.chip.holderTitle', { id: holder })}
+              onClick={() => jumpToSession(holder)}
+            >
+              <span className="dsh-atb-chip2-icon">{stale ? '⏱' : '🤖'}</span>
+              {stale ? t('detail.chip.holderStale') : t('detail.chip.holderBy')}{shortId(holder)}{t('detail.chip.holderSuffix')}
+            </button>
+          )}
+          {task.trashedAt !== undefined && <Chip icon="🗑" tone="urgent">{t('detail.chip.trashed')}</Chip>}
+          <Chip>v{task.version}</Chip>
+        </div>
+        <div className="dsh-atb-detail-sub">
+          {t('detail.sub.line', { time: fmtTime(task.updatedAt), who: task.updatedBy.kind === 'agent' ? `🤖 ${shortId(task.updatedBy.sessionId)}` : task.updatedBy.kind === 'system' ? t('detail.updatedBy.system') : t('detail.updatedBy.user') })}
         </div>
         <div className="dsh-atb-detail-topbtns">
           {targetSessionId !== undefined && (
@@ -593,6 +776,17 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
               {t('detail.session.jump')}
             </button>
           )}
+          <button
+            type="button"
+            className="dsh-atb-detail-edit"
+            data-active={showRawMarkdown ? 'true' : undefined}
+            aria-pressed={showRawMarkdown}
+            aria-label={t('detail.action.sourceToggle')}
+            title={showRawMarkdown ? t('detail.action.renderTitle') : t('detail.action.rawTitle')}
+            onClick={() => setShowRawMarkdown(value => !value)}
+          >
+            {showRawMarkdown ? t('detail.action.render') : t('detail.action.raw')}
+          </button>
           <button type="button" className="dsh-atb-detail-edit" onClick={() => controller.openEditor(task.id)}>{t('detail.action.edit')}</button>
           <button
             type="button"
@@ -615,6 +809,17 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
           >
             {t('detail.action.saveTpl')}
           </button>
+          {onToggleFullScreen !== undefined && (
+            <button
+              type="button"
+              className="dsh-atb-detail-edit"
+              aria-pressed={fullScreen}
+              title={fullScreen ? '退出详情全屏（Esc）' : '让详情占满当前看板区域'}
+              onClick={onToggleFullScreen}
+            >
+              {fullScreen ? '⛶ 退出全屏' : '⛶ 全屏'}
+            </button>
+          )}
           {canRun && task.branch !== undefined && (
             <button
               type="button"
@@ -656,27 +861,50 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
                 {t('detail.action.stopExec')}
               </button>
             ))}
-          <button type="button" className="dsh-atb-detail-close" aria-label={t('shared.close')} onClick={() => controller.select(undefined)}>✕</button>
         </div>
       </div>
 
       {task.description.length > 0 && (
         <div className="dsh-atb-fieldcard">
           <div className="dsh-atb-fieldcard-label">{t('detail.field.description')}</div>
-          <div className="dsh-atb-desc"><MarkdownContent text={task.description} /></div>
+          <PreviewText
+            className="dsh-atb-desc"
+            text={task.description}
+            raw={showRawMarkdown}
+            resolveFileMention={resolveFileMention}
+            onOpenFile={onOpenFile}
+          />
         </div>
       )}
 
       {task.prompt.length > 0 && (
         <div className="dsh-atb-fieldcard" data-kind="prompt">
           <div className="dsh-atb-fieldcard-label">{t('detail.field.prompt')}</div>
-          <div className="dsh-atb-promptbox"><MarkdownContent text={task.prompt} /></div>
+          <PreviewText
+            className="dsh-atb-promptbox"
+            text={task.prompt}
+            raw={showRawMarkdown}
+            resolveFileMention={resolveFileMention}
+            onOpenFile={onOpenFile}
+          />
         </div>
       )}
 
-      <IsolationBlock task={task} controller={controller} />
+      <IsolationBlock
+        task={task}
+        controller={controller}
+        workspaces={workspaces}
+        scope={scope}
+        onOpenFile={onOpenFile}
+      />
 
-      <ReportBlock task={task} />
+      <ReportBlock
+        task={task}
+        raw={showRawMarkdown}
+        workspaces={workspaces}
+        scope={scope}
+        onOpenFile={onOpenFile}
+      />
 
       <ChecklistBlock task={task} controller={controller} />
 
@@ -722,18 +950,30 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
           ? <div className="dsh-atb-empty2">{t('detail.comments.empty')}</div>
           : (
               <div className="dsh-atb-commentlist">
-                {task.comments.map(c => (
-                  <div key={c.id} className="dsh-atb-bubble" data-from={c.threadId !== undefined ? 'agent' : 'user'}>
-                    <div className="dsh-atb-bubble-avatar">{c.threadId !== undefined ? '🤖' : '👤'}</div>
-                    <div className="dsh-atb-bubble-main">
-                      <div className="dsh-atb-bubble-meta">
-                        <b>{c.threadId !== undefined ? `agent ${shortId(c.threadId)}` : t('detail.comments.user')}</b>
-                        <span>{fmtTime(c.createdAt)}</span>
+                {task.comments.map(c => {
+                  const isAgent = c.threadId !== undefined
+                  const modelName = isAgent ? task.model?.model : undefined
+                  return (
+                    <div key={c.id} className="dsh-atb-bubble" data-from={isAgent ? 'agent' : 'user'}>
+                      <div className="dsh-atb-bubble-avatar">
+                        <InitialAvatar name={modelName} isUser={!isAgent} size={26} />
                       </div>
-                      <div className="dsh-atb-bubble-body">{c.body}</div>
+                      <div className="dsh-atb-bubble-main">
+                        <div className="dsh-atb-bubble-meta">
+                          <b>{isAgent ? `agent ${shortId(c.threadId)}` : t('detail.comments.user')}</b>
+                          <span>{fmtTime(c.createdAt)}</span>
+                        </div>
+                        <PreviewText
+                          className="dsh-atb-bubble-body"
+                          text={c.body}
+                          raw={showRawMarkdown}
+                          resolveFileMention={resolveFileMention}
+                          onOpenFile={onOpenFile}
+                        />
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
         <div className="dsh-atb-composer">

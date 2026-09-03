@@ -1,9 +1,10 @@
 /**
  * Host loader entry for dsh-taskboard.
  *
- * Wiring: the ledger store (one JSON file under the DSH home), the ten
- * `taskboard_*` agent tools, the agent workflow-protocol system-prompt
- * section, the /taskboard JSON+SSE routes (when a webServer is served),
+ * Wiring: the ledger store (one JSON file under the DSH home), the user-only
+ * `/taskboard` authorization Skill, the ten `taskboard_*` agent tools, the agent
+ * workflow-protocol system-prompt section, the /taskboard JSON+SSE routes (when a
+ * webServer is served),
  * the host execution service (fresh in-project sessions, pinned models), and
  * the host-side cron scheduler for scheduled tasks.
  *
@@ -13,13 +14,14 @@
  * @module dsh-taskboard
  */
 import type { Context } from '@deepseek-ai/cordis'
-// Type-only module imports: they load the cordis Context augmentations
-// (ctx.tools / ctx.systemPrompt / ctx.agents) and vanish at compile time —
-// the built host half keeps ZERO runtime @deepseek-ai imports.
+// Type-only module imports load the cordis Context augmentations. The one
+// runtime helper below is the DSH-owned model-selection waterfall; it keeps
+// task execution aligned with the built-in session selector.
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
-import type {} from '@deepseek-ai/dsh-agent'
+import { installModelSelection, type ModelSelection } from '@deepseek-ai/dsh-agent'
 import { PROTOCOL_SECTION_NAME, PROTOCOL_SECTION_ORDER, TASKBOARD_PROTOCOL } from './host/protocol-text.ts'
+import { TASKBOARD_SKILL, type SkillsSurface } from './host/skill.ts'
 import { DEFAULT_MAX_CONCURRENT, ExecutionService, type EventsFace } from './host/execution.ts'
 import { createGitFace } from './host/git.ts'
 import { createRepoScanner } from './host/repos.ts'
@@ -30,6 +32,9 @@ import { TaskStore } from './host/store.ts'
 import { TemplateStore } from './host/templates.ts'
 import { ExternalSessionSyncService } from './host/session-sync.ts'
 import { registerTaskboardTools, workspaceFace } from './host/tools.ts'
+import type { PermissionMode, TaskModel, TaskSpeed } from './shared/protocol.ts'
+import { MODEL_CAPABILITY_SERVICE, PRIORITY_SERVICE_TIER, type ModelCapabilityProvider } from './shared/model-capabilities.ts'
+import { MODEL_EXECUTION_SERVICE, type ModelExecutionProvider } from './shared/model-execution.ts'
 
 /** Ledger file name under the DSH home. */
 export const LEDGER_FILE = 'dsh-taskboard.json'
@@ -42,6 +47,36 @@ export const name = 'dsh-taskboard'
 
 /** Required host services (tool registry + prompt assembly). */
 export const inject = ['tools', 'systemPrompt']
+
+/** Service name is intentionally structural so taskboard does not depend on the optional gate package. */
+const TOOL_LAZY_GATE_SERVICE = 'toolLazyGate'
+interface ToolLazyGateService {
+  grant(agent: unknown, skillNames: readonly string[], provenance: 'execution' | 'claim'): void | Promise<void>
+}
+
+function lazyGateService(ctx: { get(name: string): unknown }): ToolLazyGateService | undefined {
+  return ctx.get(TOOL_LAZY_GATE_SERVICE) as ToolLazyGateService | undefined
+}
+
+/** Install the DSH model selector plus the provider-neutral service-tier hint. */
+function installTaskModelOptions(agentCtx: unknown, selection: TaskModel | undefined, speed?: TaskSpeed, serviceTier?: string): void {
+  if (selection !== undefined) {
+    installModelSelection(agentCtx as Context, { current: selection as ModelSelection, assembled: undefined })
+  }
+  if (speed !== 'fast' || serviceTier !== PRIORITY_SERVICE_TIER) return
+  const scoped = agentCtx as Context
+  const llm = scoped.get('llm') as { supportsServiceTier?: boolean } | undefined
+  // Older DSH releases preserve unknown enumerable fields at runtime but do
+  // not include serviceTier in request/header equality or replay. The optional
+  // execution bridge handles those releases; only the first-class contract
+  // marker may opt into request-field injection.
+  if (llm?.supportsServiceTier !== true) return
+  scoped.on('agent/request' as never, (async (_payload: unknown, next: () => Promise<Record<string, unknown>>) => ({
+    ...(await next()),
+    // `serviceTier` is the provider-neutral adapter-facing request field.
+    serviceTier: PRIORITY_SERVICE_TIER,
+  })) as never)
+}
 
 /**
  * Mount the host half.
@@ -68,6 +103,14 @@ export function apply(ctx: Context): void {
   })
   ctx.effect(() => disposeSection, 'dsh-taskboard: protocol section')
 
+  // Register a user-only authorization Skill when the optional skill registry
+  // is mounted. The dsh:gate metadata is the single source of truth for the
+  // taskboard_* tools and this plugin's protocol prompt section.
+  const skills = ctx.get('skills') as SkillsSurface | undefined
+  if (skills?.register !== undefined) {
+    ctx.effect(() => skills.register(TASKBOARD_SKILL), 'dsh-taskboard: taskboard skill')
+  }
+
   // Tools, routes, execution, and the scheduler all come up with the
   // workspace registry (claim boundary + project execution need it).
   ctx.inject(['workspaceRegistry'], (wsCtx: Context) => {
@@ -90,6 +133,9 @@ export function apply(ctx: Context): void {
       workspaces: workspaceFace(wsCtx.workspaceRegistry),
       now,
       modelProviders,
+      authorizeSession: (agent, skillNames, provenance) => {
+        return lazyGateService(wsCtx)?.grant(agent, skillNames, provenance)
+      },
     }))
 
     // Settlement listener over the session event bus.
@@ -131,6 +177,15 @@ export function apply(ctx: Context): void {
     const scanner = createRepoScanner()
 
     wsCtx.inject(['agents'], (agentCtx: Context) => {
+      const modelCapabilities = (): Promise<readonly import('./shared/model-capabilities.ts').ModelCapability[]> => {
+        const provider = agentCtx.get(MODEL_CAPABILITY_SERVICE) as ModelCapabilityProvider | undefined
+        return provider?.listModelCapabilities() ?? Promise.resolve([])
+      }
+      const modelExecution = (sessionId: string, model: TaskModel | undefined, speed: TaskSpeed): void | Promise<void> => {
+        if (model === undefined) return
+        const provider = agentCtx.get(MODEL_EXECUTION_SERVICE) as ModelExecutionProvider | undefined
+        return provider?.setSessionSpeed(sessionId, model.provider, model.model, speed)
+      }
       agentSessions = agentCtx.get('sessions') as { get?: (id: string) => unknown; list?: () => unknown[] } | undefined
       const execution = new ExecutionService({
         store,
@@ -145,6 +200,26 @@ export function apply(ctx: Context): void {
           },
         },
         events,
+        installModelSelection: installTaskModelOptions,
+        modelCapabilities,
+        modelExecution,
+        applyPermissionMode: (session: unknown, mode: PermissionMode): void => {
+          const presets = agentCtx.get('permissionPresets') as {
+            names?: readonly string[]
+            set?: (session: unknown, name: string) => void
+          } | undefined
+          if (presets?.set !== undefined && presets.names?.includes(mode) === true) {
+            presets.set(session, mode)
+            return
+          }
+          const target = session as { append?: (type: string, data: unknown) => unknown }
+          if (typeof target.append !== 'function') throw new Error('permission mode unavailable: no session append face')
+          target.append('sandbox/mode', { mode })
+          target.append('approval/policy', { policy: mode === 'danger-full-access' ? 'never' : 'ask' })
+        },
+        authorizeSession: (agent, skillNames, provenance) => {
+          return lazyGateService(agentCtx)?.grant(agent, skillNames, provenance)
+        },
         now,
         git,
         scanner,
@@ -176,7 +251,7 @@ export function apply(ctx: Context): void {
         },
         defaultModel: () => {
           try {
-            const selection = agentCtx.get('agentDefaultModel') as { currentSelection?: () => { provider: string; model: string } | undefined } | undefined
+            const selection = agentCtx.get('agentDefaultModel') as { currentSelection?: () => TaskModel | undefined } | undefined
             const read = selection?.currentSelection
             return read === undefined ? undefined : read.call(selection)
           } catch { return undefined }

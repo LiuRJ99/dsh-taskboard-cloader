@@ -11,23 +11,29 @@
  * @module dsh-taskboard/host/execution
  */
 import {
+  approvalPolicyForPermissionMode,
   DEFAULT_PERMISSION,
   effectiveIsolation,
   effectivePrompt,
+  effectiveTaskSpeed,
   newCommentId,
   newExecutionId,
   normalizeBody,
+  requiredCapabilitiesOf,
   type ExecutionRecord,
   type ExecutionRepoEvidence,
   type IsolationMode,
   type PermissionMode,
   type TaskModel,
   type TaskRecord,
+  type TaskSpeed,
 } from '../shared/protocol.ts'
 import { sanitizeBranchName, type GitFace, type SettlementFacts } from './git.ts'
 import { isLegacySingle, prepareMirror, type PreparedMirror, type PreparedMirrorRepo } from './isolation.ts'
 import { createRepoScanner, type RepoScanner } from './repos.ts'
 import { MessageId } from './sdk.ts'
+import { PRIORITY_SERVICE_TIER, serviceTierForTaskSpeed, type ModelCapability } from '../shared/model-capabilities.ts'
+import type { ModelExecutionSpeed } from '../shared/model-execution.ts'
 import type { TaskStore } from './store.ts'
 
 /** Default cap on concurrently running executions (env-overridable). */
@@ -43,6 +49,7 @@ export interface AgentsFace {
     setup?: (agentCtx: unknown) => Promise<void> | void
   }): Promise<{
     agent: {
+      session: unknown
       id: string
       followup(message: unknown): void
       inject(message: unknown): void
@@ -72,7 +79,7 @@ export interface ExecutionWorkspaceFace {
 
 /** Narrow event-bus face for settlement listening. */
 export interface EventsFace {
-  onSessionEvent(listener: (sessionId: string, event: { type: string; data?: unknown }, sessionMeta?: { header?: { cwd?: string } }) => void): () => void
+  onSessionEvent(listener: (sessionId: string, event: { type: string; data?: unknown }, sessionMeta?: { header?: { cwd?: string } }) => void | Promise<void>): () => void
 }
 
 /** Everything the execution service needs. */
@@ -84,6 +91,16 @@ export interface ExecutionDeps {
   now: () => number
   /** The deployment default model (fills sessions of unpinned tasks). */
   defaultModel?: () => TaskModel | undefined
+  /** Install the DSH model-selection waterfall for the fresh task agent. */
+  installModelSelection?: (agentCtx: unknown, selection: TaskModel | undefined, speed?: TaskSpeed, serviceTier?: string) => void
+  /** Lazily read provider-advertised model capabilities; absence is safe. */
+  modelCapabilities?: () => Promise<readonly ModelCapability[]>
+  /** Mirror effective session speed through an optional provider bridge. */
+  modelExecution?: (sessionId: string, model: TaskModel | undefined, speed: ModelExecutionSpeed) => void | Promise<void>
+  /** Apply one of the three file-permission modes before the first prompt. */
+  applyPermissionMode?: (session: unknown, mode: PermissionMode) => void | Promise<void>
+  /** Grant the task's selected lazy-gate Skills before the first model request. */
+  authorizeSession?: (agent: unknown, skillNames: readonly string[], provenance: 'execution') => void | Promise<void>
   /** Mint session ids (injectable for tests). */
   mintSessionId?: () => string
   /** Mint message ids (injectable for tests). */
@@ -137,6 +154,16 @@ function isErrorTurnEnd(data: unknown): { message: string } | undefined {
   const message = typeof error?.message === 'string' ? error.message : 'turn failed'
   console.error('[dsh-taskboard] turn error detail:', JSON.stringify(error)?.slice(0, 2000) ?? '')
   return { message }
+}
+
+/** Append the canonical permission events when no optional runtime face was supplied. */
+function appendPermissionMode(session: unknown, mode: PermissionMode): void {
+  if (typeof session !== 'object' || session === null || typeof (session as { append?: unknown }).append !== 'function') {
+    throw new Error('permission mode unavailable: execution session has no append face')
+  }
+  const append = (session as { append: (type: string, data: unknown) => unknown }).append.bind(session)
+  append('sandbox/mode', { mode })
+  append('approval/policy', { policy: approvalPolicyForPermissionMode(mode) })
 }
 
 /** Per-run options. */
@@ -259,6 +286,18 @@ export class ExecutionService {
         baseCommit: repo.baseCommit,
         ...this.factsFields(facts),
       }))
+    }
+  }
+
+  /** Resolve the adapter-facing tier from provider metadata, fail-soft. */
+  private async resolveServiceTier(model: TaskModel | undefined, speed: TaskSpeed): Promise<string | undefined> {
+    if (model === undefined || speed !== 'fast' || this.deps.modelCapabilities === undefined) return undefined
+    try {
+      const capabilities = await this.deps.modelCapabilities()
+      return serviceTierForTaskSpeed(speed, model.provider, model.model, capabilities)
+    } catch {
+      // Unknown capability must never turn a task execution into a hard failure.
+      return undefined
     }
   }
 
@@ -449,6 +488,10 @@ export class ExecutionService {
     //    snapshots `agentPreset` and the setup callback mounts the preset's
     //    tools/persona into the agent's scope. undefined composeAgent (or an
     //    absent preset roster) keeps the bare host composition.
+    const model = task.model ?? this.deps.defaultModel?.()
+    const requestedSpeed = effectiveTaskSpeed(task)
+    const serviceTier = await this.resolveServiceTier(model, requestedSpeed)
+    const speed: TaskSpeed = serviceTier === PRIORITY_SERVICE_TIER ? 'fast' : 'standard'
     let composition: AgentComposition | undefined
     try {
       composition = this.deps.composeAgent === undefined ? undefined : await this.deps.composeAgent(task.presetId)
@@ -462,7 +505,13 @@ export class ExecutionService {
     }
     let handle: Awaited<ReturnType<AgentsFace['create']>>
     try {
-      const model = task.model ?? this.deps.defaultModel?.()
+      const needsModelOptions = model !== undefined || serviceTier !== undefined
+      const setup = !needsModelOptions && composition === undefined
+        ? undefined
+        : async (agentCtx: unknown): Promise<void> => {
+            if (needsModelOptions) this.deps.installModelSelection?.(agentCtx, model, speed, serviceTier)
+            await composition?.setup(agentCtx)
+          }
       handle = await this.deps.agents.create({
         sessionId,
         meta: {
@@ -476,7 +525,7 @@ export class ExecutionService {
             ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}),
           },
         } : {}),
-        ...(composition !== undefined ? { setup: composition.setup } : {}),
+        ...(setup !== undefined ? { setup } : {}),
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -484,6 +533,31 @@ export class ExecutionService {
       await this.revertProgress(taskId)
       // S1: a run that never started must not leave its worktree behind.
       await this.cleanupMirror(prepared, workspace.path)
+      return { ok: false, error: message }
+    }
+
+    // 2b. Mirror the effective speed before the first request. This optional
+    //     bridge keeps older DSH runtimes (which do not persist serviceTier in
+    //     request headers) compatible without making taskboard depend on CPA.
+    try {
+      if (model !== undefined) await this.deps.modelExecution?.(sessionId, model, speed)
+    } catch {
+      // A provider-side state mirror is advisory; request execution remains
+      // governed by the first-class serviceTier when the runtime supports it.
+    }
+
+    // 2c. Apply task-owned execution options while the fresh session is still idle.
+    //     They must land before the opening followup so the first request sees them.
+    try {
+      if (task.permission !== undefined) {
+        const apply = this.deps.applyPermissionMode ?? appendPermissionMode
+        await apply(handle.agent.session, task.permission)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      try { await handle.dispose() } catch { /* best effort */ }
+      await this.patchExecution(executionId, { outcome: 'failed', error: message.slice(0, 500), endedAt: this.deps.now() })
+      await this.revertProgress(taskId)
       return { ok: false, error: message }
     }
 
@@ -501,6 +575,21 @@ export class ExecutionService {
       // S1: do not leave the startup artifacts behind a cancelled run either.
       await this.cleanupMirror(prepared, workspace.path)
       return { ok: false, error: 'cancelled during startup' }
+    }
+
+    // 2d. Authorize the task's requested Skills on THIS fresh agent before
+    // the first prompt assembles tools. The callback is host-only; task data
+    // contains names, never tool prefixes or prompt sections.
+    try {
+      await this.deps.authorizeSession?.(handle.agent, requiredCapabilitiesOf(task), 'execution')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      try { await handle.dispose() } catch { /* best effort */ }
+      await this.patchExecution(executionId, { outcome: 'failed', error: `能力授权失败：${message.slice(0, 400)}`, endedAt: this.deps.now() })
+      await this.revertProgress(taskId)
+      // S1: a run that never started must not leave its mirror behind.
+      await this.cleanupMirror(prepared, workspace.path)
+      return { ok: false, error: `capability authorization failed: ${message}` }
     }
 
     // 3. Attach the session to the workspace (GUI project session list).
@@ -534,7 +623,7 @@ export class ExecutionService {
     handle.agent.inject({
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
       role: 'user' as const,
-      content: [{ type: 'text' as const, text: this.pluginFraming(task, prepared, isolationNote) }],
+      content: [{ type: 'text' as const, text: this.pluginFraming(task, prepared, isolationNote, speed) }],
       source: { kind: 'plugin' as const, plugin: 'dsh-taskboard' },
     })
     handle.agent.followup({
@@ -768,9 +857,13 @@ export class ExecutionService {
    * @param prepared - the task mirror when this run is isolated.
    * @param degradeNote - why a worktree task degraded to the main directory.
    */
-  private pluginFraming(task: TaskRecord, prepared?: PreparedMirror, degradeNote?: string): string {
+  private pluginFraming(task: TaskRecord, prepared?: PreparedMirror, degradeNote?: string, effectiveSpeed?: TaskSpeed): string {
+    const displaySpeed = effectiveSpeed ?? effectiveTaskSpeed(task)
     let text = `【任务看板】${task.title}（ID: ${task.id}）\n`
       + `本会话由任务看板执行服务启动，任务已置为进行中——无需认领；「已完成」仅限用户在界面操作（代码已限制，移了会被拒）。\n`
+      + (task.model !== undefined ? `执行模型：${task.model.provider}/${task.model.model}${task.model.reasoningEffort !== undefined ? ` · 推理等级 ${task.model.reasoningEffort}` : ''}\n` : '')
+      + (task.speed !== undefined ? `速度模式：${displaySpeed === 'fast' ? '快速' : '标准'}\n` : '')
+      + (task.permission !== undefined ? `权限模式：${task.permission}\n` : '')
       + `完成后按序交接：\n`
       + `1. taskboard_get 读取本任务，取得最新 version\n`
       + `2. taskboard_execution_report 提交结构化执行报告（做了什么/改了哪些文件/如何验证/剩余风险；提交与评论不冲突，都会展示给验收人）\n`

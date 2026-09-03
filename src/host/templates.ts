@@ -10,9 +10,10 @@
  */
 import { readFile } from 'node:fs/promises'
 import type { TaskTemplate } from '../shared/api.ts'
+import { normalizeTemplateCategory } from '../shared/protocol.ts'
 
 /** The built-in templates seeded when the side file does not exist yet. */
-export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: TaskTemplate['task'] }> = [
+export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; category?: string; task: TaskTemplate['task'] }> = [
   {
     id: 'tpl-feature',
     name: '新增功能',
@@ -32,6 +33,7 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: 
   {
     id: 'tpl-bugfix',
     name: 'Bug 修复',
+    category: '开发',
     task: {
       title: '修复：',
       prompt: [
@@ -42,22 +44,28 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: 
         '4. 运行相关测试套件确认无回归',
       ].join('\n'),
       urgency: 'urgent',
+      speed: 'standard',
+      permission: 'workspace-write',
       checklist: ['已复现并定位根因', '修复已提交到任务分支', '回归测试通过'],
     },
   },
   {
     id: 'tpl-release',
     name: '发布检查',
+    category: '开发',
     task: {
       title: '发布：',
       prompt: '执行发布流程：版本号更新、构建、测试、变更记录，完成后按序交接（不要实际推送/发布，等用户确认）。',
       urgency: 'normal',
+      speed: 'standard',
+      permission: 'workspace-write',
       checklist: ['版本号已更新（package.json 与版本常量同步）', '构建通过', '全部测试通过', '变更记录已写'],
     },
   },
   {
     id: 'tpl-patrol',
     name: '例行巡检',
+    category: '运营',
     task: {
       title: '巡检：',
       prompt: [
@@ -66,6 +74,8 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: 
         '输出巡检摘要（用 {{lastComments}} 可回看上次巡检结论）。',
       ].join('\n'),
       urgency: 'relaxed',
+      speed: 'standard',
+      permission: 'read-only',
       execution: { mode: 'scheduled', cron: '0 9 * * 1' },
     },
   },
@@ -74,6 +84,17 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; task: 
 /** Mint a template id. */
 function newTemplateId(): string {
   return `tpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** Sanitize a template loaded from disk without rejecting the whole side file. */
+function sanitizeLoadedTemplate(template: TaskTemplate): TaskTemplate {
+  let category: string | undefined
+  try {
+    category = normalizeTemplateCategory(template.category)
+  } catch {
+    category = undefined
+  }
+  return { ...template, category }
 }
 
 /**
@@ -98,12 +119,48 @@ export class TemplateStore {
         parsed = value.templates.filter((t): t is TaskTemplate =>
           typeof t === 'object' && t !== null && typeof (t as TaskTemplate).id === 'string'
           && typeof (t as TaskTemplate).name === 'string' && typeof (t as TaskTemplate).task === 'object')
+          .map(sanitizeLoadedTemplate)
       }
     } catch { /* missing or corrupt → seed */ }
     if (parsed === undefined) {
       const now = Date.now()
       parsed = BUILTIN_TEMPLATES.map((t, i) => ({ ...t, task: { ...t.task }, builtin: true, createdAt: now, updatedAt: now + i }))
       try { await this.persist(parsed) } catch { /* best effort — the seed returns in-memory */ }
+    } else {
+      // Existing installations may have the pre-option built-ins. Add only
+      // newly introduced defaults while preserving any user-edited fields.
+      const seeds = new Map(BUILTIN_TEMPLATES.map(template => [template.id, template]))
+      let changed = false
+      parsed = parsed.map(template => {
+        const seed = template.builtin === true ? seeds.get(template.id) : undefined
+        if (seed === undefined) return template
+        // Legacy fork stored permission under `permissionMode`; a template
+        // carrying it counts as having the field (no default re-seed needed).
+        const legacyPermission = (template.task as unknown as { permissionMode?: unknown }).permissionMode
+        const missingCategory = template.category === undefined && seed.category !== undefined
+        const missingSpeed = template.task.speed === undefined && seed.task.speed !== undefined
+        const missingPermission = template.task.permission === undefined
+          && seed.task.permission !== undefined && legacyPermission === undefined
+        if (!missingCategory && !missingSpeed && !missingPermission) return template
+        changed = true
+        return {
+          ...template,
+          ...(missingCategory ? { category: seed.category } : {}),
+          task: { ...seed.task, ...template.task },
+          updatedAt: Date.now(),
+        }
+      }).map(template => {
+        // Canonicalize any legacy fork `permissionMode` onto `permission`.
+        const legacy = (template.task as unknown as { permissionMode?: unknown }).permissionMode
+        if (legacy !== undefined && template.task.permission === undefined) {
+          const { permissionMode: _dropped, ...rest } = template.task as unknown as { permissionMode?: unknown } & TaskTemplate['task']
+          return { ...template, task: { ...rest, permission: legacy as string } }
+        }
+        return template
+      })
+      if (changed) {
+        try { await this.persist(parsed) } catch { /* best effort — memory still carries the migration */ }
+      }
     }
     this.templates = parsed
     this.loaded = true
@@ -135,19 +192,20 @@ export class TemplateStore {
    * Create or replace a template by id (a body without id creates).
    * @returns the stored template.
    */
-  async upsert(input: { id?: string; name: string; task: TaskTemplate['task'] }): Promise<TaskTemplate> {
+  async upsert(input: { id?: string; name: string; category?: string; task: TaskTemplate['task'] }): Promise<TaskTemplate> {
     await this.ensure()
     const templates = this.templates ?? []
     const name = input.name.trim()
     if (name.length === 0 || name.length > 60) throw new Error('模板名必须 1..60 字符')
+    const category = normalizeTemplateCategory(input.category)
     const now = Date.now()
     const existing = input.id !== undefined ? templates.find(t => t.id === input.id) : undefined
     // T12: built-ins are factory content — editable only by delete + recreate
     // (deleting stays allowed), never silently overwritten in place.
     if (existing?.builtin === true) throw new Error('内置模板不可覆盖；可删除后另建，或以新名称存为新模板')
     const stored: TaskTemplate = existing !== undefined
-      ? { ...existing, name, task: input.task, updatedAt: now }
-      : { id: input.id ?? newTemplateId(), name, task: input.task, createdAt: now, updatedAt: now }
+      ? { ...existing, name, category, task: input.task, updatedAt: now }
+      : { id: input.id ?? newTemplateId(), name, ...(category !== undefined ? { category } : {}), task: input.task, createdAt: now, updatedAt: now }
     const index = existing !== undefined ? templates.indexOf(existing) : -1
     if (index >= 0) templates[index] = stored
     else templates.push(stored)

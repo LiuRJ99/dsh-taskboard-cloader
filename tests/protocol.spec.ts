@@ -13,6 +13,9 @@ import {
   DEFAULT_ISOLATION,
   DEFAULT_PERMISSION,
   MAIN_STATUSES,
+  approvalPolicyForPermissionMode,
+  asPermissionMode,
+  asTaskSpeed,
   asBoardSettings,
   asPermission,
   canTransition,
@@ -23,12 +26,15 @@ import {
   defaultSyncExternalSessionsOf,
   effectiveIsolation,
   emptyLedger,
+  effectiveTaskSpeed,
   isClaim,
   nextCronTime,
   normalizeChecklist,
   normalizeExecution,
+  normalizeTemplateCategory,
   normalizeExecutionReport,
   normalizeModel,
+  normalizeRequiredCapabilities,
   parseCron,
   summarize,
   validateImportedTask,
@@ -40,6 +46,7 @@ import {
   type TaskRecord,
 } from '../src/shared/protocol.ts'
 import { TASKBOARD_PROTOCOL } from '../src/host/protocol-text.ts'
+import { TASKBOARD_SKILL } from '../src/host/skill.ts'
 import { PLUGIN_VERSION } from '../src/shared/version.ts'
 import { TaskStore } from '../src/host/store.ts'
 import { ERR, registerTaskboardTools, type ToolDeps, type WorkspaceFace } from '../src/host/tools.ts'
@@ -121,6 +128,28 @@ describe('cron', () => {
     expect(() => normalizeExecution({ mode: 'scheduled' }, 0)).toThrow()
     expect(() => normalizeExecution({ mode: 'bogus' }, 0)).toThrow()
   })
+
+  it('normalizes model reasoning and validates speed/permission options', () => {
+    expect(normalizeModel({ provider: ' deepseek ', model: ' reasoner ', reasoningEffort: ' high ' })).toEqual({
+      provider: 'deepseek',
+      model: 'reasoner',
+      reasoningEffort: 'high',
+    })
+    expect(normalizeModel({ provider: 'deepseek', model: 'chat', reasoningEffort: '  ' })).toEqual({ provider: 'deepseek', model: 'chat' })
+    expect(() => normalizeModel({ provider: 'deepseek', model: 'chat', reasoningEffort: 3 })).toThrow('reasoningEffort')
+
+    expect(asTaskSpeed('fast')).toBe('fast')
+    expect(asPermission('danger-full-access')).toBe('danger-full-access')
+    expect(asPermission('workspaceWrite')).toBe('workspace-write')
+    expect(asPermissionMode('danger-full-access')).toBe('danger-full-access')
+    expect(effectiveTaskSpeed({})).toBe('standard')
+    expect(approvalPolicyForPermissionMode('read-only')).toBe('ask')
+    expect(approvalPolicyForPermissionMode('workspace-write')).toBe('ask')
+    expect(approvalPolicyForPermissionMode('danger-full-access')).toBe('never')
+    expect(() => asTaskSpeed('turbo')).toThrow('standard, fast')
+    expect(() => asPermissionMode('full-access')).toThrow("permission must be")
+    expect(() => asPermission('full-access')).toThrow("permission must be")
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -156,6 +185,42 @@ describe('protocol text', () => {
     expect(TASKBOARD_PROTOCOL).toMatch(/taskboard_execution_report 提交结构化报告/)
     expect(TASKBOARD_PROTOCOL).toMatch(/taskboard_checklist 逐项勾选/)
     expect(TASKBOARD_PROTOCOL).toMatch(/清单全勾也不等于完成/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// lazy-gate skill association
+// ---------------------------------------------------------------------------
+
+describe('lazy-gate skill association', () => {
+  it('registers a user-only taskboard authorization Skill', () => {
+    expect(TASKBOARD_SKILL.name).toBe('taskboard')
+    expect(TASKBOARD_SKILL.invocation).toEqual({ modelInvocable: false, userInvocable: true })
+    expect(TASKBOARD_SKILL.metadata).toEqual({
+      'dsh:gate': {
+        toolPrefixes: ['taskboard_'],
+        promptSections: ['plugin:dsh-taskboard'],
+      },
+    })
+    expect(TASKBOARD_SKILL.content).toContain('unlocked')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// capability authorization
+// ---------------------------------------------------------------------------
+
+describe('required lazy-gate capabilities', () => {
+  it('always includes taskboard and de-duplicates normalized Skill names', () => {
+    expect(normalizeRequiredCapabilities(['browser', 'taskboard', 'browser', 'computer-use'])).toEqual(['taskboard', 'browser', 'computer-use'])
+    expect(normalizeRequiredCapabilities(undefined)).toEqual(['taskboard'])
+  })
+
+  it('rejects unbounded or resource-shaped values', () => {
+    expect(() => normalizeRequiredCapabilities(['browser_'])).toThrow('invalid required capability')
+    expect(() => normalizeRequiredCapabilities(['browser/tool'])).toThrow('invalid required capability')
+    expect(() => normalizeRequiredCapabilities(Array.from({ length: 21 }, () => 'browser'))).toThrow('at most')
+    expect(() => normalizeRequiredCapabilities(['browser', 1])).toThrow('only skill names')
   })
 })
 
@@ -264,14 +329,19 @@ describe('board settings & default isolation (0.5.0)', () => {
   })
 
   it('asBoardSettings sanitizes; defaultIsolationOf, defaultSyncExternalSessionsOf, and defaultPermissionOf resolve setting → factory', () => {
-    expect(asBoardSettings({ defaultIsolation: 'worktree', syncExternalSessions: true, defaultPermission: 'read-only', junk: 1 })).toEqual({ defaultIsolation: 'worktree', syncExternalSessions: true, defaultPermission: 'read-only' })
+    expect(asBoardSettings({ defaultIsolation: 'worktree', templateMenuCategory: ' 开发 ', syncExternalSessions: true, defaultPermission: 'read-only', junk: 1 })).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '开发', syncExternalSessions: true, defaultPermission: 'read-only' })
     expect(asBoardSettings({ syncExternalSessions: false })).toEqual({ syncExternalSessions: false })
     expect(asBoardSettings({ defaultPermission: 'fullAccess' })).toEqual({ defaultPermission: 'danger-full-access' })
     expect(asBoardSettings({})).toEqual({})
     expect(() => asBoardSettings({ defaultIsolation: 'docker' })).toThrow("isolation must be")
     expect(() => asBoardSettings({ defaultIsolation: 42 })).toThrow("defaultIsolation must be")
+    expect(() => asBoardSettings({ templateMenuCategory: 42 })).toThrow('template category must be a string')
+    expect(() => asBoardSettings({ templateMenuCategory: 'x'.repeat(31) })).toThrow('1..30')
     expect(() => asBoardSettings({ syncExternalSessions: 'yes' })).toThrow("syncExternalSessions must be a boolean")
     expect(() => asBoardSettings({ defaultPermission: 'super-user' })).toThrow("permission must be")
+    expect(normalizeTemplateCategory('  开发  ')).toBe('开发')
+    expect(normalizeTemplateCategory('')).toBeUndefined()
+    expect(() => normalizeTemplateCategory(null)).toThrow('must be a string')
     expect(() => asBoardSettings(null)).toThrow('object')
     expect(defaultIsolationOf(undefined)).toBe('none')
     expect(defaultIsolationOf({})).toBe('none')
@@ -303,9 +373,9 @@ describe('board settings & default isolation (0.5.0)', () => {
     const plan = validateLedgerImport({
       schemaVersion: 1,
       tasks: [],
-      settings: { defaultIsolation: 'worktree', stray: true },
+      settings: { defaultIsolation: 'worktree', templateMenuCategory: '运营', stray: true },
     }, new Set(), NOW)
-    expect(plan.settings).toEqual({ defaultIsolation: 'worktree' })
+    expect(plan.settings).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '运营' })
     const clean = validateLedgerImport({ schemaVersion: 1, tasks: [] }, new Set(), NOW)
     expect(clean.settings).toBeUndefined()
     expect(() => validateLedgerImport({ schemaVersion: 1, tasks: [], settings: { defaultIsolation: 'vm' } }, new Set(), NOW))
@@ -353,6 +423,9 @@ describe('ledger import validation', () => {
       executions: [{ trigger: 'manual', outcome: 'running', sessionId: 'sess-x' }],
       checklist: [{ text: '验收项', checked: true, checkedBy: 'user' }],
       presetId: ' standard ',
+      model: { provider: ' deepseek ', model: ' reasoner ', reasoningEffort: ' high ' },
+      speed: 'fast',
+      permissionMode: 'read-only',
     }] }, new Set(), NOW)
     expect(plan.create).toHaveLength(1)
     const task = plan.create[0]!
@@ -362,6 +435,11 @@ describe('ledger import validation', () => {
     expect(task.executions[0]!.error).toContain('running')
     expect(task.checklist![0]).toMatchObject({ text: '验收项', checked: true, checkedBy: 'user' })
     expect(task.presetId).toBe('standard')
+    expect(task.model).toEqual({ provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+    expect(task.speed).toBe('fast')
+    // Legacy `permissionMode` import is canonicalized onto `permission`.
+    expect((task as unknown as Record<string, unknown>).permissionMode).toBeUndefined()
+    expect(task.permission).toBe('read-only')
     expect(task.claimedBy).toBe('sess-x')
     expect(task.createdBy).toEqual({ kind: 'user' })
   })

@@ -2,7 +2,7 @@
  * Template store (0.4.0): side-file persistence, built-in seeding, upsert /
  * rename / delete, and the ledger store's import-backup method.
  */
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -25,24 +25,51 @@ describe('TemplateStore', () => {
     const list = await store.list()
     expect(list.map(t => t.name)).toEqual(BUILTIN_TEMPLATES.map(t => t.name))
     expect(list.every(t => t.builtin === true)).toBe(true)
+    expect(list.find(t => t.id === 'tpl-bugfix')?.category).toBe('开发')
+    expect(list.find(t => t.id === 'tpl-patrol')?.category).toBe('运营')
     // Seeded on disk: a second store over the same file reads the same list.
     const again = await new TemplateStore(join(dir, 'a-templates.json')).list()
     expect(again.map(t => t.id)).toEqual(list.map(t => t.id))
   })
 
+  it('migrates legacy built-ins with the new execution defaults and preserves custom fields', async () => {
+    const file = join(dir, 'legacy-templates.json')
+    const legacy = BUILTIN_TEMPLATES.map((template, index) => {
+      const task = { ...template.task }
+      delete task.speed
+      delete task.permission
+      const { category: _category, ...withoutCategory } = template
+      return { ...withoutCategory, task, builtin: true, createdAt: index, updatedAt: index }
+    })
+    await writeFile(file, JSON.stringify({ templates: legacy }), 'utf8')
+
+    const list = await new TemplateStore(file).list()
+    expect(list.find(t => t.id === 'tpl-bugfix')?.task).toMatchObject({ speed: 'standard', permission: 'workspace-write' })
+    expect(list.find(t => t.id === 'tpl-patrol')?.task).toMatchObject({ speed: 'standard', permission: 'read-only' })
+    expect(list.find(t => t.id === 'tpl-bugfix')?.category).toBe('开发')
+    expect(list.find(t => t.id === 'tpl-patrol')?.category).toBe('运营')
+
+    const persisted = JSON.parse(await readFile(file, 'utf8')) as { templates: Array<{ id: string; category?: string; task: { speed?: string; permission?: string } }> }
+    expect(persisted.templates.find(t => t.id === 'tpl-release')?.task).toMatchObject({ speed: 'standard', permission: 'workspace-write' })
+    expect(persisted.templates.find(t => t.id === 'tpl-release')?.category).toBe('开发')
+  })
+
   it('upserts: create without id, rename with id, validates the name', async () => {
     const store = new TemplateStore(join(dir, 'b-templates.json'))
-    const created = await store.upsert({ name: '我的模板', task: { urgency: 'urgent', checklist: ['a'] } })
+    const created = await store.upsert({ name: '我的模板', category: ' 开发 ', task: { urgency: 'urgent', checklist: ['a'] } })
     expect(created.id).toMatch(/^tpl-/)
     expect(created.task.checklist).toEqual(['a'])
+    expect(created.category).toBe('开发')
 
-    const renamed = await store.upsert({ id: created.id, name: '改名后', task: created.task })
+    const renamed = await store.upsert({ id: created.id, name: '改名后', category: '运营', task: created.task })
     expect(renamed.name).toBe('改名后')
+    expect(renamed.category).toBe('运营')
     expect((await store.list()).find(t => t.id === created.id)!.name).toBe('改名后')
     expect(renamed.createdAt).toBe(created.createdAt) // replace, not recreate
 
     await expect(store.upsert({ name: '  ', task: {} })).rejects.toThrow('1..60')
     await expect(store.upsert({ name: 'x'.repeat(61), task: {} })).rejects.toThrow('1..60')
+    await expect(store.upsert({ name: '类别太长', category: 'x'.repeat(31), task: {} })).rejects.toThrow('1..30')
   })
 
   it('deletes by id and reports a miss as false', async () => {

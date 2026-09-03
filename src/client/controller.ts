@@ -8,7 +8,7 @@
  * @module dsh-taskboard/client/controller
  */
 import type { ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, MergeRepoResult, PromptCompletionsResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
-import type { ChecklistItem, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
+import type { ChecklistItem, TaskCapability, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
 import type { SessionJumpResult } from './session-jump.ts'
@@ -24,6 +24,11 @@ export interface BoardFilters {
 
 /** Column sort orders. */
 export type SortBy = 'default' | 'updated' | 'urgency' | 'created' | 'title'
+
+/** One lazy-gate Skill the host reports as currently available to the GUI. */
+export interface GateCapabilityOption {
+  name: TaskCapability
+}
 
 /** localStorage key for persisted view state (filters + sort). */
 const VIEW_KEY = 'dsh-taskboard-view-v1'
@@ -113,6 +118,7 @@ export class BoardController {
   /** Newest change-frame revision seen on the SSE stream (S16 refresh chase). */
   private seenRevision: number | undefined
   private sessionJumper: ((sessionId: string) => Promise<SessionJumpResult>) | undefined
+  private currentSessionAuthorizer: ((sessionId?: string) => Promise<void>) | undefined
   /** Composer catalog faces, installed formally by the client entry (T13). */
   private readonly catalogFaces: {
     models?: () => Promise<Array<{
@@ -125,6 +131,7 @@ export class BoardController {
       }
     }>>
     presets?: () => Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }>
+    capabilities?: () => Promise<GateCapabilityOption[]>
   } = {}
 
   /** @param client - the route client. */
@@ -292,6 +299,32 @@ export class BoardController {
     this.sessionJumper = jumper
   }
 
+  /** Install the host-backed current-session authorization bridge. */
+  installCurrentSessionAuthorizer(authorizer: (sessionId?: string) => Promise<void>): void {
+    this.currentSessionAuthorizer = authorizer
+  }
+
+  /** Best-effort user-panel grant; task creation itself remains usable on old hosts. */
+  async authorizeCurrentSession(sessionId?: string): Promise<boolean> {
+    if (this.currentSessionAuthorizer === undefined) return false
+    try {
+      await this.currentSessionAuthorizer(sessionId)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** Install the lazy-gate Skill catalog used by the capability checkboxes. */
+  installCapabilityCatalog(fn: () => Promise<GateCapabilityOption[]>): void {
+    this.catalogFaces.capabilities = fn
+  }
+
+  /** The installed lazy-gate Skill catalog, when the host provides it. */
+  get capabilityCatalog(): (() => Promise<GateCapabilityOption[]>) | undefined {
+    return this.catalogFaces.capabilities
+  }
+
   /** T13: formal installers for the composer catalog faces (was a monkeypatch from the client entry). */
   installModelCatalog(fn: () => Promise<Array<{
     provider: string
@@ -407,6 +440,13 @@ export class BoardController {
       this.setState({ error: error instanceof Error ? error.message : String(error) })
       return undefined
     }
+  }
+
+  /** Create from the GUI panel and best-effort authorize its hosting session. */
+  async createFromPanel(body: Parameters<TaskboardClient['create']>[0], sessionId?: string): Promise<string | undefined> {
+    const id = await this.create(body)
+    if (id !== undefined) await this.authorizeCurrentSession(sessionId)
+    return id
   }
 
   /** Edit task fields (form modal submit; the GUI is the owner surface). */
@@ -567,7 +607,11 @@ export class BoardController {
   closeDiagnostics(): void { this.setState({ diagOpen: false }) }
 
   /** Open the board-settings modal (0.5.0). */
-  openSettings(): void { this.setState({ settingsOpen: true }) }
+  openSettings(): void {
+    this.setState({ settingsOpen: true })
+    // Settings derives its category options from the global template library.
+    void this.loadTemplates()
+  }
 
   /** Close the board-settings modal. */
   closeSettings(): void { this.setState({ settingsOpen: false }) }
@@ -624,7 +668,9 @@ export class BoardController {
           ? { mode: 'scheduled', cron: task.execution.cron }
           : { mode: 'claim' },
         model: task.model,
+        speed: task.speed,
         isolation: task.isolation,
+        requiredCapabilities: task.requiredCapabilities,
         ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
         ...(task.permission !== undefined ? { permission: task.permission } : {}),
         ...(task.checklist !== undefined && task.checklist.length > 0 ? { checklist: task.checklist.map(i => i.text) } : {}),
@@ -663,7 +709,7 @@ export class BoardController {
   closeTemplateManager(): void { this.setState({ tplManagerOpen: false }) }
 
   /** Create or replace a template; refreshes the list. */
-  async upsertTemplate(body: { id?: string; name: string; task: TaskTemplateSpec }): Promise<boolean> {
+  async upsertTemplate(body: { id?: string; name: string; category?: string; task: TaskTemplateSpec }): Promise<boolean> {
     try {
       await this.client.templateUpsert(body)
       await this.loadTemplates()
@@ -688,6 +734,9 @@ export class BoardController {
   async saveAsTemplate(task: TaskRecord): Promise<boolean> {
     return this.upsertTemplate({
       name: task.title.slice(0, 60),
+      // A concrete menu category is a useful default for one-click saves;
+      // “全部分类” leaves the template under the compatibility “其他” bucket.
+      category: this.state.ledger.settings?.templateMenuCategory ?? '其他',
       task: {
         title: task.title,
         description: task.description.length > 0 ? task.description : undefined,
@@ -697,7 +746,9 @@ export class BoardController {
           ? { mode: 'scheduled', cron: task.execution.cron }
           : { mode: 'claim' },
         model: task.model,
+        speed: task.speed,
         isolation: task.isolation,
+        requiredCapabilities: task.requiredCapabilities,
         ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
         ...(task.permission !== undefined ? { permission: task.permission } : {}),
         ...(task.checklist !== undefined && task.checklist.length > 0 ? { checklist: task.checklist.map(i => i.text) } : {}),
@@ -763,12 +814,13 @@ export class BoardController {
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
       return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
-    const header = ['id', 'title', 'status', 'urgency', 'blocked', 'project', 'claimedBy', 'mode', 'cron', 'nextRunAt', 'model', 'createdAt', 'updatedAt', 'comments', 'executions']
+    const header = ['id', 'title', 'status', 'urgency', 'blocked', 'project', 'claimedBy', 'mode', 'cron', 'nextRunAt', 'model', 'reasoningEffort', 'speed', 'permission', 'createdAt', 'updatedAt', 'comments', 'executions']
     const rows = this.state.ledger.tasks.map(t => [
       t.id, t.title, t.status, t.urgency, t.blocked ? 'yes' : 'no', t.workspaceId,
       t.claimedBy ?? '', t.execution.mode, t.execution.cron ?? '',
       t.execution.nextRunAt !== undefined ? new Date(t.execution.nextRunAt).toISOString() : '',
       t.model !== undefined ? `${t.model.provider}/${t.model.model}` : '',
+      t.model?.reasoningEffort ?? '', t.speed ?? '', t.permission ?? '',
       new Date(t.createdAt).toISOString(), new Date(t.updatedAt).toISOString(),
       t.comments.length, t.executions.length,
     ].map(esc).join(','))

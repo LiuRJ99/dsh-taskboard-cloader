@@ -8,7 +8,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { registerTaskboardTools, type WorkspaceFace } from '../src/host/tools.ts'
+import { registerTaskboardTools, type ToolDeps, type WorkspaceFace } from '../src/host/tools.ts'
 import { TaskStore } from '../src/host/store.ts'
 
 let dir: string
@@ -35,7 +35,7 @@ function assertLossless(value: unknown, path = '$'): void {
 }
 
 /** Build the tool set and a fake agent exec context. */
-async function setup(deps: { modelProviders?: () => string[] | undefined } = {}) {
+async function setup(deps: Pick<ToolDeps, 'modelProviders' | 'authorizeSession'> = {}) {
   const store = new TaskStore({ file: join(dir, `led-${Math.random().toString(36).slice(2)}.json`) })
   const registered: Array<Record<string, unknown>> = []
   const disposers = registerTaskboardTools(
@@ -143,6 +143,38 @@ describe('taskboard tool outputs', () => {
     for (const dispose of disposers) dispose()
   })
 
+  it('authorizes task capabilities only after a successful claim', async () => {
+    const grants: Array<{ skills: readonly string[]; provenance: string; agentId: string | undefined }> = []
+    const { disposers, tool, exec, store } = await setup({
+      authorizeSession: (agent, skills, provenance) => {
+        grants.push({ skills, provenance, agentId: (agent as { id?: string } | undefined)?.id })
+      },
+    })
+    const created = await tool('taskboard_create').execute(
+      { title: 'Capability claim', workspaceId: 'ws-a', urgency: 'normal' }, exec,
+    )
+    const id = (created as { task: { id: string } }).task.id
+    expect(store.get(id)?.requiredCapabilities).toEqual(['taskboard'])
+    await tool('taskboard_move').execute({ id, status: 'in_progress', ifVersion: 1 }, exec)
+    expect(grants).toEqual([{ skills: ['taskboard'], provenance: 'claim', agentId: 'session-1' }])
+    for (const dispose of disposers) dispose()
+  })
+
+  it('rolls back a claim when capability authorization fails', async () => {
+    const { disposers, tool, exec, store } = await setup({
+      authorizeSession: () => { throw new Error('gate unavailable') },
+    })
+    const created = await tool('taskboard_create').execute(
+      { title: 'Capability rollback', workspaceId: 'ws-a', urgency: 'normal' }, exec,
+    )
+    const id = (created as { task: { id: string } }).task.id
+    await expect(tool('taskboard_move').execute({ id, status: 'in_progress', ifVersion: 1 }, exec))
+      .rejects.toThrow(/claim rolled back/)
+    expect(store.get(id)).toMatchObject({ status: 'todo', version: 3 })
+    expect(store.get(id)?.claimedBy).toBeUndefined()
+    for (const dispose of disposers) dispose()
+  })
+
   it('tracks the claim explicitly: claim records the holder; handoff releases it', async () => {
     const { disposers, tool, exec } = await setup()
     const created = await tool('taskboard_create').execute(
@@ -173,9 +205,29 @@ describe('taskboard tool outputs', () => {
     )).rejects.toThrow('no registered route')
     // registered provider passes and is trimmed
     const ok = await tool('taskboard_create').execute(
-      { title: 'M3', workspaceId: 'ws-a', urgency: 'normal', model: { provider: ' deepseek ', model: ' reasoner ' } }, exec,
-    ) as { task: { model?: { provider: string; model: string } } }
-    expect(ok.task.model).toEqual({ provider: 'deepseek', model: 'reasoner' })
+      {
+        title: 'M3',
+        workspaceId: 'ws-a',
+        urgency: 'normal',
+        model: { provider: ' deepseek ', model: ' reasoner ', reasoningEffort: ' high ' },
+        speed: 'fast',
+        permission: 'danger-full-access',
+      }, exec,
+    ) as { task: { model?: { provider: string; model: string; reasoningEffort?: string }; speed?: string; permission?: string } }
+    expect(ok.task.model).toEqual({ provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
+    expect(ok.task.speed).toBe('fast')
+    expect(ok.task.permission).toBe('danger-full-access')
+    await expect(tool('taskboard_create').execute(
+      { title: 'M4', workspaceId: 'ws-a', urgency: 'normal', speed: 'turbo' }, exec,
+    )).rejects.toThrow('speed')
+    await expect(tool('taskboard_create').execute(
+      { title: 'M5', workspaceId: 'ws-a', urgency: 'normal', permission: 'full-access' }, exec,
+    )).rejects.toThrow('permission')
+    // Legacy fork alias `permissionMode` still accepted and canonicalized.
+    const legacy = await tool('taskboard_create').execute(
+      { title: 'M6', workspaceId: 'ws-a', urgency: 'normal', permissionMode: 'read-only' }, exec,
+    ) as { task: { permission?: string } }
+    expect(legacy.task.permission).toBe('read-only')
     for (const dispose of disposers) dispose()
   })
 })

@@ -1,18 +1,19 @@
 /**
  * The task form modal — create and edit in one polished dialog: header with
- * icon / subtitle / close, a sectioned field grid (title, project, model,
- * urgency tri-picker with hints, description, prompt, execution-mode
- * segmented picker, cron with presets and a live next-run preview), and a
- * footer bar carrying the validation hint and the actions. Esc closes;
- * the title input is focused on open.
+ * icon / subtitle / close, a two-column wide layout (left column: core
+ * fields + execution configuration; right column: description + execution
+ * prompt with / slash completion), and a footer bar carrying the validation
+ * hint and the actions. Esc closes; the title input is focused on open.
  *
  * @module dsh-taskboard/client/board/TaskFormModal
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { BoardController } from '../controller.ts'
+import type { BoardController, GateCapabilityOption } from '../controller.ts'
 import type { TaskTemplateSpec } from '../../shared/api.ts'
-import type { ChecklistItem, IsolationMode, PermissionMode, TaskRecord, Urgency } from '../../shared/protocol.ts'
-import { MAX_CHECKLIST_ITEMS, asPermission, defaultIsolationOf, defaultPermissionOf, nextCronTime, parseCron } from '../../shared/protocol.ts'
+import type { ChecklistItem, IsolationMode, PermissionMode, TaskCapability, TaskRecord, TaskSpeed, Urgency } from '../../shared/protocol.ts'
+import { MAX_CHECKLIST_ITEMS, TASKBOARD_CAPABILITY, asPermission, defaultIsolationOf, defaultPermissionOf, nextCronTime, normalizeRequiredCapabilities, parseCron } from '../../shared/protocol.ts'
+import { supportsTaskFastSpeed } from '../../shared/model-capabilities.ts'
+import { isTaskModelSupported } from '../model-catalog.ts'
 import { fmtTime } from './format.ts'
 import { useT, type Translate } from '../i18n/runtime.ts'
 import { SlashPromptInput } from './SlashPromptInput.tsx'
@@ -22,10 +23,22 @@ export interface CatalogModel {
   provider: string
   model: string
   name?: string
+  description?: string
   reasoning?: {
     efforts: Array<{ id: string; name: string; description?: string }>
     defaultEffort?: string
   }
+  serviceTiers?: readonly { id: string; name?: string; description?: string }[]
+}
+
+/** A reasoning selector is useful only when the model exposes actual choices. */
+export function hasReasoningOptions(reasoning: CatalogModel['reasoning'] | undefined): boolean {
+  return reasoning !== undefined && reasoning.efforts.length > 0
+}
+
+/** Fast is usable only when the selected catalog row advertises priority. */
+export function speedForModel(model: CatalogModel | undefined, speed: TaskSpeed): TaskSpeed {
+  return supportsTaskFastSpeed(model) ? speed : 'standard'
 }
 
 /** Local storage key for remembering the last selected model in create mode. */
@@ -86,6 +99,74 @@ const permissionOptions = (t: Translate): ReadonlyArray<{ value: PermissionMode;
   { value: 'danger-full-access', label: t('form.perm.fullAccess'), hint: t('form.perm.fullAccessHint'), icon: '⚡' },
 ]
 
+/** The taskboard-owned speed preference (translated per render). */
+const speedOptions = (t: Translate): ReadonlyArray<{ value: TaskSpeed; label: string; hint: string }> => [
+  { value: 'standard', label: t('form.speed.standard'), hint: t('form.speed.standardHint') },
+  { value: 'fast', label: t('form.speed.fast'), hint: t('form.speed.fastHint') },
+]
+
+/** Human labels for the built-in gated skills; adapted skills fall back to their name. */
+const GATE_CAPABILITY_LABELS: Readonly<Record<string, string>> = {
+  browser: '浏览器',
+  'computer-use': '电脑操作',
+}
+
+function gateCapabilityLabel(name: string): string {
+  return GATE_CAPABILITY_LABELS[name] ?? name
+}
+
+function extraCapabilitiesOf(raw: unknown): TaskCapability[] {
+  try {
+    return normalizeRequiredCapabilities(raw).filter(name => name !== TASKBOARD_CAPABILITY)
+  } catch {
+    return []
+  }
+}
+
+/** The task-owned capability picker; taskboard is implicit and cannot be removed. */
+function CapabilityEditor({
+  options,
+  selected,
+  onChange,
+  permission,
+}: {
+  options: readonly GateCapabilityOption[]
+  selected: readonly TaskCapability[]
+  onChange: (next: TaskCapability[]) => void
+  permission: PermissionMode
+}) {
+  const t = useT()
+  const selectedSet = new Set(selected)
+  const toggle = (name: TaskCapability): void => {
+    const next = new Set(selectedSet)
+    if (next.has(name)) next.delete(name)
+    else next.add(name)
+    onChange([...next])
+  }
+  const visible = options
+    .filter(option => option.name !== TASKBOARD_CAPABILITY)
+    .filter((option, index, all) => all.findIndex(candidate => candidate.name === option.name) === index)
+  return (
+    <div className="dsh-atb-capabilities">
+      {visible.map(option => (
+        <label className="dsh-atb-capability" key={option.name}>
+          <input
+            type="checkbox"
+            checked={selectedSet.has(option.name)}
+            onChange={() => toggle(option.name)}
+          />
+          <span>{gateCapabilityLabel(option.name)}</span>
+          <small>{option.name}</small>
+        </label>
+      ))}
+      {selected.length > 0 && permission === 'danger-full-access' && (
+        <span className="dsh-atb-field-note dsh-atb-field-note-warn">{t('form.capabilities.fullWarn')}</span>
+      )}
+      <span className="dsh-atb-field-note">{t('form.capabilities.hint')}</span>
+    </div>
+  )
+}
+
 /** Field shell: label + control, optionally spanning the full grid row. */
 function Field({ label, required = false, full = false, children }: {
   label: string
@@ -129,7 +210,11 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
   return (
     <div className="dsh-atb-cke">
       {rows.map((row, index) => (
-        <div key={row.id ?? `new-${index}`} className="dsh-atb-cke-row">
+        <div
+          key={row.id ?? `new-${index}`}
+          className="dsh-atb-cke-row"
+          data-editing={editing ? 'true' : undefined}
+        >
           {editing && (
             <input
               type="checkbox"
@@ -167,8 +252,10 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
  * surface).
  * @param controller - the controller.
  * @param task - the task being edited (create mode when absent).
+ * @param sessionId - the hosting session (sidebar context); the created task
+ *   is authorized onto it when provided.
  */
-export function TaskFormModal({ controller, task }: { controller: BoardController; task?: TaskRecord }) {
+export function TaskFormModal({ controller, task, sessionId }: { controller: BoardController; task?: TaskRecord; sessionId?: string }) {
   const t = useT()
   const state = controller.getSnapshot()
   const prefill: TaskTemplateSpec | undefined = state.templatePrefill
@@ -181,12 +268,15 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const [mode, setMode] = useState<'claim' | 'scheduled'>(task?.execution.mode === 'scheduled' || prefill?.execution?.mode === 'scheduled' ? 'scheduled' : 'claim')
   const [cron, setCron] = useState(task?.execution.cron ?? prefill?.execution?.cron ?? '0 9 * * *')
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
-
-  // Model & reasoning effort selection:
-  // In create mode (when not pinned by template), prefill from remembered last choice.
+  // In create mode (when not pinned by template), prefill from the remembered last choice.
   const initialModel = task?.model ?? prefill?.model ?? (!editing ? loadLastModel() : undefined)
-  const [model, setModel] = useState(initialModel !== undefined ? JSON.stringify({ provider: initialModel.provider, model: initialModel.model }) : '')
-  const [reasoningEffort, setReasoningEffort] = useState(initialModel?.reasoningEffort ?? '')
+  const [model, setModel] = useState(initialModel === undefined ? '' : JSON.stringify(initialModel))
+  const [speed, setSpeed] = useState<TaskSpeed>(
+    task?.speed === 'fast' || prefill?.speed === 'fast' ? 'fast' : 'standard',
+  )
+  const [requiredCapabilities, setRequiredCapabilities] = useState<TaskCapability[]>(() => extraCapabilitiesOf(task?.requiredCapabilities ?? prefill?.requiredCapabilities))
+  const [gateOptions, setGateOptions] = useState<GateCapabilityOption[]>([])
+  const [gateDiscoveryReady, setGateDiscoveryReady] = useState(false)
   // Preset roster (0.3.3): create mode PRE-SELECTS the deployment default
   // (标准模式 in this deployment); '' = 跟随部署默认 (submit omits the field).
   const initialPreset = task?.presetId ?? prefill?.presetId ?? ''
@@ -195,7 +285,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const [presetDefault, setPresetDefault] = useState<string | undefined>(undefined)
   // Permission preset (0.5.5): 'workspace-write' (default) | 'read-only' | 'danger-full-access'
   const [permission, setPermission] = useState<PermissionMode>(
-    task?.permission ?? (prefill?.permission ? asPermission(prefill.permission) : defaultPermissionOf(state.ledger.settings)),
+    task?.permission ?? (prefill?.permission !== undefined ? asPermission(prefill.permission) : defaultPermissionOf(state.ledger.settings)),
   )
   // Isolation toggle: create mode starts from the board setting (0.5.0
   // 看板设置 → 默认执行隔离) or the template's choice; edit mode starts from
@@ -223,14 +313,64 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     return () => document.removeEventListener('keydown', onKey)
   }, [controller])
 
-  // Model catalog: query runtime or fallback to host API
+  // Model catalog: prefer the runtime face; the controller falls back to the
+  // host endpoint (0.5.5 multi-tier discovery lives in the client entry).
   useEffect(() => {
-    void controller.fetchModelCatalog().then(setCatalog).catch(() => setCatalog([]))
+    let cancelled = false
+    void controller.fetchModelCatalog().then(rows => {
+      if (cancelled) return
+      setCatalog(rows.filter(isTaskModelSupported))
+    }).catch(() => { if (!cancelled) setCatalog([]) })
+    return () => { cancelled = true }
   }, [controller])
 
-  // Preset roster: query runtime or fallback to host API; pre-select the deployment default in
-  // create mode (unless a template pinned one) so executions run with a
-  // real tool set out of the box.
+  // Lazy-gate discovery is optional. Do not expose a capability form section
+  // when the gate is absent, disabled, or has no registered enabled skill.
+  useEffect(() => {
+    const face = controller.capabilityCatalog
+    if (face === undefined) {
+      setGateOptions([])
+      setGateDiscoveryReady(false)
+      return
+    }
+    let cancelled = false
+    setGateDiscoveryReady(false)
+    void face().then(rows => {
+      if (cancelled) return
+      const names = rows
+        .filter(row => typeof row.name === 'string' && row.name.length > 0)
+        .filter(row => row.name !== TASKBOARD_CAPABILITY)
+        .filter((row, index, all) => all.findIndex(candidate => candidate.name === row.name) === index)
+      setGateOptions(names)
+      setGateDiscoveryReady(true)
+    }).catch(() => {
+      if (!cancelled) {
+        setGateOptions([])
+        setGateDiscoveryReady(false)
+      }
+    })
+    return () => { cancelled = true }
+  }, [controller])
+
+  // Fast is preserved while the catalog is loading, then normalized against
+  // the provider-advertised capability instead of a model-name heuristic.
+  useEffect(() => {
+    if (catalog.length === 0) return
+    let selected: { provider: string; model: string } | undefined
+    try {
+      const value = JSON.parse(model) as { provider?: unknown; model?: unknown }
+      if (typeof value.provider === 'string' && typeof value.model === 'string') selected = { provider: value.provider, model: value.model }
+    } catch { /* malformed form state is handled by submit validation */ }
+    const entry = selected === undefined
+      ? undefined
+      : catalog.find(row => row.provider === selected?.provider && row.model === selected?.model)
+    if (!supportsTaskFastSpeed(entry)) setSpeed('standard')
+  }, [catalog, model])
+
+  // Preset roster: query the controller (runtime face first, host endpoint
+  // fallback); pre-select the deployment default in create mode (unless a
+  // template pinned one) so executions run with a real tool set out of the
+  // box.
   useEffect(() => {
     void controller.fetchPresetCatalog().then(roster => {
       setPresets(roster.presets)
@@ -276,26 +416,64 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   /** Preset payload: '' = follow the deployment default (submit omits). */
   const presetPayload = (): string | undefined => (presetId.trim().length > 0 ? presetId.trim() : undefined)
 
+  /** The currently selected model, if the form state is still valid JSON. */
+  const selectedModel = (() => {
+    if (model === '') return undefined
+    try {
+      const value = JSON.parse(model) as { provider?: unknown; model?: unknown; reasoningEffort?: unknown }
+      return typeof value.provider === 'string' && typeof value.model === 'string'
+        ? {
+            provider: value.provider,
+            model: value.model,
+            ...(typeof value.reasoningEffort === 'string' && value.reasoningEffort.length > 0 ? { reasoningEffort: value.reasoningEffort } : {}),
+          }
+        : undefined
+    } catch {
+      return undefined
+    }
+  })()
+  const selectedCatalog = selectedModel === undefined
+    ? undefined
+    : catalog.find(entry => entry.provider === selectedModel.provider && entry.model === selectedModel.model)
+  const reasoning = hasReasoningOptions(selectedCatalog?.reasoning) ? selectedCatalog?.reasoning : undefined
+  const effectiveEffort = selectedModel?.reasoningEffort ?? reasoning?.defaultEffort
+  const speedAvailable = supportsTaskFastSpeed(selectedCatalog)
+  const effectiveSpeed = speedForModel(selectedCatalog, speed)
+
+  /** Pick a model and seed its adapter-configured default reasoning level. */
+  const chooseModel = (value: string): void => {
+    if (value === '') {
+      setModel('')
+      setSpeed('standard')
+      return
+    }
+    const picked = JSON.parse(value) as { provider: string; model: string }
+    const metadata = catalog.find(entry => entry.provider === picked.provider && entry.model === picked.model)
+    const next = {
+      ...picked,
+      ...(metadata?.reasoning?.defaultEffort !== undefined ? { reasoningEffort: metadata.reasoning.defaultEffort } : {}),
+    }
+    setSpeed(current => supportsTaskFastSpeed(metadata) ? current : 'standard')
+    setModel(JSON.stringify(next))
+  }
+
+  /** Set the exact adapter-owned effort or remove it for provider default. */
+  const chooseEffort = (value: string): void => {
+    if (selectedModel === undefined) return
+    const next = {
+      provider: selectedModel.provider,
+      model: selectedModel.model,
+      ...(value.length > 0 ? { reasoningEffort: value } : {}),
+    }
+    setModel(JSON.stringify(next))
+  }
+
   /** Checklist rows with non-empty text (blank rows are dropped on submit). */
   const filledRows = (): CheckRow[] => checkRows.map(r => ({ ...r, text: r.text.trim() })).filter(r => r.text.length > 0)
 
-  const parsedModel = model !== '' ? (JSON.parse(model) as { provider: string; model: string }) : undefined
-  const currentCatalogModel = parsedModel !== undefined ? catalog.find(m => m.provider === parsedModel.provider && m.model === parsedModel.model) : undefined
-  const modelReasoning = currentCatalogModel?.reasoning
-
-  const buildPickedModel = (): { provider: string; model: string; reasoningEffort?: string } | undefined => {
-    if (parsedModel === undefined) return undefined
-    const eff = reasoningEffort.trim()
-    return {
-      provider: parsedModel.provider,
-      model: parsedModel.model,
-      ...(eff.length > 0 ? { reasoningEffort: eff } : {}),
-    }
-  }
-
   const submit = (): void => {
     if (!valid || busy) return
-    const picked = buildPickedModel()
+    const picked = selectedModel
     if (!editing) saveLastModel(picked)
     const isolationOut = isolationPayload()
     const presetOut = presetPayload()
@@ -311,13 +489,15 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         // '' in edit mode clears the pinned model back to the default.
         model: picked ?? null,
+        speed: effectiveSpeed,
+        requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
         ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
         presetId: presetOut ?? null,
         permission,
         // [] clears the checklist (host deletes the field on empty).
         checklist: rows.length > 0 ? rows : null,
       })
-      : controller.create({
+      : controller.createFromPanel({
         title,
         workspaceId,
         urgency,
@@ -325,18 +505,20 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         prompt: prompt.length > 0 ? prompt : undefined,
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         model: picked,
+        speed: effectiveSpeed,
+        permission,
+        requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
         ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
         ...(presetOut !== undefined ? { presetId: presetOut } : {}),
-        permission,
         ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
-      })
+      }, sessionId)
     void action.catch(() => undefined).finally(() => setBusy(false))
   }
 
   /** Save the form, then immediately trigger a manual run of the task. */
   const submitAndRun = (): void => {
     if (!valid || runBlocked || busy) return
-    const picked = buildPickedModel()
+    const picked = selectedModel
     if (!editing) saveLastModel(picked)
     const isolationOut = isolationPayload()
     const presetOut = presetPayload()
@@ -352,6 +534,8 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           workspaceId,
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked ?? null,
+          speed: effectiveSpeed,
+          requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
           ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
           presetId: presetOut ?? null,
           permission,
@@ -359,7 +543,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         })
         if (saved) await controller.run(task.id)
       } else {
-        const id = await controller.create({
+        const id = await controller.createFromPanel({
           title,
           workspaceId,
           urgency,
@@ -367,11 +551,13 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           prompt: prompt.length > 0 ? prompt : undefined,
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked,
+          speed: effectiveSpeed,
+          permission,
+          requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
           ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
           ...(presetOut !== undefined ? { presetId: presetOut } : {}),
-          permission,
           ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
-        })
+        }, sessionId)
         if (id !== undefined) await controller.run(id)
       }
     })().catch(() => undefined).finally(() => setBusy(false))
@@ -413,22 +599,8 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
 
               <Field label={t('form.field.model')}>
                 <select
-                  value={model}
-                  onChange={e => {
-                    const val = e.target.value
-                    setModel(val)
-                    if (val === '') {
-                      setReasoningEffort('')
-                    } else {
-                      const pm = JSON.parse(val) as { provider: string; model: string }
-                      const cm = catalog.find(m => m.provider === pm.provider && m.model === pm.model)
-                      if (cm?.reasoning?.defaultEffort !== undefined) {
-                        setReasoningEffort(cm.reasoning.defaultEffort)
-                      } else {
-                        setReasoningEffort('')
-                      }
-                    }
-                  }}
+                  value={selectedModel === undefined ? '' : JSON.stringify({ provider: selectedModel.provider, model: selectedModel.model })}
+                  onChange={e => chooseModel(e.target.value)}
                 >
                   <option value="">{t('form.field.modelDefault')}</option>
                   {catalog.map(m => (
@@ -439,16 +611,12 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                 </select>
               </Field>
 
-              {parsedModel !== undefined && (
+              {reasoning !== undefined && (
                 <Field label={t('form.field.effort')}>
-                  <select
-                    value={reasoningEffort}
-                    onChange={e => setReasoningEffort(e.target.value)}
-                    title={t('form.field.effortTitle')}
-                  >
-                    <option value="">{t('form.effort.follow')}{modelReasoning?.defaultEffort !== undefined ? t('shared.current', { name: modelReasoning.efforts.find(ef => ef.id === modelReasoning.defaultEffort)?.name ?? modelReasoning.defaultEffort }) : ''}</option>
-                    {modelReasoning !== undefined && modelReasoning.efforts.length > 0 ? (
-                      modelReasoning.efforts.map(eff => (
+                  <select value={effectiveEffort ?? ''} onChange={e => chooseEffort(e.target.value)} title={t('form.field.effortTitle')}>
+                    <option value="">{t('form.effort.follow')}{reasoning?.defaultEffort !== undefined ? t('shared.current', { name: reasoning.efforts.find(ef => ef.id === reasoning.defaultEffort)?.name ?? reasoning.defaultEffort }) : ''}</option>
+                    {reasoning.efforts.length > 0 ? (
+                      reasoning.efforts.map(eff => (
                         <option key={eff.id} value={eff.id}>
                           {eff.name}{eff.description ? ` (${eff.description})` : ''}
                         </option>
@@ -474,6 +642,14 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                         {p.name ?? p.id}{p.id === presetDefault ? t('form.preset.defaultTag') : ''}
                       </option>
                     ))}
+                  </select>
+                </Field>
+              )}
+
+              {speedAvailable && (
+                <Field label={t('form.field.speed')}>
+                  <select value={effectiveSpeed} onChange={e => setSpeed(e.target.value === 'fast' ? 'fast' : 'standard')} title={t('form.field.speedTitle')}>
+                    {speedOptions(t).map(option => <option key={option.value} value={option.value}>{option.label}（{option.hint}）</option>)}
                   </select>
                 </Field>
               )}
@@ -512,7 +688,21 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                   </button>
                 ))}
               </div>
+              {permission === 'danger-full-access' && (
+                <span className="dsh-atb-field-note dsh-atb-field-note-warn">{t('form.perm.fullWarn')}</span>
+              )}
             </Field>
+
+            {gateDiscoveryReady && gateOptions.length > 0 && (
+              <Field label={t('form.field.capabilities')} full>
+                <CapabilityEditor
+                  options={gateOptions}
+                  selected={requiredCapabilities}
+                  onChange={setRequiredCapabilities}
+                  permission={permission}
+                />
+              </Field>
+            )}
 
             <Field label={t('form.field.mode')} full>
               <div className="dsh-atb-mode-picker">
@@ -638,22 +828,4 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
       </div>
     </div>
   )
-}
-
-/** The record shape this form edits (narrow structural type to avoid a value import). */
-interface TaskRecordLike {
-  id: string
-  version: number
-  status?: string
-  title: string
-  description: string
-  prompt: string
-  workspaceId: string
-  urgency: Urgency
-  execution: { mode: 'claim' | 'scheduled'; cron?: string }
-  model?: { provider: string; model: string; reasoningEffort?: string }
-  isolation?: IsolationMode
-  presetId?: string
-  checklist?: ChecklistItem[]
-  executions?: unknown[]
 }

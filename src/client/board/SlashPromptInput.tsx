@@ -158,7 +158,7 @@ export function SlashPromptInput({
     if (el === null) return
     const pos = el.selectionStart
     const currentText = el.value.slice(0, pos)
-    
+
     // Check if cursor is right after a word starting with /
     const lastSlash = currentText.lastIndexOf('/')
     if (lastSlash >= 0) {

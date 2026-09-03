@@ -1,15 +1,15 @@
 /**
- * Board-settings modal (0.5.0): the user-owned defaults applied when a NEW
- * task is created without an explicit choice. Currently one section — 默认执行
- * 隔离 (worktree vs original directory); further sections can slot into the
- * body below. Saving goes through the host route (whole-object replace) and
- * the SSE change stream refreshes every open view.
+ * Board-settings modal (0.5.0): user-owned defaults applied when a NEW task
+ * is created without an explicit choice, plus the global template-menu
+ * category preference. Saving goes through the host route (whole-object
+ * replace) and the SSE change stream refreshes every open view.
  *
  * @module dsh-taskboard/client/board/SettingsModal
  */
 import { useState } from 'react'
 import type { BoardController } from '../controller.ts'
 import { DEFAULT_ISOLATION, defaultPermissionOf, defaultSyncExternalSessionsOf, type IsolationMode, type PermissionMode } from '../../shared/protocol.ts'
+import { templateCategoryOptions } from '../template-categories.ts'
 import { useT, type Translate } from '../i18n/runtime.ts'
 
 /** The isolation options with one-line hints (mirrors the task form; translated per render). */
@@ -26,19 +26,28 @@ const isolationOptions = (t: Translate): ReadonlyArray<{ value: IsolationMode; n
 export function SettingsModal({ controller }: { controller: BoardController }) {
   const t = useT()
   const state = controller.getSnapshot()
-  const currentIso = state.ledger.settings?.defaultIsolation ?? DEFAULT_ISOLATION
+  const currentIsolation = state.ledger.settings?.defaultIsolation ?? DEFAULT_ISOLATION
   const currentSync = defaultSyncExternalSessionsOf(state.ledger.settings)
   const currentPerm = defaultPermissionOf(state.ledger.settings)
-  const [draftIso, setDraftIso] = useState<IsolationMode>(currentIso)
+  const currentCategory = state.ledger.settings?.templateMenuCategory ?? ''
+  const [draftIsolation, setDraftIsolation] = useState<IsolationMode>(currentIsolation)
   const [draftSync, setDraftSync] = useState<boolean>(currentSync)
   const [draftPerm, setDraftPerm] = useState<PermissionMode>(currentPerm)
-  const dirty = draftIso !== currentIso || draftSync !== currentSync || draftPerm !== currentPerm
+  const [draftCategory, setDraftCategory] = useState(currentCategory)
+  const categories = templateCategoryOptions(state.templates)
+  const categoryOptions = currentCategory !== '' && !categories.some(o => o.value === currentCategory)
+    ? [...categories, { value: currentCategory, count: 0 }]
+    : categories
+  const dirty = draftIsolation !== currentIsolation || draftSync !== currentSync || draftPerm !== currentPerm || draftCategory !== currentCategory
 
   const save = (): void => {
     void controller.updateSettings({
-      defaultIsolation: draftIso,
+      // Settings updates are whole-object replacements: keep every existing
+      // field instead of accidentally clearing defaultIsolation.
+      defaultIsolation: draftIsolation,
       syncExternalSessions: draftSync,
       defaultPermission: draftPerm,
+      ...(draftCategory.length > 0 ? { templateMenuCategory: draftCategory } : {}),
     }).then(ok => {
       if (ok) controller.closeSettings()
     })
@@ -65,9 +74,9 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
                   key={o.value}
                   type="button"
                   className="dsh-atb-mode-opt"
-                  data-on={draftIso === o.value}
+                  data-on={draftIsolation === o.value}
                   title={o.hint}
-                  onClick={() => setDraftIso(o.value)}
+                  onClick={() => setDraftIsolation(o.value)}
                 >
                   <span className="dsh-atb-mode-name">{o.name}</span>
                   <span className="dsh-atb-mode-hint">{o.hint}</span>
@@ -75,7 +84,7 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
               ))}
             </div>
             <span className="dsh-atb-isolation-note">
-              {t('set.iso.current', { current: currentIso === 'worktree' ? t('form.iso.worktree') : t('form.iso.none') })}
+              {t('set.iso.current', { current: currentIsolation === 'worktree' ? t('form.iso.worktree') : t('form.iso.none') })}
             </span>
           </section>
 
@@ -143,6 +152,25 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
             </div>
             <span className="dsh-atb-isolation-note">
               {t('set.perm.current', { current: currentPerm === 'read-only' ? t('set.perm.readOnlyName') : currentPerm === 'danger-full-access' ? t('set.perm.fullName') : t('set.perm.writeName') })}
+            </span>
+          </section>
+
+          <section className="dsh-atb-diag-sec">
+            <h4>{t('set.category.heading')}</h4>
+            <select
+              className="dsh-atb-template-category-select"
+              value={draftCategory}
+              onChange={e => setDraftCategory(e.target.value)}
+            >
+              <option value="">{t('set.category.all', { count: state.templates.length })}</option>
+              {categoryOptions.map(option => (
+                <option key={option.value} value={option.value}>
+                  {option.value}（{option.count}）{option.count === 0 ? ` · ${t('set.category.empty')}` : ''}
+                </option>
+              ))}
+            </select>
+            <span className="dsh-atb-isolation-note">
+              {t('set.category.hint')}
             </span>
           </section>
         </div>

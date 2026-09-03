@@ -11,8 +11,10 @@ import { dirname, join } from 'node:path'
 import {
   LEDGER_SCHEMA_VERSION,
   asBoardSettings,
+  asPermission,
   emptyLedger,
   isPlausibleTaskRecord,
+  normalizeRequiredCapabilities,
   pruneExecutions,
   type TaskLedger,
   type TaskRecord,
@@ -69,7 +71,29 @@ export class TaskStore {
             console.warn('[dsh-taskboard] dropping implausible ledger entry on load:', id)
             continue
           }
-          plausible.push(entry as TaskRecord)
+          const task = entry as TaskRecord
+          try {
+            // Legacy records omit this field; normalize them to the safe
+            // taskboard-only default before they reach execution paths.
+            task.requiredCapabilities = normalizeRequiredCapabilities(task.requiredCapabilities)
+          } catch (error) {
+            console.warn('[dsh-taskboard] dropping ledger entry with invalid requiredCapabilities:', task.id, error)
+            continue
+          }
+          // Fork 0.5.x ledgers spelled the permission preset `permissionMode`;
+          // canonicalize onto `permission` (identical three values) so the
+          // post-merge host reads one field everywhere.
+          const legacy = (entry as Record<string, unknown>).permissionMode
+          if (task.permission === undefined && typeof legacy === 'string') {
+            try {
+              task.permission = asPermission(legacy)
+            } catch {
+              console.warn('[dsh-taskboard] dropping ledger entry with invalid permissionMode:', task.id)
+              continue
+            }
+          }
+          delete (task as unknown as Record<string, unknown>).permissionMode
+          plausible.push(task)
         }
         const tasks = plausible
         // Migration from pre-claim-field ledgers: an agent-held in_progress

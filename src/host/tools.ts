@@ -25,7 +25,9 @@ import { defineTool } from './sdk.ts'
 import {
   MAX_CHECKLIST_ITEMS,
   asIsolation,
+  asPermission,
   asStatus,
+  asTaskSpeed,
   asUrgency,
   canTransition,
   checklistFromTexts,
@@ -42,6 +44,8 @@ import {
   normalizeModel,
   normalizePrompt,
   normalizeTitle,
+  TASKBOARD_CAPABILITY,
+  requiredCapabilitiesOf,
   summarize,
   syncClaim,
   type Actor,
@@ -62,6 +66,8 @@ function taskLine(t: {
   workspaceId: string
   blocked: boolean
   executionMode: string
+  speed?: string
+  permission?: string
   commentCount?: number
   lastExecutionOutcome?: string
   checklist?: { done: number; total: number }
@@ -73,6 +79,8 @@ function taskLine(t: {
   ]
   if (t.blocked) parts.push('·受阻')
   if (t.executionMode === 'scheduled') parts.push('·定时')
+  if (t.speed === 'fast') parts.push('·快速')
+  if (t.permission !== undefined) parts.push(`·权限 ${t.permission}`)
   if (t.commentCount !== undefined && t.commentCount > 0) parts.push(`·评论${t.commentCount}`)
   if (t.checklist !== undefined && t.checklist.total > 0) parts.push(`·清单${t.checklist.done}/${t.checklist.total}`)
   if (t.lastExecutionOutcome !== undefined) parts.push(`·上次执行${t.lastExecutionOutcome}`)
@@ -92,7 +100,10 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
   if (holder !== undefined) lines.push(`认领: agent ${String(holder).slice(0, 24)}（持有期间其他会话不可移动）`)
   if (t.execution.nextRunAt !== undefined) lines.push(`下次触发: ${new Date(t.execution.nextRunAt).toISOString()}`)
   if (t.model !== undefined) lines.push(`固定模型: ${t.model.provider}/${t.model.model}${t.model.reasoningEffort !== undefined ? ` (思考强度: ${t.model.reasoningEffort})` : ''}`)
+  if (t.speed !== undefined) lines.push(`速度: ${t.speed === 'fast' ? '快速' : '标准'}`)
+  if (t.permission !== undefined) lines.push(`权限模式: ${t.permission}`)
   if (t.presetId !== undefined) lines.push(`执行模式: ${t.presetId}（未指定时为部署默认 preset）`)
+  lines.push(`执行能力: ${requiredCapabilitiesOf(t).join(', ')}`)
   lines.push(`描述: ${t.description.length > 0 ? t.description : '（无）'}`)
   lines.push(`执行 Prompt: ${t.effectivePrompt ?? effectivePrompt(t)}`)
   if (t.checklist !== undefined && t.checklist.length > 0) {
@@ -189,6 +200,8 @@ export interface ToolDeps {
    * in which case only the structural check applies.
    */
   modelProviders?: () => string[] | undefined
+  /** Grant task capabilities after a successful claim mutation. */
+  authorizeSession?: (agent: unknown, skillNames: readonly string[], provenance: 'claim') => void | Promise<void>
 }
 
 /** Validate a pinned model: structural check always, provider route when known. */
@@ -362,7 +375,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     description:
       'Create a task on the board. Required: title, workspaceId (project), urgency (urgent/normal/relaxed). '
       + 'Optional: description, prompt (sent to a fresh session on execution), status (default todo), '
-      + 'execution mode (claim|scheduled + cron), model {provider, model} to pin executions to a model. '
+      + 'execution mode (claim|scheduled + cron), model {provider, model, reasoningEffort?} to pin executions to a model, '
+      + 'speed (standard|fast), and permission (read-only|workspace-write|danger-full-access; legacy alias permissionMode is also accepted). '
       + 'Do not track trivial requests as tasks.',
     parameters: {
       title: { type: 'string', required: true, description: 'Short imperative line (1..200 chars).' },
@@ -387,8 +401,21 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         properties: {
           provider: { type: 'string', description: 'Provider route id.' },
           model: { type: 'string', description: 'Provider-owned model id.' },
-          reasoningEffort: { type: 'string', description: 'Optional thinking intensity / reasoning effort (e.g. low, medium, high).' },
+          reasoningEffort: { type: 'string', description: 'Optional adapter-owned thinking intensity / reasoning effort (e.g. low, medium, high); omit for the model/provider default.' },
         },
+      },
+      speed: {
+        type: 'string',
+        description: 'Taskboard speed preference: standard | fast. It is preserved as an adapter-facing execution hint.',
+      },
+      permission: {
+        type: 'string',
+        description: 'Harness file-permission preset: workspace-write (default) | read-only | danger-full-access.',
+      },
+      // Legacy fork alias; canonicalized onto `permission`.
+      permissionMode: {
+        type: 'string',
+        description: 'Legacy alias of permission (read-only | workspace-write | danger-full-access).',
       },
       isolation: {
         type: 'string',
@@ -420,7 +447,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       description?: string
       prompt?: string
       execution?: { mode?: string; cron?: string }
-      model?: { provider?: string; model?: string }
+      model?: { provider?: string; model?: string; reasoningEffort?: string }
+      speed?: string
+      permission?: string
+      permissionMode?: string
       isolation?: string
       presetId?: string
       checklist?: string[]
@@ -438,6 +468,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         }
         const execution = normalizeExecution(args.execution ?? {}, deps.now())
         const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
+        const speed = args.speed === undefined ? undefined : asTaskSpeed(args.speed)
+        const permission = args.permission === undefined
+          ? (args.permissionMode === undefined ? undefined : asPermission(args.permissionMode))
+          : asPermission(args.permission)
         // 0.5.0: an omitted isolation is MATERIALIZED from the board setting
         // (看板设置) at creation, so later setting changes never rewrite
         // existing tasks.
@@ -459,6 +493,9 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           blocked: false,
           execution,
           model,
+          requiredCapabilities: [TASKBOARD_CAPABILITY],
+          ...(speed !== undefined ? { speed } : {}),
+          ...(permission !== undefined ? { permission } : {}),
           isolation,
           ...(presetId !== undefined ? { presetId } : {}),
           ...(checklist !== undefined ? { checklist } : {}),
@@ -561,7 +598,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     },
     async execute(args: { id: string; status: string; ifVersion: number }, exec: unknown) {
       try {
-        const { actor } = caller(exec as ToolRunContext)
+        const context = exec as ToolRunContext
+        const { actor } = caller(context)
         const to = asStatus(args.status)
         // Claim boundary (policy gate): resolving the caller's workspace is
         // async, so it happens BEFORE the mutation — the comparison runs INSIDE
@@ -571,6 +609,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           : undefined
         // R1: every state guard + the write itself run inside the mutation.
         let next: TaskRecord | undefined
+        let claimed = false
         await store.mutate('task-moved', ledger => {
           const { index, task } = liveTaskAt(ledger, args.id)
           versionGuard(task, args.ifVersion)
@@ -599,10 +638,40 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           next.updatedBy = actor
           if (isClaim(task.status, to)) next.blocked = false
           // Record the holder on a claim; every move out of in_progress releases it.
-          syncClaim(next, to, deps.now(), isClaim(task.status, to) ? actor.sessionId : undefined)
+          claimed = isClaim(task.status, to)
+          syncClaim(next, to, deps.now(), claimed ? actor.sessionId : undefined)
           ledger.tasks[index] = next
           return [next]
         })
+        if (claimed && deps.authorizeSession !== undefined) {
+          try {
+            await deps.authorizeSession(context.agent, requiredCapabilitiesOf(next!), 'claim')
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            // The capability grant is deliberately after the durable claim.
+            // If it fails, compensate only the exact claim we just made; do
+            // not clobber a later write from the same session.
+            try {
+              await store.mutate('task-moved', ledger => {
+                const current = ledger.tasks.find(task => task.id === next!.id)
+                if (current === undefined || current.status !== 'in_progress' || current.claimedBy !== actor.sessionId || current.version !== next!.version) {
+                  throw new Error('claim changed before capability authorization could be rolled back')
+                }
+                const rollback = structuredClone(current)
+                rollback.status = 'todo'
+                rollback.version = current.version + 1
+                rollback.updatedAt = deps.now()
+                rollback.updatedBy = actor
+                syncClaim(rollback, 'todo', deps.now())
+                ledger.tasks[ledger.tasks.findIndex(task => task.id === rollback.id)] = rollback
+                return [rollback]
+              })
+            } catch (rollbackError) {
+              throw new ToolError(ERR.invalidInput, `capability authorization failed: ${message}; claim rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`)
+            }
+            throw new ToolError(ERR.invalidInput, `capability authorization failed: ${message}; claim rolled back`)
+          }
+        }
         return json({ task: summarize(next!) })
       } catch (error) { fail(error) }
     },

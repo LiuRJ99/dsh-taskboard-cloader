@@ -99,6 +99,70 @@ export const URGENCY_COLOR: Readonly<Record<Urgency, string>> = {
 }
 
 // ---------------------------------------------------------------------------
+// Capability authorization
+// ---------------------------------------------------------------------------
+
+/**
+ * A capability is the user-facing name of a lazy-gate Skill.  Keeping the
+ * stable Skill name (rather than a tool prefix or prompt section) means the
+ * host gate remains the only component that can resolve it to resources.
+ *
+ * The type is intentionally string-shaped: adapted plugins may publish new
+ * user-invocable gated skills without requiring a taskboard release.  Values
+ * are still constrained by {@link normalizeRequiredCapabilities}.
+ */
+export type TaskCapability = string
+
+/** The capability that every taskboard task receives for its own protocol tools. */
+export const TASKBOARD_CAPABILITY = 'taskboard' as const
+
+/** Maximum number of lazy-gate Skill names carried by one task. */
+export const MAX_REQUIRED_CAPABILITIES = 20
+
+/** Skill names use the same lowercase kebab grammar as DSH slash commands. */
+const TASK_CAPABILITY_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/**
+ * Normalize a task's requested lazy-gate capabilities.
+ *
+ * Taskboard is always included: execution sessions need the taskboard tools to
+ * follow the handoff protocol, and an omitted field on an older ledger must not
+ * silently turn that access off.  Unknown-but-well-formed Skill names are
+ * retained for forward-compatible adapted plugins; the lazy-gate host service
+ * decides whether each name is currently configured and registered.
+ *
+ * @param raw - untyped route/import/ledger value.
+ * @returns stable, de-duplicated names with taskboard first.
+ * @throws when the value is not a bounded array of valid Skill names.
+ */
+export function normalizeRequiredCapabilities(raw: unknown): TaskCapability[] {
+  if (raw === undefined) return [TASKBOARD_CAPABILITY]
+  if (!Array.isArray(raw)) throw new Error('requiredCapabilities must be an array of skill names')
+  if (raw.length > MAX_REQUIRED_CAPABILITIES) {
+    throw new Error(`requiredCapabilities may hold at most ${MAX_REQUIRED_CAPABILITIES} skills`)
+  }
+  const seen = new Set<string>()
+  const result: string[] = [TASKBOARD_CAPABILITY]
+  seen.add(TASKBOARD_CAPABILITY)
+  for (const value of raw) {
+    if (typeof value !== 'string') throw new Error('requiredCapabilities must contain only skill names')
+    const name = value.trim()
+    if (!TASK_CAPABILITY_RE.test(name)) {
+      throw new Error(`invalid required capability "${name}"`)
+    }
+    if (seen.has(name)) continue
+    seen.add(name)
+    result.push(name)
+  }
+  return result
+}
+
+/** Effective capabilities for a legacy record whose field is absent. */
+export function requiredCapabilitiesOf(task: Pick<TaskRecord, 'requiredCapabilities'>): readonly TaskCapability[] {
+  return task.requiredCapabilities ?? [TASKBOARD_CAPABILITY]
+}
+
+// ---------------------------------------------------------------------------
 // Execution
 // ---------------------------------------------------------------------------
 
@@ -121,6 +185,13 @@ export type IsolationMode = 'worktree' | 'none'
  */
 export const DEFAULT_ISOLATION: IsolationMode = 'none'
 
+/** The task execution speed preference. `fast` is an adapter-facing hint; the
+ * standard route remains unchanged when no adapter honors it. */
+export type TaskSpeed = 'standard' | 'fast'
+
+/** Every valid task speed. */
+export const TASK_SPEEDS: readonly TaskSpeed[] = ['standard', 'fast']
+
 /** Validate an isolation value. */
 export function asIsolation(raw: string): IsolationMode {
   if (raw !== 'worktree' && raw !== 'none') {
@@ -132,6 +203,29 @@ export function asIsolation(raw: string): IsolationMode {
 /** Resolve a task's effective isolation (omitted → the factory default). */
 export function effectiveIsolation(task: Pick<TaskRecord, 'isolation'>): IsolationMode {
   return task.isolation === undefined ? DEFAULT_ISOLATION : task.isolation
+}
+
+/** Validate a task speed value. */
+export function asTaskSpeed(raw: string): TaskSpeed {
+  if (!TASK_SPEEDS.includes(raw as TaskSpeed)) {
+    throw new Error(`speed must be one of: ${TASK_SPEEDS.join(', ')}`)
+  }
+  return raw as TaskSpeed
+}
+
+/** Maximum length for a user-defined template category label. */
+export const MAX_TEMPLATE_CATEGORY_LENGTH = 30
+
+/** Normalize a template category label; undefined means the default category. */
+export function normalizeTemplateCategory(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined
+  if (typeof raw !== 'string') throw new Error('template category must be a string')
+  const category = raw.trim()
+  if (category.length === 0) return undefined
+  if (category.length > MAX_TEMPLATE_CATEGORY_LENGTH) {
+    throw new Error(`template category must be 1..${MAX_TEMPLATE_CATEGORY_LENGTH} characters`)
+  }
+  return category
 }
 
 /**
@@ -159,12 +253,26 @@ export function asPermission(raw: unknown): PermissionMode {
 }
 
 /**
+ * Legacy alias (fork 0.5.x): normalize a Harness permission string with the
+ * same grammar as {@link asPermission}, accepting the historical
+ * `permissionMode` values. Kept only for migrating older ledgers/imports.
+ */
+export function asPermissionMode(raw: string): PermissionMode {
+  return asPermission(raw)
+}
+
+/** Legacy alias kept for fork-era importers. */
+export const PERMISSION_MODES: readonly PermissionMode[] = ALL_PERMISSIONS
+
+/**
  * Board-level settings persisted with the ledger (0.5.0). Only fields the
  * user explicitly set are present; absent fields follow factory defaults.
  */
 export type BoardSettings = {
   /** Default code isolation applied when a NEW task is created without an explicit choice. */
   defaultIsolation?: IsolationMode
+  /** Category filtered into the + 新建任务 menu; absent = all categories. */
+  templateMenuCategory?: string
   /** Automatically capture external workspace sessions into the taskboard (default: false). */
   syncExternalSessions?: boolean
   /** Default permission preset applied when a NEW task is created without an explicit choice (0.5.5, default: 'workspace-write'). */
@@ -184,6 +292,10 @@ export function asBoardSettings(raw: unknown): BoardSettings {
     }
     out.defaultIsolation = asIsolation(e.defaultIsolation)
   }
+  if (e.templateMenuCategory !== undefined) {
+    const category = normalizeTemplateCategory(e.templateMenuCategory)
+    if (category !== undefined) out.templateMenuCategory = category
+  }
   if (e.syncExternalSessions !== undefined) {
     if (typeof e.syncExternalSessions !== 'boolean') {
       throw new Error('syncExternalSessions must be a boolean')
@@ -199,6 +311,16 @@ export function asBoardSettings(raw: unknown): BoardSettings {
 /** The effective default isolation for NEW tasks (board setting → factory default). */
 export function defaultIsolationOf(settings?: BoardSettings): IsolationMode {
   return settings?.defaultIsolation ?? DEFAULT_ISOLATION
+}
+
+/** Resolve a task's effective speed (omitted → standard). */
+export function effectiveTaskSpeed(task: Pick<TaskRecord, 'speed'>): TaskSpeed {
+  return task.speed ?? 'standard'
+}
+
+/** Resolve the approval policy paired with the three file-permission modes. */
+export function approvalPolicyForPermissionMode(mode: PermissionMode): 'ask' | 'never' {
+  return mode === 'danger-full-access' ? 'never' : 'ask'
 }
 
 /** The effective external session sync switch (board setting → factory default false). */
@@ -501,6 +623,10 @@ export type TaskRecord = {
   blocked: boolean
   execution: ExecutionConfig
   model?: TaskModel
+  /** Lazy-gate Skill names requested by the user; taskboard is always present. */
+  requiredCapabilities?: TaskCapability[]
+  /** Taskboard-owned speed preference; omitted = standard. */
+  speed?: TaskSpeed
   /** Code isolation for executions (omitted = the worktree default; see {@link IsolationMode}). */
   isolation?: IsolationMode
   /**
@@ -765,19 +891,23 @@ export function syncClaim(task: TaskRecord, to: TaskStatus, now: number, holder?
  */
 export function normalizeModel(raw: unknown): TaskModel {
   if (typeof raw !== 'object' || raw === null) {
-    throw new Error('model must be { provider: string, model: string }')
+    throw new Error('model must be { provider: string, model: string, reasoningEffort?: string }')
   }
   const { provider, model, reasoningEffort } = raw as { provider?: unknown; model?: unknown; reasoningEffort?: unknown }
   if (typeof provider !== 'string' || typeof model !== 'string') {
-    throw new Error('model must be { provider: string, model: string }')
+    throw new Error('model must be { provider: string, model: string, reasoningEffort?: string }')
+  }
+  if (reasoningEffort !== undefined && typeof reasoningEffort !== 'string') {
+    throw new Error('model.reasoningEffort must be a string when provided')
   }
   const p = provider.trim()
   const m = model.trim()
+  const effort = typeof reasoningEffort === 'string' ? reasoningEffort.trim() : ''
   if (p.length === 0 || m.length === 0) {
     throw new Error('model.provider and model.model must be non-empty strings')
   }
-  const eff = typeof reasoningEffort === 'string' && reasoningEffort.trim().length > 0 ? reasoningEffort.trim() : undefined
-  return { provider: p, model: m, ...(eff !== undefined ? { reasoningEffort: eff } : {}) }
+  if (effort.length > 0) return { provider: p, model: m, reasoningEffort: effort }
+  return { provider: p, model: m }
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,7 +1207,12 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
       status,
       blocked: e.blocked === true,
       execution,
+      requiredCapabilities: normalizeRequiredCapabilities(e.requiredCapabilities),
       ...(typeof e.model === 'object' && e.model !== null ? { model: normalizeModel(e.model) } : {}),
+      ...(typeof e.speed === 'string' ? { speed: asTaskSpeed(e.speed) } : {}),
+      // Fork 0.5.x legacy ledgers stored the mode under `permissionMode`;
+      // migrate onto the canonical `permission` spelling (same three values).
+      ...(typeof e.permissionMode === 'string' ? { permission: asPermission(e.permissionMode) } : {}),
       ...(typeof e.isolation === 'string' && (e.isolation === 'worktree' || e.isolation === 'none') ? { isolation: e.isolation } : {}),
       ...(typeof e.presetId === 'string' && e.presetId.trim().length > 0 ? { presetId: e.presetId.trim() } : {}),
       ...(typeof e.permission === 'string' ? { permission: asPermission(e.permission) } : {}),
@@ -1173,6 +1308,9 @@ export type TaskSummary = {
   executionMode: ExecutionMode
   nextRunAt?: number
   model?: TaskModel
+  /** Taskboard-owned speed preference (omitted → standard). */
+  speed?: TaskSpeed
+  /** Execution permission preset (see {@link PermissionMode}). */
   permission?: PermissionMode
   version: number
   claimOwner?: string
@@ -1200,7 +1338,8 @@ export function summarize(task: TaskRecord): TaskSummary {
     executionMode: task.execution.mode,
     nextRunAt: task.execution.nextRunAt,
     model: task.model,
-    permission: task.permission,
+    ...(task.speed !== undefined ? { speed: task.speed } : {}),
+    ...(task.permission !== undefined ? { permission: task.permission } : {}),
     version: task.version,
     claimOwner: isClaimedBy(task),
     commentCount: task.comments.length,

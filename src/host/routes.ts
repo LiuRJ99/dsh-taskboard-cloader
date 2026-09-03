@@ -20,6 +20,7 @@ import {
   asIsolation,
   asPermission,
   asStatus,
+  asTaskSpeed,
   asUrgency,
   canTransition,
   checklistFromTexts,
@@ -31,8 +32,10 @@ import {
   normalizeBody,
   normalizeChecklist,
   normalizeExecution,
+  normalizeTemplateCategory,
   normalizeModel,
   normalizePrompt,
+  normalizeRequiredCapabilities,
   normalizeTitle,
   summarize,
   syncClaim,
@@ -46,6 +49,7 @@ import { removeMirror, repoMainPath } from './isolation.ts'
 import { createRepoScanner, type RepoScanner } from './repos.ts'
 import type { CatalogModelItem, CatalogPresetItem, MergeRepoResult, TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
+import { registerMermaidBundleRoute } from './mermaid-route.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
 import type { TaskStore } from './store.ts'
 import { ERR, ToolError } from './tools.ts'
@@ -116,20 +120,28 @@ function normalizeTemplateSpec(raw: unknown, now: number): TaskTemplate['task'] 
   const description = str('description')
   const prompt = str('prompt')
   const urgency = str('urgency')
+  const speed = str('speed')
   const isolation = str('isolation')
   const presetId = str('presetId')
   const permission = str('permission')
+  const permissionMode = str('permissionMode')
   if (title !== undefined) spec.title = normalizeTitle(title)
   if (description !== undefined) spec.description = description
   if (prompt !== undefined) spec.prompt = normalizePrompt(prompt)
   if (urgency !== undefined) spec.urgency = asUrgency(urgency)
+  if (speed !== undefined) spec.speed = asTaskSpeed(speed)
   if (isolation !== undefined) spec.isolation = asIsolation(isolation)
   if (presetId !== undefined && presetId.trim().length > 0) spec.presetId = presetId.trim()
+  // Fork 0.5.x templates stored the mode under `permissionMode`; canonicalize.
   if (permission !== undefined && permission.trim().length > 0) spec.permission = asPermission(permission)
+  else if (permissionMode !== undefined && permissionMode.trim().length > 0) spec.permission = asPermission(permissionMode)
   if (e.execution !== undefined) {
     spec.execution = normalizeExecution(e.execution as { mode?: string; cron?: string }, now)
   }
   if (e.model !== undefined) spec.model = normalizeModel(e.model)
+  if (e.requiredCapabilities !== undefined) {
+    spec.requiredCapabilities = normalizeRequiredCapabilities(e.requiredCapabilities)
+  }
   if (e.checklist !== undefined) {
     if (!Array.isArray(e.checklist) || e.checklist.some(c => typeof c !== 'string')) {
       throw new Error('Error: invalid_input: task.checklist must be an array of strings')
@@ -553,13 +565,19 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           }
           const execution = normalizeExecution((body.execution as { mode?: string; cron?: string } | undefined) ?? {}, options.now())
           const model = body.model === undefined ? undefined : checkModel(body.model, options.modelProviders)
+          const speed = body.speed === undefined ? undefined : asTaskSpeed(str(body, 'speed') ?? '')
           const isolationRaw = str(body, 'isolation')
           // 0.5.0: an omitted isolation is MATERIALIZED from the board
           // setting (看板设置) at creation, so later setting changes never
           // rewrite existing tasks.
           const isolation = isolationRaw === null ? defaultIsolationOf(store.snapshot().settings) : asIsolation(isolationRaw)
           const presetId = normalizePresetId(str(body, 'presetId'))
-          const permissionRaw = str(body, 'permission')
+          const requiredCapabilities = normalizeRequiredCapabilities(body.requiredCapabilities)
+          // 0.5.5/0.6.0: permission presets. An omitted value is MATERIALIZED
+          // from the board default (看板设置 → 默认权限). Legacy fork bodies
+          // that still spell the field `permissionMode` are accepted and
+          // canonicalized onto `permission` (identical three values).
+          const permissionRaw = str(body, 'permission') ?? str(body, 'permissionMode')
           const permission = permissionRaw === null ? defaultPermissionOf(store.snapshot().settings) : asPermission(permissionRaw)
           let checklist: TaskRecord['checklist'] = undefined
           if (body.checklist !== undefined) {
@@ -581,6 +599,8 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             blocked: false,
             execution,
             model,
+            requiredCapabilities,
+            ...(speed !== undefined ? { speed } : {}),
             isolation,
             ...(presetId !== undefined ? { presetId } : {}),
             permission,
@@ -640,10 +660,15 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
                 next.workspaceId = workspaceId
               }
               if (typeof body.blocked === 'boolean') next.blocked = body.blocked
+              if (body.requiredCapabilities !== undefined) {
+                next.requiredCapabilities = normalizeRequiredCapabilities(body.requiredCapabilities === null ? undefined : body.requiredCapabilities)
+              }
               // The GUI (task owner surface) may edit model/execution; null clears the model.
               if (body.execution !== undefined) next.execution = normalizeExecution(body.execution as { mode?: string; cron?: string }, options.now())
               if (body.model === null) next.model = undefined
               else if (body.model !== undefined) next.model = checkModel(body.model, options.modelProviders)
+              if (body.speed === null) delete next.speed
+              else if (body.speed !== undefined) next.speed = asTaskSpeed(str(body, 'speed') ?? '')
               // Isolation may change only before the first execution (分支与基线
               // 取决于该选择 — plan §3.1: 执行开始后锁定).
               const isolationRaw = str(body, 'isolation')
@@ -656,9 +681,11 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               // Preset may change any time: each run composes fresh.
               if (body.presetId === null) delete next.presetId
               else if (body.presetId !== undefined) next.presetId = normalizePresetId(str(body, 'presetId'))!
-              // Permission (0.5.5): 'workspace-write' | 'read-only' | 'danger-full-access'
-              if (body.permission === null) delete next.permission
+              // Permission (0.5.5/0.6.0): 'workspace-write' | 'read-only' | 'danger-full-access'.
+              // Legacy fork `permissionMode` bodies canonicalize onto `permission`.
+              if (body.permission === null || body.permissionMode === null) delete next.permission
               else if (body.permission !== undefined) next.permission = asPermission(body.permission)
+              else if (body.permissionMode !== undefined) next.permission = asPermission(body.permissionMode)
               // Checklist (0.4.0): the GUI replaces the whole list; null clears.
               if (body.checklist === null) delete next.checklist
               else if (body.checklist !== undefined) {
@@ -1160,6 +1187,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const template = await options.templates.upsert({
             id: str(body, 'id') ?? undefined,
             name,
+            category: normalizeTemplateCategory(body.category),
             task: normalizeTemplateSpec(body.task, options.now()),
           })
           json(res, { ok: true, value: template }, 201)
@@ -1227,6 +1255,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
   const disposers = [
     ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }),
     ctx.webServer.register({ kind: 'exact', path: SSE_PATH, handler: sse }),
+    registerMermaidBundleRoute(ctx),
   ]
   return () => {
     unsubscribeBroadcast()
