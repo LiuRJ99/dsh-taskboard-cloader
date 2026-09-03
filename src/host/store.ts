@@ -13,7 +13,6 @@ import {
   asBoardSettings,
   emptyLedger,
   isPlausibleTaskRecord,
-  normalizeRequiredCapabilities,
   pruneExecutions,
   type TaskLedger,
   type TaskRecord,
@@ -70,16 +69,7 @@ export class TaskStore {
             console.warn('[dsh-taskboard] dropping implausible ledger entry on load:', id)
             continue
           }
-          const task = entry as TaskRecord
-          try {
-            // Legacy records omit this field; normalize them to the safe
-            // taskboard-only default before they reach execution paths.
-            task.requiredCapabilities = normalizeRequiredCapabilities(task.requiredCapabilities)
-          } catch (error) {
-            console.warn('[dsh-taskboard] dropping ledger entry with invalid requiredCapabilities:', task.id, error)
-            continue
-          }
-          plausible.push(task)
+          plausible.push(entry as TaskRecord)
         }
         const tasks = plausible
         // Migration from pre-claim-field ledgers: an agent-held in_progress

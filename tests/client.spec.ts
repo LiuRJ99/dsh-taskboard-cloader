@@ -96,243 +96,6 @@ describe('client half', () => {
     for (const fn of disposers) (fn as () => void)()
   })
 
-  it('Better Sidebar service exists时注册原生 Tab，并跳过旧 DOM 双挂载', async () => {
-    vi.stubGlobal('fetch', fetchMock)
-    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
-    const { apply } = await import('../src/client/index.ts')
-    const registered: Array<{ id: string; component: (props: never) => unknown }> = []
-    const tabDisposer = vi.fn()
-    const service = {
-      registerTab: vi.fn((descriptor: { id: string; component: (props: never) => unknown }) => {
-        registered.push(descriptor)
-        return tabDisposer
-      }),
-      features: ['openFile'],
-      openFile: vi.fn(),
-    }
-    const effectDisposers: Array<() => void> = []
-    const ctx = {
-      get: (name: string) => name === 'betterSidebar' ? service : undefined,
-      effect: (fn: () => unknown) => {
-        const disposer = fn()
-        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
-      },
-    }
-    apply(ctx as never)
-    await new Promise(r => setTimeout(r, 20))
-
-    expect(service.registerTab).toHaveBeenCalledTimes(1)
-    expect(registered[0]!.id).toBe('dsh-taskboard:board')
-    expect(document.querySelector('[data-dsh-atb-entry]')).toBeNull()
-    expect(document.querySelector('.dsh-atb-view')).toBeNull()
-
-    for (const disposer of effectDisposers) disposer()
-    expect(tabDisposer).toHaveBeenCalledTimes(1)
-  })
-
-  it('有 slots 服务时注册会话头部看板 action', async () => {
-    vi.stubGlobal('fetch', fetchMock)
-    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
-    const { apply } = await import('../src/client/index.ts')
-    const registered: Array<{ id: string; component: (props: { sessionId: string }) => unknown }> = []
-    const slots = {
-      inject: vi.fn((_name: string, factory: () => unknown) => factory()),
-      register: vi.fn((descriptor: { id: string }, component: (props: { sessionId: string }) => unknown) => {
-        registered.push({ id: descriptor.id, component })
-        return () => undefined
-      }),
-    }
-    const effectDisposers: Array<() => void> = []
-    const ctx = {
-      get: (name: string) => name === 'slots' ? slots : undefined,
-      get slots(): never {
-        throw new Error('service "slots" is not declared')
-      },
-      effect: (fn: () => unknown) => {
-        const disposer = fn()
-        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
-      },
-    }
-    apply(ctx as never)
-    await new Promise(r => setTimeout(r, 20))
-
-    expect(slots.inject).toHaveBeenCalledWith('conversation.session.header.actions', expect.any(Function))
-    expect(slots.register).toHaveBeenCalledTimes(1)
-    expect(registered[0]!.id).toBe('dsh-taskboard:session-link')
-    expect(typeof registered[0]!.component).toBe('function')
-
-    for (const disposer of effectDisposers) disposer()
-  })
-
-  it('会话头部看板 action 触发时调用 openTab 且附带 path: board 以自动展开侧边栏', async () => {
-    vi.stubGlobal('fetch', fetchMock)
-    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
-    const { apply } = await import('../src/client/index.ts')
-    let registeredComponent: ((props: { sessionId: string }) => unknown) | undefined
-    const slots = {
-      inject: vi.fn((_name: string, factory: () => unknown) => factory()),
-      register: vi.fn((_descriptor: { id: string }, component: (props: { sessionId: string }) => unknown) => {
-        registeredComponent = component
-        return () => undefined
-      }),
-    }
-    const service = {
-      registerTab: vi.fn(() => () => undefined),
-      openTab: vi.fn(),
-      features: ['openFile'] as const,
-      openFile: vi.fn(),
-    }
-    const effectDisposers: Array<() => void> = []
-    const ctx = {
-      get: (name: string) => name === 'slots' ? slots : name === 'betterSidebar' ? service : undefined,
-      get slots(): never {
-        throw new Error('service "slots" is not declared')
-      },
-      effect: (fn: () => unknown) => {
-        const disposer = fn()
-        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
-      },
-    }
-    apply(ctx as never)
-    await new Promise(r => setTimeout(r, 20))
-
-    expect(registeredComponent).toBeDefined()
-
-    for (const disposer of effectDisposers) disposer()
-  })
-
-  it('Better Sidebar 后激活时也会把旧挂载升级为原生 Tab', async () => {
-    vi.stubGlobal('fetch', fetchMock)
-    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
-    const { apply } = await import('../src/client/index.ts')
-    const tabDisposer = vi.fn()
-    const service = {
-      registerTab: vi.fn(() => tabDisposer),
-      features: ['openFile'] as const,
-      openFile: vi.fn(),
-    }
-    let currentService: typeof service | undefined
-    const statusListeners: Array<(...args: unknown[]) => unknown> = []
-    const effectDisposers: Array<() => void> = []
-    const ctx = {
-      get: (name: string) => name === 'betterSidebar' ? currentService : undefined,
-      effect: (fn: () => unknown) => {
-        const disposer = fn()
-        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
-      },
-      on: (event: string, listener: (...args: unknown[]) => unknown) => {
-        if (event === 'internal/status') statusListeners.push(listener)
-        return () => undefined
-      },
-    }
-    apply(ctx as never)
-    await new Promise(r => setTimeout(r, 20))
-    expect(service.registerTab).not.toHaveBeenCalled()
-    expect(statusListeners).toHaveLength(1)
-
-    currentService = service
-    for (const listener of [...statusListeners]) listener()
-    await new Promise(r => setTimeout(r, 0))
-    expect(service.registerTab).toHaveBeenCalledTimes(1)
-
-    // Multiple internal/status events must not re-register the tab on the same service
-    for (const listener of [...statusListeners]) listener()
-    for (const listener of [...statusListeners]) listener()
-    expect(service.registerTab).toHaveBeenCalledTimes(1)
-
-    for (const disposer of effectDisposers) disposer()
-    expect(tabDisposer).toHaveBeenCalledTimes(1)
-  })
-
-  it('Better Sidebar 抛出重复注册异常防护：同一服务实例多次 status 事件不重复调用 registerTab', async () => {
-    vi.stubGlobal('fetch', fetchMock)
-    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
-    const { apply } = await import('../src/client/index.ts')
-    let isRegistered = false
-    const tabDisposer = vi.fn(() => { isRegistered = false })
-    const service = {
-      registerTab: vi.fn((descriptor: { id: string }) => {
-        if (isRegistered) {
-          throw new Error(`[dsh-better-sidebar] tab type "${descriptor.id}" already registered`)
-        }
-        isRegistered = true
-        return tabDisposer
-      }),
-      features: ['openFile'] as const,
-      openFile: vi.fn(),
-    }
-    const statusListeners: Array<(...args: unknown[]) => unknown> = []
-    const effectDisposers: Array<() => void> = []
-    const ctx = {
-      get: (name: string) => name === 'betterSidebar' ? service : undefined,
-      effect: (fn: () => unknown) => {
-        const disposer = fn()
-        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
-      },
-      on: (event: string, listener: (...args: unknown[]) => unknown) => {
-        if (event === 'internal/status') statusListeners.push(listener)
-        return () => undefined
-      },
-    }
-    apply(ctx as never)
-    await new Promise(r => setTimeout(r, 20))
-    expect(service.registerTab).toHaveBeenCalledTimes(1)
-    expect(isRegistered).toBe(true)
-
-    // Simulate Cordis emitting internal/status multiple times during boot/state updates
-    for (let i = 0; i < 5; i++) {
-      for (const listener of [...statusListeners]) listener()
-    }
-    expect(service.registerTab).toHaveBeenCalledTimes(1)
-
-    for (const disposer of effectDisposers) disposer()
-    expect(tabDisposer).toHaveBeenCalledTimes(1)
-    expect(isRegistered).toBe(false)
-  })
-
-  it('Better Sidebar 实例变化（如 HMR 热重载）时能重新向新服务注册', async () => {
-    vi.stubGlobal('fetch', fetchMock)
-    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
-    const { apply } = await import('../src/client/index.ts')
-    const disposer1 = vi.fn()
-    const service1 = {
-      registerTab: vi.fn(() => disposer1),
-      features: ['openFile'] as const,
-      openFile: vi.fn(),
-    }
-    const disposer2 = vi.fn()
-    const service2 = {
-      registerTab: vi.fn(() => disposer2),
-      features: ['openFile'] as const,
-      openFile: vi.fn(),
-    }
-    let currentService: typeof service1 | undefined = service1
-    const statusListeners: Array<(...args: unknown[]) => unknown> = []
-    const effectDisposers: Array<() => void> = []
-    const ctx = {
-      get: (name: string) => name === 'betterSidebar' ? currentService : undefined,
-      effect: (fn: () => unknown) => {
-        const disposer = fn()
-        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
-      },
-      on: (event: string, listener: (...args: unknown[]) => unknown) => {
-        if (event === 'internal/status') statusListeners.push(listener)
-        return () => undefined
-      },
-    }
-    apply(ctx as never)
-    await new Promise(r => setTimeout(r, 20))
-    expect(service1.registerTab).toHaveBeenCalledTimes(1)
-    expect(service2.registerTab).not.toHaveBeenCalled()
-
-    // Service replaces
-    currentService = service2
-    for (const listener of [...statusListeners]) listener()
-    expect(service2.registerTab).toHaveBeenCalledTimes(1)
-
-    for (const disposer of effectDisposers) disposer()
-  })
-
   it('stylesheet is ownership-tagged, idempotent, and re-attaches after removal', async () => {
     const { injectStyles } = await import('../src/client/styles.ts')
     document.getElementById('dsh-taskboard-styles')?.remove()
@@ -346,9 +109,7 @@ describe('client half', () => {
     // stylesheet to this plugin.
     expect(style.getAttribute('data-plugin')).toBe('dsh-taskboard')
     expect(style.getAttribute('data-plugin-css')).toBe('dsh-taskboard/styles')
-    // Board settings use the modal body's two-column grid; the settings
-    // section must span both columns so its options fill the modal.
-    expect(style.textContent).toContain('.dsh-atb-set .dsh-atb-diag-sec { grid-column: 1 / -1; }')
+
     // DOM-idempotent: a second call neither duplicates nor recreates.
     injectStyles()
     expect(document.querySelectorAll('#dsh-taskboard-styles')).toHaveLength(1)
@@ -533,53 +294,6 @@ describe('client half', () => {
     controller.dispose()
   })
 
-  it('detail panel toggles board-local fullscreen and Esc exits', async () => {
-    localStorage.clear()
-    const React = await import('react')
-    const { createRoot } = await import('react-dom/client')
-    const { BoardController } = await import('../src/client/controller.ts')
-    const { TaskBoard } = await import('../src/client/board/TaskBoard.tsx')
-
-    const task = {
-      id: 't-fullscreen', title: 'Fullscreen detail', description: 'Details', prompt: '', workspaceId: 'ws-a',
-      urgency: 'normal' as const, status: 'todo' as const, blocked: false,
-      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
-      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
-      comments: [], executions: [],
-    }
-    const client = {
-      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [task] }),
-      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
-      stream: () => () => {},
-    }
-    const controller = new BoardController(client as never)
-    const host = document.createElement('div')
-    document.body.append(host)
-    const root = createRoot(host)
-    root.render(React.createElement(TaskBoard, { controller }))
-    controller.start()
-    await new Promise(r => setTimeout(r, 20))
-
-    controller.select(task.id)
-    await new Promise(r => setTimeout(r, 10))
-    const panel = () => host.querySelector<HTMLElement>('.dsh-atb-detailpanel')
-    expect(panel()).not.toBeNull()
-    expect(panel()!.dataset.fullscreen).toBeUndefined()
-
-    const fullscreen = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-detail-topbtns .dsh-atb-detail-edit')).find(b => b.textContent?.includes('全屏'))!
-    fullscreen().click()
-    await new Promise(r => setTimeout(r, 10))
-    expect(panel()!.dataset.fullscreen).toBe('true')
-
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    await new Promise(r => setTimeout(r, 10))
-    expect(panel()!.dataset.fullscreen).toBeUndefined()
-
-    root.unmount()
-    host.remove()
-    controller.dispose()
-  })
-
   it('in_review cards carry quick ✓/✗ actions; other columns do not', async () => {
     localStorage.clear()
     const React = await import('react')
@@ -715,9 +429,6 @@ describe('client half', () => {
       create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
     }
     const controller = new BoardController(client as never)
-    controller.installModelCatalog(async () => [{
-      provider: 'test-provider', model: 'gpt-5.6-luna', name: 'Fast test model', serviceTiers: [{ id: 'priority' }],
-    }])
     controller.start()
     await new Promise(r => setTimeout(r, 10))
 
@@ -727,27 +438,6 @@ describe('client half', () => {
     const root = createRoot(host)
     root.render(React.createElement(TaskFormModal, { controller }))
     await new Promise(r => setTimeout(r, 10))
-
-    let selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
-    expect(selects.find(select => select.value === 'standard')).toBeUndefined()
-    const modelSelect = selects.find(select => Array.from(select.options).some(option => option.textContent?.includes('Fast test model')))
-    expect(modelSelect).toBeDefined()
-    modelSelect!.value = JSON.stringify({ provider: 'test-provider', model: 'gpt-5.6-luna' })
-    modelSelect!.dispatchEvent(new Event('change', { bubbles: true }))
-    await new Promise(r => setTimeout(r, 10))
-
-    selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
-    const speedSelect = selects.find(select => select.value === 'standard')!
-    const permissionSelect = selects.find(select => select.value === 'workspace-write')!
-    expect(speedSelect).toBeDefined()
-    expect(permissionSelect).toBeDefined()
-    expect(Array.from(permissionSelect.options).map(option => option.value)).toEqual(['read-only', 'workspace-write', 'danger-full-access'])
-    speedSelect.value = 'fast'
-    speedSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    permissionSelect.value = 'danger-full-access'
-    permissionSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    await new Promise(r => setTimeout(r, 10))
-    expect(host.textContent).toContain('Full access 将关闭审批')
 
     const opts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
     expect(opts().length).toBeGreaterThanOrEqual(2)
@@ -767,12 +457,7 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '创建任务'))!.click()
     await new Promise(r => setTimeout(r, 10))
-    expect(creates[0]).toMatchObject({
-      title: 'Iso task',
-      isolation: 'none',
-      speed: 'fast',
-      permissionMode: 'danger-full-access',
-    })
+    expect(creates[0]).toMatchObject({ title: 'Iso task', isolation: 'none' })
 
     // Non-git workspace: both options disabled, hint shown, isolation omitted.
     const wsSelect = host.querySelector<HTMLSelectElement>('select')!
@@ -879,57 +564,6 @@ describe('client half', () => {
     localStorage.clear()
   })
 
-  it('settings modal changes template category without dropping isolation', async () => {
-    localStorage.clear()
-    const React = await import('react')
-    const { createRoot } = await import('react-dom/client')
-    const { BoardController } = await import('../src/client/controller.ts')
-    const { SettingsModal } = await import('../src/client/board/SettingsModal.tsx')
-
-    const saved: unknown[] = []
-    const client = {
-      state: async () => ({
-        schemaVersion: 1,
-        revision: 1,
-        tasks: [],
-        settings: { defaultIsolation: 'worktree' as const, templateMenuCategory: '开发' },
-      }),
-      workspaces: async () => [],
-      stream: () => () => {},
-      templates: async () => ({ templates: [
-        { id: 'tpl-dev', name: '开发模板', category: '开发', task: {}, createdAt: 0, updatedAt: 0 },
-        { id: 'tpl-ops', name: '运营模板', category: '运营', task: {}, createdAt: 0, updatedAt: 0 },
-      ] }),
-      updateSettings: async (body: unknown) => { saved.push(body); return body },
-    }
-    const controller = new BoardController(client as never)
-    controller.start()
-    await new Promise(r => setTimeout(r, 10))
-    await controller.loadTemplates()
-
-    const host = document.createElement('div')
-    document.body.append(host)
-    const root = createRoot(host)
-    root.render(React.createElement(SettingsModal, { controller }))
-    await new Promise(r => setTimeout(r, 10))
-
-    const category = host.querySelector<HTMLSelectElement>('.dsh-atb-template-category-select')!
-    expect(category.value).toBe('开发')
-    category.value = '运营'
-    category.dispatchEvent(new Event('change', { bubbles: true }))
-    await new Promise(r => setTimeout(r, 10))
-    const save = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn')).find(b => b.textContent === '保存设置')!
-    expect(save.disabled).toBe(false)
-    save.click()
-    await new Promise(r => setTimeout(r, 20))
-    expect(saved).toEqual([{ defaultIsolation: 'worktree', templateMenuCategory: '运营' }])
-
-    root.unmount()
-    host.remove()
-    controller.dispose()
-    localStorage.clear()
-  })
-
   it('detail renders the isolation block; merge/remove call the controller', async () => {
     localStorage.clear()
     const React = await import('react')
@@ -1017,7 +651,6 @@ describe('client half', () => {
     })
 
     const runCalls: Array<[string, boolean]> = []
-    const fullScreenToggle = vi.fn()
     let noopNext = false
     const client = {
       state: async () => ({ schemaVersion: 1, revision: 1, tasks: [mkTask('task/R+t-r')] }),
@@ -1036,28 +669,8 @@ describe('client half', () => {
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
-    root.render(React.createElement(TaskDetail, {
-      task: mkTask('task/R+t-r') as never,
-      controller,
-      now: 1_000,
-      fullScreen: false,
-      onToggleFullScreen: fullScreenToggle,
-    }))
+    root.render(React.createElement(TaskDetail, { task: mkTask('task/R+t-r') as never, controller, now: 1_000 }))
     await new Promise(r => setTimeout(r, 10))
-    const fullscreen = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-detail-topbtns .dsh-atb-detail-edit')).find(b => b.textContent?.includes('全屏'))
-    expect(fullscreen()?.getAttribute('aria-pressed')).toBe('false')
-    fullscreen()!.click()
-    expect(fullScreenToggle).toHaveBeenCalledTimes(1)
-    root.render(React.createElement(TaskDetail, {
-      task: mkTask('task/R+t-r') as never,
-      controller,
-      now: 1_000,
-      fullScreen: true,
-      onToggleFullScreen: fullScreenToggle,
-    }))
-    await new Promise(r => setTimeout(r, 10))
-    expect(fullscreen()?.textContent).toContain('退出全屏')
-    expect(fullscreen()?.getAttribute('aria-pressed')).toBe('true')
     const btns = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-detail-topbtns .dsh-atb-detail-run'))
     const resume = btns().find(b => b.textContent!.includes('续跑'))!
     const fresh = btns().find(b => b.textContent!.includes('立即执行'))!
@@ -1288,7 +901,6 @@ describe('client half', () => {
 
     const creates: unknown[] = []
     const updates: unknown[] = []
-    const authorized: Array<string | undefined> = []
     const client = {
       state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
       workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
@@ -1297,8 +909,6 @@ describe('client half', () => {
       update: async (_id: string, body: unknown) => { updates.push(body); return { id: 't' } },
     }
     const controller = new BoardController(client as never)
-    controller.installCapabilityCatalog(async () => [{ name: 'browser' }, { name: 'computer-use' }])
-    controller.installCurrentSessionAuthorizer(async sessionId => { authorized.push(sessionId) })
     controller.start()
     await new Promise(r => setTimeout(r, 10))
 
@@ -1307,13 +917,11 @@ describe('client half', () => {
     let host = document.createElement('div')
     document.body.append(host)
     let root = createRoot(host)
-    root.render(React.createElement(TaskFormModal, { controller, sessionId: 'panel-session' }))
+    root.render(React.createElement(TaskFormModal, { controller }))
     await new Promise(r => setTimeout(r, 20))
 
     const titleInput = host.querySelector<HTMLInputElement>('input[maxlength="200"]')!
     expect(titleInput.value).toBe('模板任务')
-    expect(host.querySelector('[data-required="true"]')).toBeNull()
-    expect(host.textContent).not.toContain('任务看板')
     let rows = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-cke-text'))
     expect(rows).toHaveLength(2)
     expect(rows[0]!.value).toBe('复现')
@@ -1327,19 +935,9 @@ describe('client half', () => {
     setter?.call(rows[2]!, '回归通过')
     rows[2]!.dispatchEvent(new Event('input', { bubbles: true }))
     await new Promise(r => setTimeout(r, 10))
-    const computerCapability = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-capability input'))
-      .find(input => input.parentElement?.textContent?.includes('电脑操作'))
-    computerCapability?.click()
-    await new Promise(r => setTimeout(r, 10))
     ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn')).find(b => b.textContent === '创建任务'))!.click()
     await new Promise(r => setTimeout(r, 10))
-    expect(creates[0]).toMatchObject({
-      title: '模板任务',
-      urgency: 'urgent',
-      checklist: ['复现', '修复', '回归通过'],
-      requiredCapabilities: ['taskboard', 'computer-use'],
-    })
-    expect(authorized).toEqual(['panel-session'])
+    expect(creates[0]).toMatchObject({ title: '模板任务', urgency: 'urgent', checklist: ['复现', '修复', '回归通过'] })
 
     root.unmount()
     host.remove()
@@ -1364,11 +962,6 @@ describe('client half', () => {
     root.render(React.createElement(TaskFormModal, { controller, task: task as never }))
     await new Promise(r => setTimeout(r, 20))
 
-    const editRows = Array.from(host.querySelectorAll<HTMLElement>('.dsh-atb-cke-row'))
-    expect(editRows).toHaveLength(2)
-    expect(editRows.every(row => row.dataset.editing === 'true')).toBe(true)
-    const editTexts = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-cke-text'))
-    expect(editTexts.map(input => input.value)).toEqual(['复现', '修复'])
     const boxes = Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-cke-box'))
     expect(boxes).toHaveLength(2)
     boxes[0]!.click()
@@ -1461,183 +1054,7 @@ describe('client half', () => {
     localStorage.clear()
   })
 
-  it('detail: report and comment paths use underlined open-only links', async () => {
-    localStorage.clear()
-    const React = await import('react')
-    const { createRoot } = await import('react-dom/client')
-    const { BoardController } = await import('../src/client/controller.ts')
-    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
-
-    const task = {
-      id: 't-file-links', title: '文件链接', description: '', prompt: '', workspaceId: 'ws-a',
-      urgency: 'normal' as const, status: 'in_review' as const, blocked: false,
-      execution: { mode: 'claim' as const }, version: 2, createdAt: 0, updatedAt: 0,
-      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
-      comments: [{ id: 'c1', body: '已改 `src/comment.ts`，命令 `npm test` 不应链接。', version: 1, createdAt: 2 }],
-      executions: [{
-        id: 'e1', trigger: 'manual' as const, startedAt: 0, endedAt: 3, outcome: 'succeeded' as const,
-        report: { summary: '参考 `src/summary.ts`', changedFiles: ['src/report.ts'], checks: [], artifacts: [], risk: '' },
-      }],
-    }
-    const client = {
-      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [task] }),
-      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
-      stream: () => () => {},
-    }
-    const controller = new BoardController(client as never)
-    controller.start()
-    await new Promise(r => setTimeout(r, 10))
-
-    const opened: string[] = []
-    const host = document.createElement('div')
-    document.body.append(host)
-    const root = createRoot(host)
-    root.render(React.createElement(TaskDetail, {
-      task: task as never,
-      controller,
-      now: 1_000,
-      scope: { sessionId: 'session-a', cwd: '/p/a' } as never,
-      onOpenFile: (path: string) => { opened.push(path) },
-    }))
-    await new Promise(r => setTimeout(r, 10))
-
-    const reportLink = host.querySelector<HTMLButtonElement>('.dsh-atb-rpt-list .dsh-atb-file-link')!
-    const summaryLink = host.querySelector<HTMLButtonElement>('.dsh-atb-rpt-summary .dsh-atb-md-file-link')!
-    const commentLink = host.querySelector<HTMLButtonElement>('.dsh-atb-bubble-body .dsh-atb-md-file-link')!
-    expect(reportLink).not.toBeNull()
-    expect(reportLink.textContent).toBe('src/report.ts')
-    expect(reportLink.title).toBe('/p/a/src/report.ts')
-    expect(summaryLink.title).toBe('/p/a/src/summary.ts')
-    expect(commentLink.title).toBe('/p/a/src/comment.ts')
-    expect(host.querySelector('.dsh-atb-rpt-list .dsh-atb-file-actions')).toBeNull()
-    expect(host.querySelector('.dsh-atb-rpt-list .dsh-atb-file-action')).toBeNull()
-
-    reportLink.click()
-    summaryLink.click()
-    commentLink.click()
-    expect(opened).toEqual(['/p/a/src/report.ts', '/p/a/src/summary.ts', '/p/a/src/comment.ts'])
-
-    root.unmount()
-    host.remove()
-    controller.dispose()
-    localStorage.clear()
-  })
-
-  it('detail: upper-right source toggle compares all Markdown preview fields', async () => {
-    localStorage.clear()
-    const React = await import('react')
-    const { createRoot } = await import('react-dom/client')
-    const { BoardController } = await import('../src/client/controller.ts')
-    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
-
-    const task = {
-      id: 't-md-toggle', title: 'Markdown toggle', description: '**描述**\n第二行', prompt: '`npm test`', workspaceId: 'ws-a',
-      urgency: 'normal' as const, status: 'in_review' as const, blocked: false,
-      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
-      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
-      comments: [{ id: 'c1', body: '**评论**', version: 1, createdAt: 2 }],
-      executions: [{
-        id: 'e1', trigger: 'manual' as const, startedAt: 0, endedAt: 3, outcome: 'succeeded' as const,
-        report: { summary: '**摘要**', changedFiles: [], checks: [], artifacts: [], risk: '`风险`' },
-      }],
-    }
-    const client = {
-      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [task] }),
-      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
-      stream: () => () => {},
-    }
-    const controller = new BoardController(client as never)
-    controller.start()
-    await new Promise(r => setTimeout(r, 10))
-
-    const host = document.createElement('div')
-    document.body.append(host)
-    const root = createRoot(host)
-    root.render(React.createElement(TaskDetail, { task: task as never, controller, now: 1_000 }))
-    await new Promise(r => setTimeout(r, 10))
-
-    const sourceToggle = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-detail-topbtns .dsh-atb-detail-edit'))
-      .find(button => button.getAttribute('aria-label')?.includes('原文'))
-    expect(sourceToggle()?.getAttribute('aria-pressed')).toBe('false')
-    expect(host.querySelector('.dsh-atb-desc strong')).not.toBeNull()
-    expect(host.querySelector('.dsh-atb-promptbox code')).not.toBeNull()
-    expect(host.querySelector('.dsh-atb-bubble-body strong')).not.toBeNull()
-    expect(host.querySelector('.dsh-atb-rpt-summary strong')).not.toBeNull()
-    expect(host.querySelector('.dsh-atb-rpt-risk code')).not.toBeNull()
-
-    sourceToggle()!.click()
-    await new Promise(r => setTimeout(r, 10))
-    const rawToggle = host.querySelector<HTMLButtonElement>('.dsh-atb-detail-topbtns button[aria-pressed="true"]')!
-    expect(rawToggle.textContent).toBe('渲染')
-    for (const selector of ['.dsh-atb-desc', '.dsh-atb-promptbox', '.dsh-atb-bubble-body', '.dsh-atb-rpt-summary', '.dsh-atb-rpt-risk']) {
-      expect(host.querySelector(selector)!.classList.contains('dsh-atb-raw')).toBe(true)
-    }
-    expect(host.querySelector('.dsh-atb-desc strong')).toBeNull()
-    expect(host.querySelector('.dsh-atb-desc')!.textContent).toContain('**描述**')
-    expect(host.querySelector('.dsh-atb-promptbox')!.textContent).toBe('`npm test`')
-    expect(host.querySelector('.dsh-atb-bubble-body')!.textContent).toBe('**评论**')
-    expect(host.querySelector('.dsh-atb-rpt-summary')!.textContent).toBe('**摘要**')
-    expect(host.querySelector('.dsh-atb-rpt-risk')!.textContent).toBe('`风险`')
-
-    rawToggle.click()
-    await new Promise(r => setTimeout(r, 10))
-    expect(host.querySelector('.dsh-atb-desc strong')).not.toBeNull()
-    expect(host.querySelector('.dsh-atb-detail-topbtns button[aria-pressed="false"]')?.textContent).toBe('原文')
-
-    root.unmount()
-    host.remove()
-    controller.dispose()
-    localStorage.clear()
-  })
-
-  it('detail: selecting another task resets the Markdown source toggle', async () => {
-    localStorage.clear()
-    const React = await import('react')
-    const { createRoot } = await import('react-dom/client')
-    const { BoardController } = await import('../src/client/controller.ts')
-    const { TaskBoard } = await import('../src/client/board/TaskBoard.tsx')
-
-    const makeTask = (id: string, label: string) => ({
-      id, title: label, description: `**${label}**`, prompt: '', workspaceId: 'ws-a',
-      urgency: 'normal' as const, status: 'todo' as const, blocked: false,
-      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
-      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
-      comments: [], executions: [],
-    })
-    const tasks = [makeTask('t-md-a', 'Task A'), makeTask('t-md-b', 'Task B')]
-    const client = {
-      state: async () => ({ schemaVersion: 1, revision: 1, tasks }),
-      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
-      stream: () => () => {},
-    }
-    const controller = new BoardController(client as never)
-    const host = document.createElement('div')
-    document.body.append(host)
-    const root = createRoot(host)
-    root.render(React.createElement(TaskBoard, { controller }))
-    controller.start()
-    await new Promise(r => setTimeout(r, 20))
-
-    controller.select('t-md-a')
-    await new Promise(r => setTimeout(r, 10))
-    const sourceToggle = () => host.querySelector<HTMLButtonElement>('.dsh-atb-detail-topbtns button[aria-pressed="false"]')!
-    sourceToggle().click()
-    await new Promise(r => setTimeout(r, 10))
-    expect(host.querySelector('.dsh-atb-desc')!.classList.contains('dsh-atb-raw')).toBe(true)
-
-    controller.select('t-md-b')
-    await new Promise(r => setTimeout(r, 10))
-    expect(host.querySelector<HTMLButtonElement>('.dsh-atb-detail-topbtns button[aria-pressed="false"]')).not.toBeNull()
-    expect(host.querySelector('.dsh-atb-desc')!.classList.contains('dsh-atb-raw')).toBe(false)
-    expect(host.querySelector('.dsh-atb-desc strong')?.textContent).toBe('Task B')
-
-    root.unmount()
-    host.remove()
-    controller.dispose()
-    localStorage.clear()
-  })
-
-  it('new-task menu uses the board category and manages templates; 存为模板 carries task fields', async () => {
+  it('new-task menu lists templates and manages them; 存为模板 carries task fields', async () => {
     localStorage.clear()
     const React = await import('react')
     const { createRoot } = await import('react-dom/client')
@@ -1645,13 +1062,13 @@ describe('client half', () => {
     const { TaskBoard } = await import('../src/client/board/TaskBoard.tsx')
 
     const templateList = [
-      { id: 'tpl-1', name: 'Bug 修复', category: '开发', task: { urgency: 'urgent', checklist: ['复现'] }, builtin: true, createdAt: 0, updatedAt: 0 },
-      { id: 'tpl-2', name: '我的模板', category: '运营', task: { title: '自定义' }, createdAt: 0, updatedAt: 0 },
+      { id: 'tpl-1', name: 'Bug 修复', task: { urgency: 'urgent', checklist: ['复现'] }, builtin: true, createdAt: 0, updatedAt: 0 },
+      { id: 'tpl-2', name: '我的模板', task: { title: '自定义' }, createdAt: 0, updatedAt: 0 },
     ]
     const upserts: unknown[] = []
     const deletes: string[] = []
     const client = {
-      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [], settings: { templateMenuCategory: '开发' } }),
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
       workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
       stream: () => () => {},
       templates: async () => ({ templates: templateList }),
@@ -1676,24 +1093,20 @@ describe('client half', () => {
     const options = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-newmenu-opt')).map(b => b.textContent)
     expect(options).toContain('空白任务')
     expect(options).toContain('Bug 修复')
-    expect(options).not.toContain('我的模板')
+    expect(options).toContain('我的模板')
     expect(options.some(o => o!.includes('管理模板'))).toBe(true)
-    // The menu has no visible filter; it uses the board setting ('开发') directly.
-    expect(host.querySelector('.dsh-atb-newmenu-filter')).toBeNull()
 
-    // Picking a template opens the composer prefilled from the active category.
-    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-newmenu-opt')).find(b => b.textContent === 'Bug 修复'))!.click()
+    // Picking a template opens the composer prefilled from it.
+    ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-newmenu-opt')).find(b => b.textContent === '我的模板'))!.click()
     await new Promise(r => setTimeout(r, 10))
     const snap = controller.getSnapshot()
     expect(snap.composerOpen).toBe(true)
-    expect(snap.templatePrefill).toMatchObject({ urgency: 'urgent' })
+    expect(snap.templatePrefill).toMatchObject({ title: '自定义' })
     controller.closeForm()
 
     // Manager modal: rename save + delete flow reach the client.
     controller.openTemplateManager()
     await new Promise(r => setTimeout(r, 20))
-    expect(host.querySelector('.dsh-atb-tplm-filter')).toBeNull()
-    expect(Array.from(host.querySelectorAll<HTMLInputElement>('.dsh-atb-tplm-name')).map(input => input.value)).toEqual(['Bug 修复'])
     const nameInput = host.querySelector<HTMLInputElement>('.dsh-atb-tplm-name')!
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
     setter?.call(nameInput, '改名模板')
@@ -1701,7 +1114,7 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     ;(Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-tplm-btns .dsh-atb-btn')).find(b => b.textContent === '改名'))!.click()
     await new Promise(r => setTimeout(r, 10))
-    expect(upserts[0]).toMatchObject({ id: 'tpl-1', name: '改名模板', category: '开发' })
+    expect(upserts[0]).toMatchObject({ id: 'tpl-1', name: '改名模板' })
     controller.closeTemplateManager()
 
     root.unmount()
@@ -2442,9 +1855,9 @@ describe('client half', () => {
     expect(topSessionBtn).not.toBeNull()
     expect(topSessionBtn.textContent).toContain('跳转会话')
 
-    const holderChip = host.querySelector<HTMLElement>('.dsh-atb-detail-chips .dsh-atb-chip2')!
-    expect(holderChip).not.toBeNull()
-    expect(host.querySelector('.dsh-atb-detail-chips')?.textContent).toContain('t-live-1')
+    const holderChipBtn = host.querySelector<HTMLButtonElement>('button.dsh-atb-chip-btn')!
+    expect(holderChipBtn).not.toBeNull()
+    expect(holderChipBtn.textContent).toContain('t-live-1')
 
     // Click top session button in TaskDetail
     topSessionBtn.click()

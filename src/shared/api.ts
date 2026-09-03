@@ -56,10 +56,6 @@ export type CreateTaskBody = {
   prompt?: string
   execution?: { mode?: string; cron?: string }
   model?: TaskModel
-  /** Taskboard-owned speed preference ('standard' | 'fast'); omitted = standard. */
-  speed?: string
-  /** Three Harness file-permission modes; omitted = deployment default. */
-  permissionMode?: string
   /** Code isolation for executions ('worktree' | 'none'); omitted = default. */
   isolation?: string
   /** Agent preset for execution sessions; omitted = deployment default. */
@@ -68,8 +64,6 @@ export type CreateTaskBody = {
   permission?: string
   /** Acceptance checklist item texts (host mints ids, all unchecked). */
   checklist?: string[]
-  /** Lazy-gate Skill names selected by the GUI; taskboard is always included. */
-  requiredCapabilities?: string[]
 }
 
 /** Update-task request body (ifVersion mandatory). */
@@ -84,10 +78,6 @@ export type UpdateTaskBody = {
   workspaceId?: string
   execution?: { mode?: string; cron?: string }
   model?: TaskModel | null
-  /** Change the taskboard-owned speed preference. */
-  speed?: string | null
-  /** Change the three-value Harness file-permission mode. */
-  permissionMode?: string | null
   /** Change isolation; locked once the task has execution history. */
   isolation?: string
   /** Change the execution preset (takes effect on the next run). */
@@ -96,8 +86,6 @@ export type UpdateTaskBody = {
   permission?: string | null
   /** Replace the whole checklist (GUI owner surface); null clears it. */
   checklist?: unknown
-  /** Replace GUI-selected lazy-gate Skill names; taskboard is always included. */
-  requiredCapabilities?: string[] | null
 }
 
 /** Move-task request body (ifVersion mandatory; the user MAY move to done). */
@@ -171,24 +159,18 @@ export type TaskTemplateSpec = {
   urgency?: string
   execution?: { mode?: string; cron?: string }
   model?: TaskModel
-  speed?: string
-  permissionMode?: string
   isolation?: string
   presetId?: string
   /** Execution permission preset (0.5.5). */
   permission?: string
   /** Checklist item texts (host mints ids at create time). */
   checklist?: string[]
-  /** Lazy-gate Skill names selected for executions; taskboard is implicit. */
-  requiredCapabilities?: string[]
 }
 
 /** One reusable task template (0.4.0). */
 export type TaskTemplate = {
   id: string
   name: string
-  /** User-defined library category; absent templates display under “其他”. */
-  category?: string
   task: TaskTemplateSpec
   /** Seeded built-in templates (kept on load, deletable like any other). */
   builtin?: boolean

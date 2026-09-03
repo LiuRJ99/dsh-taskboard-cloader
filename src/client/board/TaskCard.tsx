@@ -98,7 +98,7 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
             className="dsh-atb-badge"
             title={t('card.badge.modelTitle', { model: task.model.provider + '/' + task.model.model }) + (task.model.reasoningEffort !== undefined ? t('card.badge.modelEffort', { effort: task.model.reasoningEffort }) : '')}
           >
-            {task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}
+            {task.model.model}{task.model.reasoningEffort !== undefined ? ` (${task.model.reasoningEffort})` : ''}
           </span>
         )}
         {task.permission === 'read-only' && (

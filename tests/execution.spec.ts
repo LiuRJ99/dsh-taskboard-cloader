@@ -58,24 +58,18 @@ function fakeAgents(): AgentsFace & {
   created: Array<{ sessionId: string; cwd?: string; agentPreset?: string; setup?: unknown; agentOptions?: { provider?: string; model?: string; reasoningEffort?: string } }>
   followups: unknown[]
   injects: unknown[]
-  sessionEvents: Array<{ sessionId: string; type: string; data: unknown }>
-  timeline: string[]
   idle: (sessionId?: string) => void
   disposedSessions: string[]
 } {
   const created: Array<{ sessionId: string; cwd?: string; agentPreset?: string; setup?: unknown; agentOptions?: { provider?: string; model?: string; reasoningEffort?: string } }> = []
   const followups: unknown[] = []
   const injects: unknown[] = []
-  const sessionEvents: Array<{ sessionId: string; type: string; data: unknown }> = []
-  const timeline: string[] = []
   const disposedSessions: string[] = []
   const idles = new Map<string, () => void>()
   const svc = {
     created,
     followups,
     injects,
-    sessionEvents,
-    timeline,
     disposedSessions,
     idle: (sessionId?: string) => {
       if (sessionId !== undefined) idles.get(sessionId)?.()
@@ -87,26 +81,18 @@ function fakeAgents(): AgentsFace & {
         throw new Error('provider has no adapter')
       }
       created.push({ sessionId: options.sessionId, cwd: options.meta?.cwd, agentPreset: options.meta?.agentPreset, setup: options.setup, agentOptions: options.agentOptions })
-      if (options.setup !== undefined) await options.setup({})
-      const session = {
-        append: (type: string, data: unknown) => {
-          sessionEvents.push({ sessionId: options.sessionId, type, data })
-          timeline.push(`append:${type}`)
-        },
-      }
       return {
         agent: {
-          session,
           id: options.sessionId,
-          followup: (message: unknown) => { timeline.push('followup'); followups.push(message) },
-          inject: (message: unknown) => { timeline.push('inject'); injects.push(message) },
+          followup: (message: unknown) => { followups.push(message) },
+          inject: (message: unknown) => { injects.push(message) },
           whenIdle: () => new Promise<void>(resolve => { idles.set(options.sessionId, resolve) }),
         },
         dispose: async () => { disposedSessions.push(options.sessionId) },
       }
     },
   } as never
-  return svc as AgentsFace & { created: typeof created; followups: typeof followups; injects: typeof injects; sessionEvents: typeof sessionEvents; timeline: typeof timeline; idle: (sessionId?: string) => void; disposedSessions: string[] }
+  return svc as AgentsFace & { created: typeof created; followups: typeof followups; injects: typeof injects; idle: (sessionId?: string) => void; disposedSessions: string[] }
 }
 
 /** Event-bus fake with manual dispatch. */
@@ -127,31 +113,6 @@ const workspaces = {
 }
 
 describe('ExecutionService', () => {
-  it('authorizes configured capabilities before the opening model turn', async () => {
-    const store = await storeWith(task({ requiredCapabilities: ['taskboard', 'computer-use'] }))
-    const agents = fakeAgents()
-    const events = fakeEvents()
-    const grants: Array<{ skills: readonly string[]; provenance: string }> = []
-    const svc = new ExecutionService({
-      store,
-      agents,
-      workspaces,
-      events,
-      now: () => 1_000,
-      authorizeSession: (_agent, skills, provenance) => {
-        grants.push({ skills, provenance })
-        agents.timeline.push('authorize')
-      },
-    })
-
-    const result = await svc.run('t-run', 'manual')
-    expect(result.ok).toBe(true)
-    expect(grants).toEqual([{ skills: ['taskboard', 'computer-use'], provenance: 'execution' }])
-    expect(agents.timeline.indexOf('authorize')).toBeGreaterThanOrEqual(0)
-    expect(agents.timeline.indexOf('authorize')).toBeLessThan(agents.timeline.indexOf('inject'))
-    expect(agents.timeline.indexOf('authorize')).toBeLessThan(agents.timeline.indexOf('followup'))
-  })
-
   it('runs a task in a fresh in-project session with the pinned model', async () => {
     const store = await storeWith(task({ model: { provider: 'deepseek', model: 'reasoner' } }))
     const agents = fakeAgents()
@@ -204,80 +165,6 @@ describe('ExecutionService', () => {
     t = store.get('t-run')!
     expect(t.executions[0]!.outcome).toBe('succeeded')
     expect(t.executions[0]!.endedAt).toBe(1_000)
-  })
-
-  it.each([
-    ['read-only', 'ask'],
-    ['workspace-write', 'ask'],
-    ['danger-full-access', 'never'],
-  ] as const)('applies %s permission mode and the task model options before the first prompt', async (permissionMode, policy) => {
-    const store = await storeWith(task({
-      id: `t-${permissionMode}`,
-      model: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' },
-      speed: 'fast',
-      permissionMode,
-    }))
-    const agents = fakeAgents()
-    const installed: Array<{ selection: TaskRecord['model']; speed?: string; serviceTier?: string }> = []
-    const mirrored: Array<{ sessionId: string; model: TaskRecord['model']; speed: string }> = []
-    const svc = new ExecutionService({
-      store,
-      agents,
-      workspaces,
-      events: fakeEvents(),
-      now: () => 1_000,
-      modelCapabilities: async () => [{ provider: 'deepseek', model: 'reasoner', serviceTiers: [{ id: 'priority' }] }],
-      modelExecution: (sessionId, model, speed) => { mirrored.push({ sessionId, model, speed }) },
-      installModelSelection: (_ctx, selection, speed, serviceTier) => { installed.push({ selection, speed, serviceTier }) },
-    })
-
-    const result = await svc.run(`t-${permissionMode}`, 'manual')
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-
-    expect(agents.created[0]!.agentOptions).toEqual({ provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
-    expect(installed).toEqual([{
-      selection: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' },
-      speed: 'fast',
-      serviceTier: 'priority',
-    }])
-    expect(mirrored).toEqual([{
-      sessionId: result.sessionId,
-      model: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' },
-      speed: 'fast',
-    }])
-    expect(agents.sessionEvents).toEqual([
-      { sessionId: result.sessionId, type: 'sandbox/mode', data: { mode: permissionMode } },
-      { sessionId: result.sessionId, type: 'approval/policy', data: { policy } },
-    ])
-    expect(agents.timeline.indexOf('append:sandbox/mode')).toBeLessThan(agents.timeline.indexOf('inject'))
-    expect(agents.timeline.indexOf('append:approval/policy')).toBeLessThan(agents.timeline.indexOf('followup'))
-    const framing = (agents.injects[0] as { content: Array<{ text: string }> }).content[0]!.text
-    expect(framing).toContain('推理等级 high')
-    expect(framing).toContain('速度模式：快速')
-    expect(framing).toContain(`权限模式：${permissionMode}`)
-  })
-
-  it('does not guess a fast tier when no pinned or deployment model is available', async () => {
-    const store = await storeWith(task({ id: 't-fast-default', speed: 'fast' }))
-    const agents = fakeAgents()
-    const installed: Array<{ selection: TaskRecord['model']; speed?: string; serviceTier?: string }> = []
-    const mirrored: Array<{ sessionId: string; model: TaskRecord['model']; speed: string }> = []
-    const svc = new ExecutionService({
-      store,
-      agents,
-      workspaces,
-      events: fakeEvents(),
-      now: () => 1_000,
-      modelCapabilities: async () => [{ provider: 'deepseek', model: 'reasoner', serviceTiers: [{ id: 'priority' }] }],
-      modelExecution: (sessionId, model, speed) => { mirrored.push({ sessionId, model, speed }) },
-      installModelSelection: (_ctx, selection, speed, serviceTier) => { installed.push({ selection, speed, serviceTier }) },
-    })
-
-    const result = await svc.run('t-fast-default', 'manual')
-    expect(result.ok).toBe(true)
-    expect(installed).toEqual([])
-    expect(mirrored).toEqual([])
   })
 
   it('framing carries the report handoff step and injects the DoD checklist (0.4.0)', async () => {

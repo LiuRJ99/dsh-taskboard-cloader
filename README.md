@@ -9,11 +9,9 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 
 - **闭环协作**：人建卡 → agent 认领执行 → 结构化报告 → 人验收（✓ 完成 / ✗ 退回附原因）
 - **10 个 `taskboard_*` agent 工具** + 代码级协议闸：agent 永远移不到 done、任务被持有时不可抢、跨项目不可认领
-- **可选 Lazy Gate 适配**：在 `dsh-tool-lazy-gate` 中启用 `taskboard` 后，用户显式输入 `/taskboard` 才会解锁 `taskboard_*` 工具和 `plugin:dsh-taskboard` 协议段；映射关系由本插件 Skill 的 metadata 发布
 - **执行**：手动或 cron 定时（host 侧调度，浏览器关了照跑）；每次执行在任务项目内开全新会话，可指定模型与 preset
 - **Git Worktree 隔离**：每次执行独立 worktree + 任务分支，验收时一键合并；并列多仓库工作区整区镜像隔离（0.6.3）；非 git 项目自动降级
 - **验收效率**：DoD 验收清单（agent 勾选附证据）、结构化执行报告（摘要/改动文件/自验/产物/风险）、看板内 diff 查看器
-- **Better Sidebar 适配**：检测到 `dsh-better-sidebar`（≥ 0.16.1）时注册为原生 Tab，支持面板/自由窗口、当前会话 `@` 引用、受会话 workspace 边界保护的文件打开；未安装时保留旧版 DOM 看板回退
 - **实时看板**：SSE 实时刷新、五列流转、筛选排序持久化、JSON 导入导出、任务模板
 
 **零配置**：安装即用——无需 Token、无需 API Key、无需额外服务或数据库。
@@ -55,7 +53,7 @@ dsh plugin --profile web add dsh-taskboard
 dsh plugin --profile web add github:cloader/dsh-taskboard
 ```
 
-安装后**重启 `dsh web` 并刷新页面**：若已安装 `dsh-better-sidebar`，在侧栏「+」菜单中会出现「任务看板」Tab；否则保留旧版侧栏入口。无需任何后续配置。
+安装后**重启 `dsh web` 并刷新页面**：侧边栏出现「任务看板」入口即成功。无需任何后续配置。
 
 <details>
 <summary>GitHub 源安装卡在 prepare / allowBuilds？</summary>
@@ -107,30 +105,6 @@ agent：
   taskboard_move → in_review    # 移待验收
 你：看板待验收列 ✓ 完成   # done 永远只属于人——agent 调用会被代码闸拒绝
 ```
-
-## Lazy Gate 门禁（可选）
-
-如果同时安装并启用了 `dsh-tool-lazy-gate`，Taskboard 会注册一个用户专用的
-`/taskboard` Skill。它在 Skill metadata 中声明本插件的资源映射：
-
-```text
-/taskboard
-  ├─ taskboard_*
-  └─ plugin:dsh-taskboard
-```
-
-Lazy Gate 配置只需要启用对应技能：
-
-```yaml
-capabilities:
-  taskboard:
-    enabled: true
-    skillNames: [taskboard]
-```
-
-未输入 `/taskboard` 时，`taskboard_*` 工具和 Taskboard 协议 Prompt 段会被隐藏；
-模型不能通过 `skill("taskboard")` 自行解锁。未安装 Lazy Gate 时，Taskboard
-仍按默认方式工作。
 
 ## Agent 工具参考
 
@@ -192,7 +166,7 @@ capabilities:
 - **Worktree 隔离是协作约定而非沙箱**：执行会话拥有完整工具权限，隔离依赖分支约定，不适用于运行不可信代码的场景。
 - **数据本地**：台账、模板全部存本机 DSH 主目录；不外发任何数据，无需 Token / API Key。
 
-## 配置与数据
+## 配置与数据 
 
 开箱即用，全部配置项如下（均为可选）：
 

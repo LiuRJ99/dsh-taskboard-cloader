@@ -5,7 +5,6 @@
  * @module dsh-taskboard/client/board/TaskBoard
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import type { SessionScope } from 'dsh-better-sidebar/client/service'
 import type { BoardController, ControllerState } from '../controller.ts'
 import type { TaskRecord, TaskStatus, Urgency } from '../../shared/protocol.ts'
 import { MAIN_STATUSES, canTransition } from '../../shared/protocol.ts'
@@ -20,7 +19,6 @@ import { SettingsModal } from './SettingsModal.tsx'
 import { ImportModal } from './ImportModal.tsx'
 import { TemplateManager } from './TemplateManager.tsx'
 import { useAlert } from './AlertModal.tsx'
-import { matchesTemplateCategory } from '../template-categories.ts'
 
 /** Urgency sort rank (urgent first). */
 const URGENCY_RANK: Record<Urgency, number> = { urgent: 0, normal: 1, relaxed: 2 }
@@ -41,20 +39,9 @@ export function filterTasks(state: ControllerState, tasks: TaskRecord[]): TaskRe
   return sorted
 }
 
-/** Props shared by the legacy center-column board and the sidebar tab. */
-export interface TaskBoardProps {
-  controller: BoardController
-  /** Better Sidebar's session context; absent for the legacy DOM mount. */
-  scope?: SessionScope
-  /** Whether the registered tab is currently visible. */
-  visible?: boolean
-  /** Open a validated absolute path in Better Sidebar's editor. */
-  onOpenFile?: (path: string) => void
-}
-
 /**
  * The board view root.
- * @param props - controller plus optional Better Sidebar integration callbacks.
+ * @param controller - the controller.
  */
 export function TaskBoard({ controller }: { controller: BoardController }) {
   const t = useT()
@@ -64,58 +51,22 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
   )
   // Minute ticker: re-renders stale-claim highlights even without ledger changes.
   const [now, setNow] = useState(() => Date.now())
-  const [detailFullScreen, setDetailFullScreen] = useState(false)
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000)
     return () => clearInterval(timer)
   }, [])
   const live = filterTasks(state, state.ledger.tasks.filter(t => t.trashedAt === undefined))
   const selected = state.selectedId === undefined ? undefined : state.ledger.tasks.find(t => t.id === state.selectedId)
-  useEffect(() => {
-    if (selected === undefined) setDetailFullScreen(false)
-  }, [selected?.id])
-  useEffect(() => {
-    if (!detailFullScreen) return
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      const target = event.target
-      if (target instanceof HTMLElement && target.closest('.dsh-atb-modal') !== null) return
-      event.preventDefault()
-      setDetailFullScreen(false)
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => { document.removeEventListener('keydown', onKeyDown) }
-  }, [detailFullScreen])
   const { alert: showAlert, el: alertEl } = useAlert()
   // + 新建任务 ▼ dropdown (0.4.0): blank / templates / manage / import.
   const [newMenuOpen, setNewMenuOpen] = useState(false)
   const closeMenu = (): void => setNewMenuOpen(false)
-  // The board setting is the only category control; the menu simply loads the
-  // templates belonging to that globally selected category.
-  const templateMenuCategory = state.ledger.settings?.templateMenuCategory
-  const visibleTemplates = state.templates.filter(template => matchesTemplateCategory(template, templateMenuCategory))
-  // Collapsible columns in narrow resolution: default expand in_progress and in_review
-  const [collapsedColumns, setCollapsedColumns] = useState<Record<string, boolean>>({
-    backlog: true,
-    todo: true,
-    in_progress: false,
-    in_review: false,
-    done: true,
-  })
-  const toggleColumn = (status: TaskStatus): void => {
-    setCollapsedColumns(prev => ({ ...prev, [status]: !prev[status] }))
-  }
-
   // ⬇ 导出 ▼ dropdown (0.5.1): whole-ledger JSON backup or task-list CSV.
   const [exportOpen, setExportOpen] = useState(false)
   const closeExport = (): void => setExportOpen(false)
 
   return (
-    <div
-      className="dsh-atb-board"
-      data-dsh-atb-board=""
-      data-dsh-atb-visible={visible === false ? 'false' : 'true'}
-    >
+    <div className="dsh-atb-board">
       <div className="dsh-atb-toolbar">
         <h2 className="dsh-atb-title">{t('board.title')}</h2>
         <span className="dsh-atb-count">{t('board.count.tasks', { n: live.length, rev: state.ledger.revision })}</span>
@@ -252,21 +203,15 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
           <div className="dsh-atb-columns">
             {MAIN_STATUSES.map(status => {
               const columnTasks = live.filter(t => t.status === status)
-              const isCollapsed = collapsedColumns[status] ?? false
               return (
                 <div
                   className="dsh-atb-column"
                   key={status}
-                  data-status={status}
-                  data-collapsed={isCollapsed ? 'true' : undefined}
                   onDragOver={(e) => {
                     if (e.dataTransfer.types.includes(DRAG_TYPE)) {
                       e.preventDefault()
                       e.dataTransfer.dropEffect = 'move'
                       e.currentTarget.dataset.dragover = 'true'
-                      if (isCollapsed) {
-                        setCollapsedColumns(prev => ({ ...prev, [status]: false }))
-                      }
                     }
                   }}
                   onDragLeave={(e) => { delete e.currentTarget.dataset.dragover }}
@@ -284,23 +229,10 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
                     void controller.move(id, task.version, status)
                   }}
                 >
-                  <div
-                    className="dsh-atb-colhead"
-                    role="button"
-                    tabIndex={0}
-                    aria-expanded={!isCollapsed}
-                    onClick={() => toggleColumn(status)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        toggleColumn(status)
-                      }
-                    }}
-                  >
+                  <div className="dsh-atb-colhead">
                     <span className="dsh-atb-dot" data-status={status} />
                     {t(COLUMN_KEYS[status])}
                     <span className="dsh-atb-colcount">{columnTasks.length}</span>
-                    <span className="dsh-atb-coltoggle" aria-hidden="true">▾</span>
                   </div>
                   <div className="dsh-atb-cards">
                     {columnTasks.map(task => (
@@ -322,24 +254,16 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
         )}
 
       {selected !== undefined && (
-        <div className="dsh-atb-detailpanel" data-fullscreen={detailFullScreen ? 'true' : undefined}>
-          <TaskDetail
-            key={selected.id}
-            task={selected}
-            controller={controller}
-            now={now}
-            fullScreen={detailFullScreen}
-            onToggleFullScreen={() => setDetailFullScreen(value => !value)}
-            scope={scope}
-            onOpenFile={onOpenFile}
-          />
+        <div className="dsh-atb-detailpanel">
+          {/* key: remount per task — without it, confirm states and comment
+              drafts leak across task switches (review P0). */}
+          <TaskDetail key={selected.id} task={selected} controller={controller} now={now} />
         </div>
       )}
 
       {state.composerOpen && (
         <TaskFormModal
           controller={controller}
-          sessionId={scope?.sessionId}
           task={state.editingId === undefined ? undefined : state.ledger.tasks.find(t => t.id === state.editingId)}
         />
       )}
@@ -450,39 +374,12 @@ function SecondaryTab({ controller, tasks }: { controller: BoardController; task
   }
   return (
     <div className="dsh-atb-columns">
-      {groups.map(group => {
-        const isCollapsed = collapsed[group.key] ?? false
-        return (
-          <div
-            className="dsh-atb-column"
-            key={group.label}
-            data-status={group.key}
-            data-collapsed={isCollapsed ? 'true' : undefined}
-          >
-            <div
-              className="dsh-atb-colhead"
-              role="button"
-              tabIndex={0}
-              aria-expanded={!isCollapsed}
-              onClick={() => setCollapsed(prev => ({ ...prev, [group.key]: !prev[group.key] }))}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  setCollapsed(prev => ({ ...prev, [group.key]: !prev[group.key] }))
-                }
-              }}
-            >
-              <span className="dsh-atb-dot" data-status={group.dot} />
-              <span>{group.label}</span>
-              <span className="dsh-atb-colcount">{group.rows.length}</span>
-              <span className="dsh-atb-coltoggle" aria-hidden="true">▾</span>
-            </div>
-            <div className="dsh-atb-cards">
-              {group.rows.map(task => (
-                <TaskCard key={task.id} task={task} controller={controller} />
-              ))}
-              {group.rows.length === 0 && <div className="dsh-atb-empty">无任务</div>}
-            </div>
+      {groups.map(group => (
+        <div className="dsh-atb-column" key={group.label}>
+          <div className="dsh-atb-colhead">
+            <span className="dsh-atb-dot" data-status={group.dot} />
+            {group.label}
+            <span className="dsh-atb-colcount">{group.rows.length}</span>
           </div>
           <div className="dsh-atb-cards">
             {group.rows.map(task => (

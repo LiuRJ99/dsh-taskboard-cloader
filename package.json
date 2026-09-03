@@ -44,12 +44,12 @@
   "author": "cloader",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/LiuRJ99/dsh-taskboard-cloader.git"
+    "url": "git+https://github.com/cloader/dsh-taskboard.git"
   },
   "bugs": {
-    "url": "https://github.com/LiuRJ99/dsh-taskboard-cloader/issues"
+    "url": "https://github.com/cloader/dsh-taskboard/issues"
   },
-  "homepage": "https://github.com/LiuRJ99/dsh-taskboard-cloader#readme",
+  "homepage": "https://github.com/cloader/dsh-taskboard#readme",
   "keywords": [
     "dsh",
     "deepseek-harness",
@@ -58,14 +58,6 @@
     "kanban",
     "agent"
   ],
-  "peerDependencies": {
-    "dsh-better-sidebar": "^0.16.1"
-  },
-  "peerDependenciesMeta": {
-    "dsh-better-sidebar": {
-      "optional": true
-    }
-  },
   "scripts": {
     "build": "node scripts/clean-lib.mjs && npm run build:host && npm run build:client",
     "build:host": "tsdown -c tsdown.host.config.ts",
@@ -93,9 +85,5 @@
     "tsdown": "0.22.2",
     "typescript": "~5.7.2",
     "vitest": "^3.0.0"
-  },
-  "dependencies": {
-    "marked": "^18.0.11",
-    "mermaid": "^11.16.1"
   }
 }

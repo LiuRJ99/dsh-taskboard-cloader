@@ -1,8 +1,9 @@
 /**
- * Board-settings modal (0.5.0): user-owned defaults applied when a NEW task
- * is created without an explicit choice, plus the global template-menu
- * category preference. Saving goes through the host route (whole-object
- * replace) and the SSE change stream refreshes every open view.
+ * Board-settings modal (0.5.0): the user-owned defaults applied when a NEW
+ * task is created without an explicit choice. Currently one section — 默认执行
+ * 隔离 (worktree vs original directory); further sections can slot into the
+ * body below. Saving goes through the host route (whole-object replace) and
+ * the SSE change stream refreshes every open view.
  *
  * @module dsh-taskboard/client/board/SettingsModal
  */
@@ -142,25 +143,6 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
             </div>
             <span className="dsh-atb-isolation-note">
               {t('set.perm.current', { current: currentPerm === 'read-only' ? t('set.perm.readOnlyName') : currentPerm === 'danger-full-access' ? t('set.perm.fullName') : t('set.perm.writeName') })}
-            </span>
-          </section>
-
-          <section className="dsh-atb-diag-sec">
-            <h4>新建任务菜单的模板分类</h4>
-            <select
-              className="dsh-atb-template-category-select"
-              value={draftCategory}
-              onChange={e => setDraftCategory(e.target.value)}
-            >
-              <option value="">全部分类（{state.templates.length}）</option>
-              {categoryOptions.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.value}（{option.count}）{option.count === 0 ? ' · 当前无模板' : ''}
-                </option>
-              ))}
-            </select>
-            <span className="dsh-atb-isolation-note">
-              只影响“+ 新建任务”菜单的模板展示，不会影响模板内容和已有任务；模板类别可在“管理模板”中调整。
             </span>
           </section>
         </div>

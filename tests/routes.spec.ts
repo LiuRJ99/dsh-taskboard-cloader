@@ -467,38 +467,6 @@ describe('taskboard routes', () => {
     expect(updBad.status).toBe(400)
   })
 
-  it('persists reasoning effort, speed, and permission mode across create/update', async () => {
-    const created = await post('/dsh-taskboard/tasks', {
-      title: 'Execution options',
-      workspaceId: 'ws-a',
-      urgency: 'normal',
-      model: { provider: 'prov-a', model: 'm-1', reasoningEffort: ' high ' },
-      speed: 'fast',
-      permissionMode: 'danger-full-access',
-    })
-    expect(created.status).toBe(201)
-    const id = created.json.value.id as string
-    expect(created.json.value.model).toEqual({ provider: 'prov-a', model: 'm-1', reasoningEffort: 'high' })
-    expect(created.json.value.speed).toBe('fast')
-    expect(created.json.value.permissionMode).toBe('danger-full-access')
-
-    const updated = await post(`/dsh-taskboard/tasks/${id}/update`, {
-      ifVersion: 1,
-      model: { provider: 'prov-a', model: 'm-2', reasoningEffort: 'low' },
-      speed: 'standard',
-      permissionMode: 'read-only',
-    })
-    expect(updated.status).toBe(200)
-    expect(updated.json.value.model).toEqual({ provider: 'prov-a', model: 'm-2', reasoningEffort: 'low' })
-    expect(updated.json.value.speed).toBe('standard')
-    expect(updated.json.value.permissionMode).toBe('read-only')
-
-    const badSpeed = await post('/dsh-taskboard/tasks', { title: 'Bad speed', workspaceId: 'ws-a', urgency: 'normal', speed: 'turbo' })
-    expect(badSpeed.status).toBe(400)
-    const badPermission = await post('/dsh-taskboard/tasks', { title: 'Bad permission', workspaceId: 'ws-a', urgency: 'normal', permissionMode: 'full-access' })
-    expect(badPermission.status).toBe(400)
-  })
-
   it('cancels a running execution via the cancel action', async () => {
     const created = await post('/dsh-taskboard/tasks', { title: 'Cancel me', workspaceId: 'ws-a', urgency: 'normal' })
     const id = created.json.value.id as string
@@ -830,70 +798,27 @@ describe('taskboard routes 0.4.0 (checklist / templates / import / diff)', () =>
     expect(bad.status).toBe(400)
   })
 
-  // -------------------------------------------------------- capabilities
-  it('capabilities: create/update normalize taskboard and reject resource-shaped names', async () => {
-    const created = await post('/dsh-taskboard/tasks', {
-      title: '授权任务', workspaceId: 'ws-a', urgency: 'normal',
-      requiredCapabilities: ['browser', 'taskboard', 'browser', 'computer-use'],
-    })
-    expect(created.status).toBe(201)
-    const id = created.json.value.id as string
-    expect(store.get(id)?.requiredCapabilities).toEqual(['taskboard', 'browser', 'computer-use'])
-
-    const updated = await post(`/dsh-taskboard/tasks/${id}/update`, {
-      ifVersion: 1, requiredCapabilities: ['computer-use'],
-    })
-    expect(updated.status).toBe(200)
-    expect(store.get(id)?.requiredCapabilities).toEqual(['taskboard', 'computer-use'])
-
-    const bad = await post('/dsh-taskboard/tasks', {
-      title: '非法授权', workspaceId: 'ws-a', urgency: 'normal', requiredCapabilities: ['browser_snapshot'],
-    })
-    expect(bad.status).toBe(400)
-  })
-
   // ------------------------------------------------------------- templates
   it('templates: seeds built-ins, upserts, renames, deletes', async () => {
     const list = await (await fetch(`${base}/dsh-taskboard/templates`)).json()
-    const names = (list.value.templates as Array<{ name: string; category?: string; builtin?: boolean }>).map(t => t.name)
+    const names = (list.value.templates as Array<{ name: string; builtin?: boolean }>).map(t => t.name)
     expect(names).toContain('Bug 修复')
     expect(names).toContain('发布检查')
     expect(names).toContain('例行巡检')
-    const categoryRows = list.value.templates as Array<{ name: string; category?: string }>
-    expect(categoryRows.find(t => t.name === 'Bug 修复')?.category).toBe('开发')
-    expect(categoryRows.find(t => t.name === '例行巡检')?.category).toBe('运营')
-    const builtins = list.value.templates as Array<{ name: string; task: { speed?: string; permissionMode?: string } }>
-    expect(builtins.find(t => t.name === 'Bug 修复')?.task).toMatchObject({ speed: 'standard', permissionMode: 'workspace-write' })
-    expect(builtins.find(t => t.name === '发布检查')?.task).toMatchObject({ speed: 'standard', permissionMode: 'workspace-write' })
-    expect(builtins.find(t => t.name === '例行巡检')?.task).toMatchObject({ speed: 'standard', permissionMode: 'read-only' })
 
     const created = await post('/dsh-taskboard/templates', {
       name: '我的模板',
-      category: ' 开发 ',
-      task: {
-        title: '从模板开始',
-        urgency: 'urgent',
-        checklist: ['a', 'b'],
-        execution: { mode: 'scheduled', cron: '0 9 * * 1' },
-        speed: 'fast',
-        permissionMode: 'workspace-write',
-        requiredCapabilities: ['computer-use'],
-      },
+      task: { title: '从模板开始', urgency: 'urgent', checklist: ['a', 'b'], execution: { mode: 'scheduled', cron: '0 9 * * 1' } },
     })
     expect(created.status).toBe(201)
     const id = created.json.value.id as string
     expect(created.json.value.task.checklist).toEqual(['a', 'b'])
-    expect(created.json.value.task.speed).toBe('fast')
-    expect(created.json.value.task.permissionMode).toBe('workspace-write')
-    expect(created.json.value.task.requiredCapabilities).toEqual(['taskboard', 'computer-use'])
-    expect(created.json.value.category).toBe('开发')
 
-    const renamed = await post('/dsh-taskboard/templates', { id, name: '改名后', category: '运营', task: { urgency: 'relaxed' } })
+    const renamed = await post('/dsh-taskboard/templates', { id, name: '改名后', task: { urgency: 'relaxed' } })
     expect(renamed.status).toBe(201)
-    expect(renamed.json.value.category).toBe('运营')
 
     // Bad spec rejected.
-    const bad = await post('/dsh-taskboard/templates', { name: 'x', category: 'x'.repeat(31), task: { urgency: 'normal' } })
+    const bad = await post('/dsh-taskboard/templates', { name: 'x', task: { urgency: 'hot' } })
     expect(bad.status).toBe(400)
 
     const deleted = await post('/dsh-taskboard/templates/delete', { id })
@@ -1020,17 +945,15 @@ describe('taskboard routes 0.5.0 (board settings → default isolation)', () => 
     expect(badValue.json.error.code).toBe('invalid_input')
     const badType = await post('/dsh-taskboard/settings/update', { defaultIsolation: 42 })
     expect(badType.status).toBe(400)
-    const badCategory = await post('/dsh-taskboard/settings/update', { templateMenuCategory: 'x'.repeat(31) })
-    expect(badCategory.status).toBe(400)
 
-    const ok = await post('/dsh-taskboard/settings/update', { defaultIsolation: 'worktree', templateMenuCategory: ' 开发 ' })
+    const ok = await post('/dsh-taskboard/settings/update', { defaultIsolation: 'worktree' })
     expect(ok.status).toBe(200)
-    expect(ok.json.value).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '开发' })
+    expect(ok.json.value).toEqual({ defaultIsolation: 'worktree' })
 
     const after = await (await fetch(`${base}/dsh-taskboard/settings`)).json()
-    expect(after.value).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '开发' })
+    expect(after.value).toEqual({ defaultIsolation: 'worktree' })
     const state = await (await fetch(`${base}/dsh-taskboard/state`)).json()
-    expect(state.value.settings).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '开发' })
+    expect(state.value.settings).toEqual({ defaultIsolation: 'worktree' })
   })
 
   it('create materializes the board default on omitted isolation; explicit wins; earlier tasks unaffected', async () => {

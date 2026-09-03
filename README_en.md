@@ -9,11 +9,9 @@ A **task board plugin for DeepSeek Harness**: humans create cards, agents claim 
 
 - **Closed loop**: human creates a card → agent claims & executes → structured hand-off report → human accepts (✓ done / ✗ send back with a reason)
 - **10 `taskboard_*` agent tools** plus code-level protocol gates: agents can never move a task to *done*, held tasks cannot be snatched away, cross-project claims are rejected
-- **Optional Lazy Gate integration**: when `dsh-tool-lazy-gate` is enabled for `taskboard`, the user-only `/taskboard` skill unlocks the `taskboard_*` tools and `plugin:dsh-taskboard` protocol section; the association is published by this plugin's Skill metadata
 - **Execution**: manual or cron-scheduled (host-side scheduling keeps firing with the browser closed); every execution opens a brand-new session inside the task's project, optionally pinned to a model and preset
 - **Git worktree isolation**: each run works on its own worktree + dedicated task branch, one-click merge at acceptance; parallel multi-repo workspaces are mirrored whole (0.6.3); non-git projects fall back automatically
 - **Efficient acceptance**: DoD acceptance checklists (agent checks items off with evidence), structured execution reports (summary / changed files / checks / artifacts / risks), in-board diff viewer
-- **Better Sidebar integration**: when `dsh-better-sidebar` (≥ 0.16.1) is present, the board registers as a native tab with panel/free-window placement, current-session `@` references, and session-workspace-guarded file opening; without it, the legacy DOM board remains available
 - **Live board**: SSE real-time refresh, five-column flow, persisted filters & sorting, JSON import/export, task templates
 
 **Zero configuration**: install and it works — no tokens, no API keys, no extra services or databases.
@@ -55,7 +53,7 @@ dsh plugin --profile web add dsh-taskboard
 dsh plugin --profile web add github:cloader/dsh-taskboard
 ```
 
-After installing, **restart `dsh web` and refresh the page**: when `dsh-better-sidebar` is installed, open the "+" menu to find the native "Task Board" tab; otherwise the legacy sidebar entry remains available. No further configuration needed.
+After installing, **restart `dsh web` and refresh the page**: you should see a "Task Board" entry in the sidebar. No further configuration needed.
 
 <details>
 <summary>GitHub-source install stuck on prepare / allowBuilds?</summary>
@@ -107,31 +105,6 @@ agent:
   taskboard_move → in_review    # move to In Review
 You: click ✓ Done in the In Review column   # done belongs to humans only — agent calls are rejected by the code gate
 ```
-
-## Optional Lazy Gate Integration
-
-When `dsh-tool-lazy-gate` is installed and enabled, Taskboard registers a
-user-only `/taskboard` Skill. The Skill metadata declares this plugin's resource
-association:
-
-```text
-/taskboard
-  ├─ taskboard_*
-  └─ plugin:dsh-taskboard
-```
-
-The Lazy Gate configuration only needs to enable the Skill:
-
-```yaml
-capabilities:
-  taskboard:
-    enabled: true
-    skillNames: [taskboard]
-```
-
-Until the user invokes `/taskboard`, the `taskboard_*` tools and Taskboard
-protocol prompt section are hidden; the model cannot unlock them through
-`skill("taskboard")`. Without Lazy Gate, Taskboard continues to work normally.
 
 ## Agent Tool Reference
 

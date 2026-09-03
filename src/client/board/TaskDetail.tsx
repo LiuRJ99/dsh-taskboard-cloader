@@ -8,15 +8,10 @@
  * @module dsh-taskboard/client/board/TaskDetail
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import type { SessionScope } from 'dsh-better-sidebar/client/service'
-import type { WorkspaceView } from '../../shared/api.ts'
 import type { BoardController } from '../controller.ts'
 import type { ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
-import { cleanReportedPath, isAbsolutePath, resolveTaskFilePath, type TaskFileTarget } from '../file-paths.ts'
 import { canTransition, checklistProgress } from '../../shared/protocol.ts'
 import { useAlert } from './AlertModal.tsx'
-import { InitialAvatar } from './Avatar.tsx'
-import { Markdown } from '../markdown.tsx'
 import { fmtTime, isStaleClaim } from './format.ts'
 import { MOVE_KEYS, OUTCOME_KEYS, STATUS_KEYS, URGENCY_KEYS } from './labels.ts'
 import { useT } from '../i18n/runtime.ts'
@@ -122,139 +117,6 @@ function porcelainPath(line: string): string {
   return p
 }
 
-/** Do not reinterpret URLs or prose labels in report.artifacts as files. */
-function isLocalFileCandidate(raw: string, assumePath: boolean): boolean {
-  const value = cleanReportedPath(raw)
-  if (value === '' || /^(?:[A-Za-z][A-Za-z0-9+.-]*:)?\/\//.test(value)) return false
-  if (/^(?:https?|mailto|data):/i.test(value)) return false
-  if (!assumePath && (/(?:https?|file):\/\//i.test(value) || /:\s/.test(value))) return false
-  if (!assumePath && /\s/.test(value) && !isAbsolutePath(value) && !value.startsWith('./') && !value.startsWith('../')) return false
-  return assumePath
-    || isAbsolutePath(value)
-    || value.includes('/')
-    || value.includes(String.fromCharCode(92))
-    || /^[^:]+\.[^:]+$/.test(value)
-}
-
-/** Resolve an inline Markdown code token to a safe file opener target. */
-function taskFileMentionResolver(
-  task: TaskRecord,
-  workspaces: readonly WorkspaceView[],
-  execution: ExecutionRecord | undefined,
-  scope: SessionScope | undefined,
-  onOpenFile: ((path: string) => void) | undefined,
-): ((value: string) => string | undefined) | undefined {
-  if (onOpenFile === undefined) return undefined
-  return value => {
-    if (!isLocalFileCandidate(value, false)) return undefined
-    const target = resolveTaskFilePath(value, task, workspaces, execution, scope)
-    return target?.available === true ? target.path : undefined
-  }
-}
-
-/** Render one report path as the shell's underlined open-file link. */
-function OpenFileLink({
-  raw,
-  target,
-  onOpenFile,
-}: {
-  raw: string
-  target: TaskFileTarget | undefined
-  onOpenFile?: (path: string) => void
-}): ReactNode {
-  if (onOpenFile === undefined) return <code className="dsh-atb-file-path">{raw}</code>
-  if (target === undefined || !target.available) {
-    const reason = target?.reason === 'outside-session-workspace'
-      ? '当前会话 workspace 外，暂不可打开'
-      : target?.reason === 'missing-session-cwd'
-        ? '当前会话路径尚未就绪'
-        : '无法解析文件路径'
-    return (
-      <span className="dsh-atb-file-unavailable-wrap">
-        <code className="dsh-atb-file-path" title={target?.path ?? reason}>{raw}</code>
-        <span className="dsh-atb-file-unavailable" title={target?.path ?? reason}>不可访问</span>
-      </span>
-    )
-  }
-  return (
-    <button
-      type="button"
-      className="dsh-atb-file-link"
-      title={target.path}
-      aria-label={`打开文件 ${raw}`}
-      onClick={event => {
-        event.stopPropagation()
-        onOpenFile(target.path)
-      }}
-      onKeyDown={event => {
-        if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
-      }}
-    >
-      {raw}
-    </button>
-  )
-}
-
-/** The compact open action retained beside rows that also expand a diff. */
-function FileOpenAction({
-  target,
-  onOpenFile,
-}: {
-  target: TaskFileTarget | undefined
-  onOpenFile?: (path: string) => void
-}): ReactNode {
-  if (onOpenFile === undefined) return null
-  if (target === undefined || !target.available) {
-    const reason = target?.reason === 'outside-session-workspace'
-      ? '当前会话 workspace 外，暂不可打开'
-      : target?.reason === 'missing-session-cwd'
-        ? '当前会话路径尚未就绪'
-        : '无法解析文件路径'
-    return <span className="dsh-atb-file-unavailable" title={target?.path ?? reason}>不可访问</span>
-  }
-  return (
-    <button
-      type="button"
-      className="dsh-atb-file-action"
-      title={`打开文件 ${target.path}`}
-      aria-label={`打开文件 ${target.path}`}
-      onClick={event => {
-        event.stopPropagation()
-        onOpenFile(target.path)
-      }}
-    >
-      打开
-    </button>
-  )
-}
-
-/** Render one local report path with controlled sidebar actions. */
-function ReportFileRow({
-  raw,
-  task,
-  execution,
-  workspaces,
-  scope,
-  assumePath,
-  onOpenFile,
-}: {
-  raw: string
-  task: TaskRecord
-  execution: ExecutionRecord
-  workspaces: readonly WorkspaceView[]
-  scope?: SessionScope
-  assumePath: boolean
-  onOpenFile?: (path: string) => void
-}): ReactNode {
-  if (!isLocalFileCandidate(raw, assumePath)) return raw
-  const target = resolveTaskFilePath(raw, task, workspaces, execution, scope)
-  return (
-    <span className="dsh-atb-file-row">
-      <OpenFileLink raw={raw} target={target} onOpenFile={onOpenFile} />
-    </span>
-  )
-}
-
 /**
  * Lazy diff viewer (0.4.0): loads on mount, renders inside a capped <pre>.
  * `repo` picks one repo of a multi-repo mirror (0.6.3; absent = legacy root).
@@ -341,28 +203,6 @@ function ChecklistBlock({ task, controller }: { task: TaskRecord; controller: Bo
 }
 
 /**
- * Render one of the task's long-text fields either as Markdown or as the
- * original source. Raw mode deliberately uses React text children, never the
- * HTML sink, so reviewers can compare the stored Markdown safely.
- */
-function PreviewText({
-  text,
-  className,
-  raw,
-  resolveFileMention,
-  onOpenFile,
-}: {
-  text: string
-  className: string
-  raw: boolean
-  resolveFileMention?: (value: string) => string | undefined
-  onOpenFile?: (path: string) => void
-}): ReactNode {
-  if (raw) return <div className={`${className} dsh-atb-raw`}>{text}</div>
-  return <Markdown className={className} text={text} resolveFileMention={resolveFileMention} onOpenFile={onOpenFile} />
-}
-
-/**
  * The structured execution report block (0.4.0): the newest execution that
  * carries one, rendered section by section for the reviewer.
  */
@@ -371,28 +211,11 @@ function ReportBlock({ task }: { task: TaskRecord }) {
   const execution = [...task.executions].reverse().find(e => e.report !== undefined)
   const report = execution?.report
   if (execution === undefined || report === undefined) return null
-  const resolveFileMention = taskFileMentionResolver(task, workspaces, execution, scope, onOpenFile)
-  const section = (label: string, rows: string[] | undefined, fileKind?: 'changed' | 'artifact'): ReactNode => rows !== undefined && rows.length > 0
+  const section = (label: string, rows: string[] | undefined): ReactNode => rows !== undefined && rows.length > 0
     ? (
         <div className="dsh-atb-rpt-sec">
           <div className="dsh-atb-rpt-label">{label}</div>
-          <ul className="dsh-atb-rpt-list">
-            {rows.map((row, i) => (
-              <li key={i}>
-                {fileKind !== undefined
-                  ? <ReportFileRow
-                      raw={row}
-                      task={task}
-                      execution={execution}
-                      workspaces={workspaces}
-                      scope={scope}
-                      assumePath={fileKind === 'changed'}
-                      onOpenFile={onOpenFile}
-                    />
-                  : row}
-              </li>
-            ))}
-          </ul>
+          <ul className="dsh-atb-rpt-list">{rows.map((row, i) => <li key={i}>{row}</li>)}</ul>
         </div>
       )
     : null
@@ -571,7 +394,6 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
             <div className="dsh-atb-iso-dirty-files">
               {view.dirty.slice(0, 30).map((line, index) => {
                 const filePath = porcelainPath(line)
-                const target = resolveTaskFilePath(filePath, task, workspaces, execution, scope)
                 return (
                   <button
                     key={`${line}-${index}`}
@@ -672,7 +494,6 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
 export function TaskDetail({ task, controller, now }: { task: TaskRecord; controller: BoardController; now?: number }) {
   const t = useT()
   const [comment, setComment] = useState('')
-  const [showRawMarkdown, setShowRawMarkdown] = useState(false)
   const [confirmDone, setConfirmDone] = useState(false)
   const [confirmPurge, setConfirmPurge] = useState(false)
   const [confirmCancel, setConfirmCancel] = useState(false)
@@ -681,9 +502,7 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
   // copies while the first round-trip was still pending (review P0).
   const [actionBusy, setActionBusy] = useState(false)
   const { alert: showAlert, el: alertEl } = useAlert()
-  const workspaces = controller.getSnapshot().workspaces
-  const ws = workspaces.find(w => w.id === task.workspaceId)
-  const resolveFileMention = taskFileMentionResolver(task, workspaces, latestIsolated(task), scope, onOpenFile)
+  const ws = controller.getSnapshot().workspaces.find(w => w.id === task.workspaceId)
   const canRun = task.status !== 'in_progress' && task.status !== 'done' && task.status !== 'archived'
   const runningExecution = task.executions.find(e => e.outcome === 'running')
   const holder = task.status === 'in_progress' ? task.claimedBy : undefined
@@ -711,7 +530,7 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
   return (
     <div className="dsh-atb-detail" data-urgency={task.urgency}>
       <div className="dsh-atb-detail-head">
-        <div className="dsh-atb-detail-topbar">
+        <div className="dsh-atb-detail-titlewrap">
           <div className="dsh-atb-detail-titlebar">
             <h3>{task.title}</h3>
             <span className="dsh-atb-statuspill" data-status={task.status}>{t(STATUS_KEYS[task.status] ?? task.status)}</span>
@@ -796,17 +615,6 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
           >
             {t('detail.action.saveTpl')}
           </button>
-          {onToggleFullScreen !== undefined && (
-            <button
-              type="button"
-              className="dsh-atb-detail-edit"
-              aria-pressed={fullScreen}
-              title={fullScreen ? '退出详情全屏（Esc）' : '让详情占满当前看板区域'}
-              onClick={onToggleFullScreen}
-            >
-              {fullScreen ? '⛶ 退出全屏' : '⛶ 全屏'}
-            </button>
-          )}
           {canRun && task.branch !== undefined && (
             <button
               type="button"
@@ -866,21 +674,9 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
         </div>
       )}
 
-      <IsolationBlock
-        task={task}
-        controller={controller}
-        workspaces={workspaces}
-        scope={scope}
-        onOpenFile={onOpenFile}
-      />
+      <IsolationBlock task={task} controller={controller} />
 
-      <ReportBlock
-        task={task}
-        raw={showRawMarkdown}
-        workspaces={workspaces}
-        scope={scope}
-        onOpenFile={onOpenFile}
-      />
+      <ReportBlock task={task} />
 
       <ChecklistBlock task={task} controller={controller} />
 
@@ -934,9 +730,10 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
                         <b>{c.threadId !== undefined ? `agent ${shortId(c.threadId)}` : t('detail.comments.user')}</b>
                         <span>{fmtTime(c.createdAt)}</span>
                       </div>
+                      <div className="dsh-atb-bubble-body">{c.body}</div>
                     </div>
-                  )
-                })}
+                  </div>
+                ))}
               </div>
             )}
         <div className="dsh-atb-composer">

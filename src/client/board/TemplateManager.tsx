@@ -1,7 +1,7 @@
 /**
- * The template-manager modal (0.4.0): rename / categorize / delete / use the
- * stored task templates. Templates live host-side (side file next to the
- * ledger) and prefill the create form from the + 新建任务 ▼ dropdown.
+ * The template-manager modal (0.4.0): rename / delete / use the stored task
+ * templates. Templates live host-side (side file next to the ledger) and
+ * prefill the create form from the + 新建任务 ▼ dropdown.
  *
  * @module dsh-taskboard/client/board/TemplateManager
  */
@@ -18,25 +18,18 @@ export function TemplateManager({ controller }: { controller: BoardController })
   const t = useT()
   const state = controller.getSnapshot()
   const [edits, setEdits] = useState<Record<string, string>>({})
-  const [categoryEdits, setCategoryEdits] = useState<Record<string, string>>({})
   const [confirmId, setConfirmId] = useState<string | undefined>(undefined)
   const { alert: showAlert, el: alertEl } = useAlert()
 
   const close = (): void => controller.closeTemplateManager()
-  const categories = templateCategoryOptions(state.templates)
-  const selectedCategory = state.ledger.settings?.templateMenuCategory
-  const visibleTemplates = state.templates.filter(template => matchesTemplateCategory(template, selectedCategory))
 
   const nameOf = (id: string, fallback: string): string => edits[id] ?? fallback
-  const categoryOf = (id: string, fallback: string | undefined): string => categoryEdits[id] ?? templateCategoryOf({ category: fallback })
 
-  /** Save one template's rename and/or category. */
-  const save = (id: string, name: string, category: string): void => {
+  /** Save one template's rename. */
+  const save = (id: string, name: string): void => {
     const template = state.templates.find(t => t.id === id)
-    if (template === undefined) return
-    const normalizedCategory = category.trim().length > 0 ? category.trim() : '其他'
-    if (name === template.name && normalizedCategory === templateCategoryOf(template)) return
-    void controller.upsertTemplate({ id, name, category: normalizedCategory, task: template.task }).then(ok => {
+    if (template === undefined || name === template.name) return
+    void controller.upsertTemplate({ id, name, task: template.task }).then(ok => {
       if (ok) {
         setEdits(prev => { const next = { ...prev }; delete next[id]; return next })
         showAlert(t('tpl.renamed'))

@@ -9,7 +9,7 @@
  * @module dsh-taskboard/client/board/TaskFormModal
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { BoardController, GateCapabilityOption } from '../controller.ts'
+import type { BoardController } from '../controller.ts'
 import type { TaskTemplateSpec } from '../../shared/api.ts'
 import type { ChecklistItem, IsolationMode, PermissionMode, TaskRecord, Urgency } from '../../shared/protocol.ts'
 import { MAX_CHECKLIST_ITEMS, asPermission, defaultIsolationOf, defaultPermissionOf, nextCronTime, parseCron } from '../../shared/protocol.ts'
@@ -22,22 +22,10 @@ export interface CatalogModel {
   provider: string
   model: string
   name?: string
-  description?: string
   reasoning?: {
     efforts: Array<{ id: string; name: string; description?: string }>
     defaultEffort?: string
   }
-  serviceTiers?: readonly { id: string; name?: string; description?: string }[]
-}
-
-/** A reasoning selector is useful only when the model exposes actual choices. */
-export function hasReasoningOptions(reasoning: CatalogModel['reasoning'] | undefined): boolean {
-  return reasoning !== undefined && reasoning.efforts.length > 0
-}
-
-/** Fast is usable only when the selected catalog row advertises priority. */
-export function speedForModel(model: CatalogModel | undefined, speed: TaskSpeed): TaskSpeed {
-  return supportsTaskFastSpeed(model) ? speed : 'standard'
 }
 
 /** Local storage key for remembering the last selected model in create mode. */
@@ -141,11 +129,7 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
   return (
     <div className="dsh-atb-cke">
       {rows.map((row, index) => (
-        <div
-          key={row.id ?? `new-${index}`}
-          className="dsh-atb-cke-row"
-          data-editing={editing ? 'true' : undefined}
-        >
+        <div key={row.id ?? `new-${index}`} className="dsh-atb-cke-row">
           {editing && (
             <input
               type="checkbox"
@@ -197,18 +181,12 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const [mode, setMode] = useState<'claim' | 'scheduled'>(task?.execution.mode === 'scheduled' || prefill?.execution?.mode === 'scheduled' ? 'scheduled' : 'claim')
   const [cron, setCron] = useState(task?.execution.cron ?? prefill?.execution?.cron ?? '0 9 * * *')
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
-  // In create mode (when not pinned by template), prefill from the remembered last choice.
+
+  // Model & reasoning effort selection:
+  // In create mode (when not pinned by template), prefill from remembered last choice.
   const initialModel = task?.model ?? prefill?.model ?? (!editing ? loadLastModel() : undefined)
-  const [model, setModel] = useState(initialModel === undefined ? '' : JSON.stringify(initialModel))
-  const [speed, setSpeed] = useState<TaskSpeed>(
-    task?.speed === 'fast' || prefill?.speed === 'fast' ? 'fast' : 'standard',
-  )
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
-    task?.permissionMode ?? (prefill?.permissionMode === 'read-only' || prefill?.permissionMode === 'danger-full-access' ? prefill.permissionMode : 'workspace-write'),
-  )
-  const [requiredCapabilities, setRequiredCapabilities] = useState<TaskCapability[]>(() => extraCapabilitiesOf(task?.requiredCapabilities ?? prefill?.requiredCapabilities))
-  const [gateOptions, setGateOptions] = useState<GateCapabilityOption[]>([])
-  const [gateDiscoveryReady, setGateDiscoveryReady] = useState(false)
+  const [model, setModel] = useState(initialModel !== undefined ? JSON.stringify({ provider: initialModel.provider, model: initialModel.model }) : '')
+  const [reasoningEffort, setReasoningEffort] = useState(initialModel?.reasoningEffort ?? '')
   // Preset roster (0.3.3): create mode PRE-SELECTS the deployment default
   // (标准模式 in this deployment); '' = 跟随部署默认 (submit omits the field).
   const initialPreset = task?.presetId ?? prefill?.presetId ?? ''
@@ -298,64 +276,26 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   /** Preset payload: '' = follow the deployment default (submit omits). */
   const presetPayload = (): string | undefined => (presetId.trim().length > 0 ? presetId.trim() : undefined)
 
-  /** The currently selected model, if the form state is still valid JSON. */
-  const selectedModel = (() => {
-    if (model === '') return undefined
-    try {
-      const value = JSON.parse(model) as { provider?: unknown; model?: unknown; reasoningEffort?: unknown }
-      return typeof value.provider === 'string' && typeof value.model === 'string'
-        ? {
-            provider: value.provider,
-            model: value.model,
-            ...(typeof value.reasoningEffort === 'string' && value.reasoningEffort.length > 0 ? { reasoningEffort: value.reasoningEffort } : {}),
-          }
-        : undefined
-    } catch {
-      return undefined
-    }
-  })()
-  const selectedCatalog = selectedModel === undefined
-    ? undefined
-    : catalog.find(entry => entry.provider === selectedModel.provider && entry.model === selectedModel.model)
-  const reasoning = hasReasoningOptions(selectedCatalog?.reasoning) ? selectedCatalog?.reasoning : undefined
-  const effectiveEffort = selectedModel?.reasoningEffort ?? reasoning?.defaultEffort
-  const speedAvailable = supportsTaskFastSpeed(selectedCatalog)
-  const effectiveSpeed = speedForModel(selectedCatalog, speed)
-
-  /** Pick a model and seed its adapter-configured default reasoning level. */
-  const chooseModel = (value: string): void => {
-    if (value === '') {
-      setModel('')
-      setSpeed('standard')
-      return
-    }
-    const picked = JSON.parse(value) as { provider: string; model: string }
-    const metadata = catalog.find(entry => entry.provider === picked.provider && entry.model === picked.model)
-    const next = {
-      ...picked,
-      ...(metadata?.reasoning?.defaultEffort !== undefined ? { reasoningEffort: metadata.reasoning.defaultEffort } : {}),
-    }
-    setSpeed(current => supportsTaskFastSpeed(metadata) ? current : 'standard')
-    setModel(JSON.stringify(next))
-  }
-
-  /** Set the exact adapter-owned effort or remove it for provider default. */
-  const chooseEffort = (value: string): void => {
-    if (selectedModel === undefined) return
-    const next = {
-      provider: selectedModel.provider,
-      model: selectedModel.model,
-      ...(value.length > 0 ? { reasoningEffort: value } : {}),
-    }
-    setModel(JSON.stringify(next))
-  }
-
   /** Checklist rows with non-empty text (blank rows are dropped on submit). */
   const filledRows = (): CheckRow[] => checkRows.map(r => ({ ...r, text: r.text.trim() })).filter(r => r.text.length > 0)
 
+  const parsedModel = model !== '' ? (JSON.parse(model) as { provider: string; model: string }) : undefined
+  const currentCatalogModel = parsedModel !== undefined ? catalog.find(m => m.provider === parsedModel.provider && m.model === parsedModel.model) : undefined
+  const modelReasoning = currentCatalogModel?.reasoning
+
+  const buildPickedModel = (): { provider: string; model: string; reasoningEffort?: string } | undefined => {
+    if (parsedModel === undefined) return undefined
+    const eff = reasoningEffort.trim()
+    return {
+      provider: parsedModel.provider,
+      model: parsedModel.model,
+      ...(eff.length > 0 ? { reasoningEffort: eff } : {}),
+    }
+  }
+
   const submit = (): void => {
     if (!valid || busy) return
-    const picked = selectedModel
+    const picked = buildPickedModel()
     if (!editing) saveLastModel(picked)
     const isolationOut = isolationPayload()
     const presetOut = presetPayload()
@@ -371,16 +311,13 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         // '' in edit mode clears the pinned model back to the default.
         model: picked ?? null,
-        speed: effectiveSpeed,
-        permissionMode,
-        requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
         ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
         presetId: presetOut ?? null,
         permission,
         // [] clears the checklist (host deletes the field on empty).
         checklist: rows.length > 0 ? rows : null,
       })
-      : controller.createFromPanel({
+      : controller.create({
         title,
         workspaceId,
         urgency,
@@ -388,21 +325,18 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         prompt: prompt.length > 0 ? prompt : undefined,
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         model: picked,
-        speed: effectiveSpeed,
-        permissionMode,
-        requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
         ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
         ...(presetOut !== undefined ? { presetId: presetOut } : {}),
         permission,
         ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
-      }, sessionId)
+      })
     void action.catch(() => undefined).finally(() => setBusy(false))
   }
 
   /** Save the form, then immediately trigger a manual run of the task. */
   const submitAndRun = (): void => {
     if (!valid || runBlocked || busy) return
-    const picked = selectedModel
+    const picked = buildPickedModel()
     if (!editing) saveLastModel(picked)
     const isolationOut = isolationPayload()
     const presetOut = presetPayload()
@@ -418,9 +352,6 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           workspaceId,
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked ?? null,
-          speed: effectiveSpeed,
-          permissionMode,
-          requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
           ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
           presetId: presetOut ?? null,
           permission,
@@ -428,7 +359,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         })
         if (saved) await controller.run(task.id)
       } else {
-        const id = await controller.createFromPanel({
+        const id = await controller.create({
           title,
           workspaceId,
           urgency,
@@ -436,14 +367,11 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           prompt: prompt.length > 0 ? prompt : undefined,
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked,
-          speed: effectiveSpeed,
-          permissionMode,
-          requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
           ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
           ...(presetOut !== undefined ? { presetId: presetOut } : {}),
           permission,
           ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
-        }, sessionId)
+        })
         if (id !== undefined) await controller.run(id)
       }
     })().catch(() => undefined).finally(() => setBusy(false))
@@ -724,9 +652,6 @@ interface TaskRecordLike {
   urgency: Urgency
   execution: { mode: 'claim' | 'scheduled'; cron?: string }
   model?: { provider: string; model: string; reasoningEffort?: string }
-  requiredCapabilities?: TaskCapability[]
-  speed?: TaskSpeed
-  permissionMode?: PermissionMode
   isolation?: IsolationMode
   presetId?: string
   checklist?: ChecklistItem[]
