@@ -8,13 +8,13 @@
  */
 import { useState } from 'react'
 import type { BoardController } from '../controller.ts'
-import { DEFAULT_ISOLATION, type IsolationMode } from '../../shared/protocol.ts'
-import { templateCategoryOptions } from '../template-categories.ts'
+import { DEFAULT_ISOLATION, defaultPermissionOf, defaultSyncExternalSessionsOf, type IsolationMode, type PermissionMode } from '../../shared/protocol.ts'
+import { useT, type Translate } from '../i18n/runtime.ts'
 
-/** The isolation options with one-line hints (mirrors the task form). */
-const ISOLATION_OPTIONS: ReadonlyArray<{ value: IsolationMode; name: string; hint: string }> = [
-  { value: 'none', name: '📁 原目录执行', hint: '不使用 git，直接在项目目录工作（出厂默认）' },
-  { value: 'worktree', name: '🌿 Worktree 隔离', hint: '每次执行在独立 worktree 分支上进行（task/标题+ID），互不污染' },
+/** The isolation options with one-line hints (mirrors the task form; translated per render). */
+const isolationOptions = (t: Translate): ReadonlyArray<{ value: IsolationMode; name: string; hint: string }> => [
+  { value: 'none', name: t('form.iso.none'), hint: t('set.iso.noneHint') },
+  { value: 'worktree', name: t('form.iso.worktree'), hint: t('set.iso.worktreeHint') },
 ]
 
 /**
@@ -23,23 +23,21 @@ const ISOLATION_OPTIONS: ReadonlyArray<{ value: IsolationMode; name: string; hin
  * @param controller - the board controller.
  */
 export function SettingsModal({ controller }: { controller: BoardController }) {
+  const t = useT()
   const state = controller.getSnapshot()
-  const currentIsolation = state.ledger.settings?.defaultIsolation ?? DEFAULT_ISOLATION
-  const currentCategory = state.ledger.settings?.templateMenuCategory ?? ''
-  const [draftIsolation, setDraftIsolation] = useState<IsolationMode>(currentIsolation)
-  const [draftCategory, setDraftCategory] = useState(currentCategory)
-  const categories = templateCategoryOptions(state.templates)
-  const categoryOptions = currentCategory !== '' && !categories.some(o => o.value === currentCategory)
-    ? [...categories, { value: currentCategory, count: 0 }]
-    : categories
-  const dirty = draftIsolation !== currentIsolation || draftCategory !== currentCategory
+  const currentIso = state.ledger.settings?.defaultIsolation ?? DEFAULT_ISOLATION
+  const currentSync = defaultSyncExternalSessionsOf(state.ledger.settings)
+  const currentPerm = defaultPermissionOf(state.ledger.settings)
+  const [draftIso, setDraftIso] = useState<IsolationMode>(currentIso)
+  const [draftSync, setDraftSync] = useState<boolean>(currentSync)
+  const [draftPerm, setDraftPerm] = useState<PermissionMode>(currentPerm)
+  const dirty = draftIso !== currentIso || draftSync !== currentSync || draftPerm !== currentPerm
 
   const save = (): void => {
     void controller.updateSettings({
-      // Settings updates are whole-object replacements: keep every existing
-      // field instead of accidentally clearing defaultIsolation.
-      defaultIsolation: draftIsolation,
-      ...(draftCategory.length > 0 ? { templateMenuCategory: draftCategory } : {}),
+      defaultIsolation: draftIso,
+      syncExternalSessions: draftSync,
+      defaultPermission: draftPerm,
     }).then(ok => {
       if (ok) controller.closeSettings()
     })
@@ -47,28 +45,28 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
 
   return (
     <div className="dsh-atb-modal-backdrop" onClick={e => { if (e.target === e.currentTarget) controller.closeSettings() }}>
-      <div className="dsh-atb-modal dsh-atb-set" role="dialog" aria-modal="true" aria-label="看板设置">
+      <div className="dsh-atb-modal dsh-atb-set" role="dialog" aria-modal="true" aria-label={t('set.aria')}>
         <div className="dsh-atb-modal-head">
           <span className="dsh-atb-modal-headicon">🛠</span>
           <div className="dsh-atb-modal-headtext">
-            <h3>看板设置</h3>
-            <p>新建任务时应用的默认值（不影响已有任务）</p>
+            <h3>{t('set.title')}</h3>
+            <p>{t('set.subtitle')}</p>
           </div>
-          <button type="button" className="dsh-atb-modal-close" aria-label="关闭" onClick={() => controller.closeSettings()}>✕</button>
+          <button type="button" className="dsh-atb-modal-close" aria-label={t('shared.close')} onClick={() => controller.closeSettings()}>✕</button>
         </div>
 
         <div className="dsh-atb-modal-body">
           <section className="dsh-atb-diag-sec">
-            <h4>默认执行隔离</h4>
+            <h4>{t('set.iso.heading')}</h4>
             <div className="dsh-atb-mode-picker">
-              {ISOLATION_OPTIONS.map(o => (
+              {isolationOptions(t).map(o => (
                 <button
                   key={o.value}
                   type="button"
                   className="dsh-atb-mode-opt"
-                  data-on={draftIsolation === o.value}
+                  data-on={draftIso === o.value}
                   title={o.hint}
-                  onClick={() => setDraftIsolation(o.value)}
+                  onClick={() => setDraftIso(o.value)}
                 >
                   <span className="dsh-atb-mode-name">{o.name}</span>
                   <span className="dsh-atb-mode-hint">{o.hint}</span>
@@ -76,8 +74,74 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
               ))}
             </div>
             <span className="dsh-atb-isolation-note">
-              当前保存的默认：{currentIsolation === 'worktree' ? '🌿 Worktree 隔离' : '📁 原目录执行'}。
-              仅影响之后新建的任务；已有任务保持创建时的选择，非 git 项目运行时仍自动降级原目录。
+              {t('set.iso.current', { current: currentIso === 'worktree' ? t('form.iso.worktree') : t('form.iso.none') })}
+            </span>
+          </section>
+
+          <section className="dsh-atb-diag-sec">
+            <h4>{t('set.sync.heading')}</h4>
+            <div className="dsh-atb-mode-picker">
+              <button
+                type="button"
+                className="dsh-atb-mode-opt"
+                data-on={!draftSync}
+                title={t('set.sync.off.title')}
+                onClick={() => setDraftSync(false)}
+              >
+                <span className="dsh-atb-mode-name">{t('set.sync.off.name')}</span>
+                <span className="dsh-atb-mode-hint">{t('set.sync.off.hint')}</span>
+              </button>
+              <button
+                type="button"
+                className="dsh-atb-mode-opt"
+                data-on={draftSync}
+                title={t('set.sync.on.title')}
+                onClick={() => setDraftSync(true)}
+              >
+                <span className="dsh-atb-mode-name">{t('set.sync.on.name')}</span>
+                <span className="dsh-atb-mode-hint">{t('set.sync.on.hint')}</span>
+              </button>
+            </div>
+            <span className="dsh-atb-isolation-note">
+              {currentSync
+                ? t('set.sync.stateOn')
+                : t('set.sync.stateOff')}
+            </span>
+          </section>
+
+          <section className="dsh-atb-diag-sec">
+            <h4>{t('set.perm.heading')}</h4>
+            <div className="dsh-atb-perm-picker">
+              <button
+                type="button"
+                className="dsh-atb-perm-opt"
+                data-on={draftPerm === 'workspace-write'}
+                onClick={() => setDraftPerm('workspace-write')}
+              >
+                <span className="dsh-atb-perm-name">{t('set.perm.writeName')}</span>
+                <span className="dsh-atb-perm-hint">{t('set.perm.writeHint')}</span>
+              </button>
+              <button
+                type="button"
+                className="dsh-atb-perm-opt"
+                data-on={draftPerm === 'read-only'}
+                onClick={() => setDraftPerm('read-only')}
+              >
+                <span className="dsh-atb-perm-name">{t('set.perm.readOnlyName')}</span>
+                <span className="dsh-atb-perm-hint">{t('set.perm.readOnlyHint')}</span>
+              </button>
+              <button
+                type="button"
+                className="dsh-atb-perm-opt"
+                data-on={draftPerm === 'danger-full-access'}
+                onClick={() => setDraftPerm('danger-full-access')}
+              >
+                <span className="dsh-atb-perm-name">{t('set.perm.fullName')}</span>
+                <span className="dsh-atb-perm-hint">{t('set.perm.fullHint')}</span>
+              </button>
+            </div>
+            <span className="dsh-atb-isolation-note">
+              {t('set.perm.current', { current: currentPerm === 'read-only' ? t('set.perm.readOnlyName') : currentPerm === 'danger-full-access' ? t('set.perm.fullName') : t('set.perm.writeName') })}
             </span>
           </section>
 
@@ -102,10 +166,10 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
         </div>
 
         <div className="dsh-atb-modal-foot">
-          <span className="dsh-atb-modal-hint">{dirty ? '有未保存的修改' : '与看板当前设置一致'}</span>
+          <span className="dsh-atb-modal-hint">{dirty ? t('set.foot.dirty') : t('set.foot.clean')}</span>
           <span className="dsh-atb-modal-footbtns">
-            <button type="button" className="dsh-atb-btn" onClick={() => controller.closeSettings()}>取消</button>
-            <button type="button" className="dsh-atb-btn" data-primary="true" disabled={!dirty} onClick={save}>保存设置</button>
+            <button type="button" className="dsh-atb-btn" onClick={() => controller.closeSettings()}>{t('shared.cancel')}</button>
+            <button type="button" className="dsh-atb-btn" data-primary="true" disabled={!dirty} onClick={save}>{t('set.action.save')}</button>
           </span>
         </div>
       </div>

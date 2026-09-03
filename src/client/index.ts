@@ -12,7 +12,8 @@
  * @module dsh-taskboard/client
  */
 import { createClient } from './api.ts'
-import { BoardController, type GateCapabilityOption } from './controller.ts'
+import { BoardController } from './controller.ts'
+import { disposeI18n, initI18n } from './i18n/runtime.ts'
 import { injectStyles } from './styles.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
@@ -127,107 +128,195 @@ function slotsFromContext(ctx: ClientContextFace): ClientSlotsFace | undefined {
 export function apply(ctx: ClientContextFace): void {
   try {
     injectStyles()
+    // Locale source (设置 → 通用设置 → 语言): soft-attached — absent on
+    // compositions without the DSH locale plugin, where the fallback
+    // (<html lang> / navigator) takes over. Never a hard inject. The getter
+    // rides along (issue #16): our client bundle activates with zero service
+    // deps, potentially BEFORE the locale service provides — the runtime
+    // re-polls it for ~2s and watches <html lang> until it does.
+    initI18n(ctx.get?.('locale'), () => ctx.get?.('locale'))
     const client = createClient()
     const controller = new BoardController(client)
 
-    // Model catalog for the composer: llm.models over the connection RPC —
-    // installed through the controller's formal installer (T13: no more
-    // monkeypatched instance properties).
-    const connection = ctx.get?.('connection') as ConnectionFace | undefined
-    if (connection !== undefined) {
-      type CatalogRow = {
-        provider: string
-        model: string
-        name?: string
-        description?: string
-        reasoning?: {
-          efforts: Array<{ id: string; name: string; description?: string }>
-          defaultEffort?: string
-        }
-        serviceTiers?: readonly { id: string; name?: string; description?: string }[]
+    // Model catalog for the composer (0.5.5): multi-tier discovery
+    // 1. DSH ui-model-selection service: ctx.get('modelDirectories')?.catalog?.load()
+    // 2. DSH Remote RPC: ctx.get('remote')?.session?.modelCatalog()
+    // 3. Legacy connection.api face if present
+    // 4. Taskboard host endpoint: /dsh-taskboard/model-catalog
+    type CatalogRow = {
+      provider: string
+      model: string
+      name?: string
+      description?: string
+      reasoning?: {
+        efforts: Array<{ id: string; name: string; description?: string }>
+        defaultEffort?: string
       }
-      controller.installModelCatalog(async (): Promise<CatalogRow[]> => {
-        const capabilityProvider = ctx.get?.(MODEL_CAPABILITY_SERVICE) as ModelCapabilityProvider | undefined
-        const [response, capabilities] = await Promise.all([
-          connection.api.llm.models({}),
-          capabilityProvider?.listModelCapabilities().catch(() => []) ?? Promise.resolve<readonly ModelCapability[]>([]),
-        ])
-        if (!response.result.ok) return []
-        const capabilityMap = new Map(capabilities.map(capability => [`${capability.provider}\u0000${capability.model}`, capability]))
-        const out: CatalogRow[] = []
-        for (const group of response.result.value.groups) {
-          for (const model of group.models) {
-            const capability = capabilityMap.get(`${group.id}\u0000${model.id}`)
-            const row = {
-              provider: group.id,
-              model: model.id,
-              ...(model.name !== undefined ? { name: model.name } : {}),
-              ...(model.description !== undefined ? { description: model.description } : {}),
-              ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
-              ...(model.serviceTiers !== undefined ? { serviceTiers: model.serviceTiers } : capability !== undefined ? { serviceTiers: capability.serviceTiers } : {}),
+    }
+    controller.installModelCatalog(async (): Promise<CatalogRow[]> => {
+      // 1. DSH ui-model-selection service
+      try {
+        const modelDirs = (ctx.get?.('modelDirectories') ?? (ctx as Record<string, unknown>).modelDirectories) as {
+          catalog?: { load: () => Promise<{ groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string; description?: string; reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string } }> }> }> }
+        } | undefined
+        if (modelDirs?.catalog?.load !== undefined) {
+          const res = await modelDirs.catalog.load()
+          if (res?.groups !== undefined && res.groups.length > 0) {
+            const out: CatalogRow[] = []
+            for (const group of res.groups) {
+              for (const model of group.models) {
+                out.push({
+                  provider: group.id,
+                  model: model.id,
+                  name: model.name,
+                  ...(model.description !== undefined ? { description: model.description } : {}),
+                  ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+                })
+              }
             }
-            if (isTaskModelSupported(row)) out.push(row)
+            if (out.length > 0) return out
           }
         }
-        return out
-      })
+      } catch { /* try next */ }
 
-      // Preset roster for the composer (0.3.3): agentPreset.list over the
-      // connection RPC — [{id, name}] plus which one is the deployment
-      // default (the form pre-selects it on create).
-      type PresetRow = { id: string; name?: string }
-      controller.installPresetRoster(async (): Promise<{ presets: PresetRow[]; defaultId?: string }> => {
-        const list = connection.api.agentPresets
-        if (list === undefined) return { presets: [] }
-        const response = await list.list({})
-        if (!response.result.ok) return { presets: [] }
-        const presets = response.result.value.presets.map((p: { id: string; name?: string }) => ({ id: p.id, name: p.name }))
-        const def = response.result.value.presets.find((p: { id: string; isDefault: boolean }) => p.isDefault)
-        return { presets, ...(def !== undefined ? { defaultId: def.id } : {}) }
-      })
+      // 2. DSH Remote RPC
+      try {
+        const remote = (ctx.get?.('remote') ?? (ctx as Record<string, unknown>).remote) as {
+          session?: { modelCatalog: () => Promise<{ ok: boolean; value?: { groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string; description?: string; reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string } }> }> } }> }
+          llm?: { models: (payload: Record<string, never>) => Promise<{ result: { ok: true; value: { groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string; description?: string; reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string } }> }> } } | { ok: false } }> }
+        } | undefined
 
-      // Lazy-gate discovery is optional and is the sole signal that the GUI
-      // should expose extra execution capabilities. A missing/disabled gate is
-      // represented as undefined internally and never falls back to noisy,
-      // non-functional Browser/Computer checkboxes.
-      let lazyGateDiscovery: Promise<GateCapabilityOption[] | undefined> | undefined
-      const discoverLazyGate = (refresh = false): Promise<GateCapabilityOption[] | undefined> => {
-        if (!refresh && lazyGateDiscovery !== undefined) return lazyGateDiscovery
-        const rpc = connection.rpc
-        lazyGateDiscovery = rpc?.call === undefined
-          ? Promise.resolve(undefined)
-          : rpc.call('/tool-lazy-gate', 'discover', {}).then(response => {
-              if (!response.ok || typeof response.value !== 'object' || response.value === null) return undefined
-              // The host keeps `skills` complete for the lazy-gate settings page;
-              // Taskboard intentionally consumes only its active-only projection.
-              const val = response.value as { enabledSkills?: unknown; skills?: unknown }
-              const skills = Array.isArray(val.enabledSkills)
-                ? val.enabledSkills
-                : Array.isArray(val.skills)
-                  ? val.skills
-                  : undefined
-              if (!Array.isArray(skills)) return undefined
-              return skills
-                .filter((skill): skill is { name: string } => typeof skill === 'object' && skill !== null && typeof (skill as { name?: unknown }).name === 'string')
-                .map(skill => ({ name: skill.name }))
-            }).catch(() => undefined)
-        return lazyGateDiscovery
-      }
-      // A fresh form opens a fresh discovery cycle so newly enabled/registered
-      // capabilities appear without retaining stale catalog data. The submit
-      // path shares that in-flight result and does not issue a second probe.
-      controller.installCapabilityCatalog(async () => (await discoverLazyGate(true)) ?? [])
-      controller.installCurrentSessionAuthorizer(async explicitSessionId => {
-        const skills = await discoverLazyGate()
-        // No gate, or no enabled Taskboard capability: do not make a pointless
-        // panel authorization RPC. Task creation itself remains available.
-        if (skills === undefined || !skills.some(skill => skill.name === TASKBOARD_CAPABILITY)) return
-        const sessionId = explicitSessionId ?? currentInteractiveSessionId(ctx)
-        if (sessionId === undefined) throw new Error('当前会话不可用，无法授权任务看板')
-        const response = await connection.rpc?.call('/tool-lazy-gate', 'grant-taskboard', { sessionId })
-        if (response === undefined || !response.ok) throw new Error('当前运行时不支持任务看板会话授权')
-      })
-    }
+        if (remote?.session?.modelCatalog !== undefined) {
+          const res = await remote.session.modelCatalog()
+          if (res.ok && res.value?.groups !== undefined && res.value.groups.length > 0) {
+            const out: CatalogRow[] = []
+            for (const group of res.value.groups) {
+              for (const model of group.models) {
+                out.push({
+                  provider: group.id,
+                  model: model.id,
+                  name: model.name,
+                  ...(model.description !== undefined ? { description: model.description } : {}),
+                  ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+                })
+              }
+            }
+            if (out.length > 0) return out
+          }
+        }
+
+        if (remote?.llm?.models !== undefined) {
+          const res = await remote.llm.models({})
+          if (res.result.ok && res.result.value?.groups !== undefined && res.result.value.groups.length > 0) {
+            const out: CatalogRow[] = []
+            for (const group of res.result.value.groups) {
+              for (const model of group.models) {
+                out.push({
+                  provider: group.id,
+                  model: model.id,
+                  name: model.name,
+                  ...(model.description !== undefined ? { description: model.description } : {}),
+                  ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+                })
+              }
+            }
+            if (out.length > 0) return out
+          }
+        }
+      } catch { /* try next */ }
+
+      // 3. Legacy connection.api
+      try {
+        const connection = (ctx.get?.('connection') ?? (ctx as Record<string, unknown>).connection) as {
+          api?: {
+            llm?: {
+              models: (payload: Record<string, never>) => Promise<{ result: { ok: true; value: { groups: Array<{ id: string; name: string; models: Array<{ id: string; name?: string; description?: string; reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string } }> }> } } | { ok: false } }>
+            }
+          }
+        } | undefined
+        if (connection?.api?.llm?.models !== undefined) {
+          const res = await connection.api.llm.models({})
+          if (res.result.ok && res.result.value?.groups !== undefined && res.result.value.groups.length > 0) {
+            const out: CatalogRow[] = []
+            for (const group of res.result.value.groups) {
+              for (const model of group.models) {
+                out.push({
+                  provider: group.id,
+                  model: model.id,
+                  name: model.name,
+                  ...(model.description !== undefined ? { description: model.description } : {}),
+                  ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+                })
+              }
+            }
+            if (out.length > 0) return out
+          }
+        }
+      } catch { /* try next */ }
+
+      // 4. Taskboard host endpoint: /dsh-taskboard/model-catalog
+      try {
+        const res = await client.modelCatalog()
+        if (res.models !== undefined && res.models.length > 0) {
+          return res.models
+        }
+      } catch { /* none */ }
+
+      return []
+    })
+
+    // Preset roster for the composer (0.3.3 / 0.5.5)
+    type PresetRow = { id: string; name?: string }
+    controller.installPresetRoster(async (): Promise<{ presets: PresetRow[]; defaultId?: string }> => {
+      // 1. DSH Remote RPC: ctx.get('remote')?.agentPresets?.list()
+      try {
+        const remote = (ctx.get?.('remote') ?? (ctx as Record<string, unknown>).remote) as {
+          agentPresets?: { list: () => Promise<{ ok: boolean; value?: { presets: Array<{ id: string; name?: string; isDefault?: boolean }> } } | { result: { ok: true; value: { presets: Array<{ id: string; name?: string; isDefault?: boolean }> } } }> }
+        } | undefined
+        if (remote?.agentPresets?.list !== undefined) {
+          const res = await remote.agentPresets.list()
+          const rawPresets = (res as { ok?: boolean; value?: { presets?: Array<{ id: string; name?: string; isDefault?: boolean }> } }).ok === true
+            ? (res as { value: { presets: Array<{ id: string; name?: string; isDefault?: boolean }> } }).value.presets
+            : (res as { result?: { ok?: boolean; value?: { presets?: Array<{ id: string; name?: string; isDefault?: boolean }> } } }).result?.ok === true
+              ? (res as { result: { value: { presets: Array<{ id: string; name?: string; isDefault?: boolean }> } } }).result.value.presets
+              : undefined
+          if (rawPresets !== undefined && rawPresets.length > 0) {
+            const presets = rawPresets.map(p => ({ id: p.id, name: p.name }))
+            const def = rawPresets.find(p => p.isDefault)
+            return { presets, ...(def !== undefined ? { defaultId: def.id } : {}) }
+          }
+        }
+      } catch { /* try next */ }
+
+      // 2. Legacy connection.api
+      try {
+        const connection = (ctx.get?.('connection') ?? (ctx as Record<string, unknown>).connection) as {
+          api?: {
+            agentPresets?: {
+              list: (payload: Record<string, never>) => Promise<{ result: { ok: true; value: { presets: Array<{ id: string; name?: string; isDefault: boolean }> } } | { ok: false } }>
+            }
+          }
+        } | undefined
+        if (connection?.api?.agentPresets?.list !== undefined) {
+          const res = await connection.api.agentPresets.list({})
+          if (res.result.ok && res.result.value?.presets !== undefined && res.result.value.presets.length > 0) {
+            const presets = res.result.value.presets.map(p => ({ id: p.id, name: p.name }))
+            const def = res.result.value.presets.find(p => p.isDefault)
+            return { presets, ...(def !== undefined ? { defaultId: def.id } : {}) }
+          }
+        }
+      } catch { /* try next */ }
+
+      // 3. Taskboard host endpoint: /dsh-taskboard/model-catalog
+      try {
+        const res = await client.modelCatalog()
+        if (res.presets !== undefined && res.presets.length > 0) {
+          return { presets: res.presets, ...(res.defaultPresetId !== undefined ? { defaultId: res.defaultPresetId } : {}) }
+        }
+      } catch { /* none */ }
+
+      return { presets: [] }
+    })
 
     // Session navigation for execution rows: resolved LAZILY on every jump —
     // apply may run before the runtime provides the services, and a captured
@@ -428,6 +517,7 @@ export function apply(ctx: ClientContextFace): void {
       for (const d of disposers.splice(0)) d()
       registeredHeaderSlots = undefined
       controller.dispose()
+      disposeI18n()
     }, 'dsh-taskboard: client mount')
   } catch (error) {
     console.error('[dsh-taskboard] client half failed to start:', error)

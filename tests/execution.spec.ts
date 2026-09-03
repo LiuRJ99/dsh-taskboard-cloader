@@ -406,6 +406,28 @@ describe('ExecutionService', () => {
     agents.idle()
   })
 
+  it('calls setPermission with the configured task permission preset (0.5.5)', async () => {
+    const store = await storeWith(task({
+      permission: 'read-only',
+    }))
+    const agents = fakeAgents()
+    const permsSet: Array<{ sessionId: string; permission: string }> = []
+    const svc = new ExecutionService({
+      store,
+      agents,
+      workspaces,
+      events: fakeEvents(),
+      setPermission: (sessionId, permission) => {
+        permsSet.push({ sessionId, permission })
+      },
+      now: () => 1_000,
+    })
+    const result = await svc.run('t-run', 'manual')
+    if (!result.ok) throw new Error('run failed')
+    expect(permsSet).toEqual([{ sessionId: result.sessionId, permission: 'read-only' }])
+    agents.idle()
+  })
+
   it('notes a lighter system comment when the session commented but did not move', async () => {
     const commented = task({
       comments: [{ id: 'c-1', body: 'done, tests pass', version: 1, createdAt: 1, threadId: 'session-worker' }],
@@ -675,6 +697,7 @@ function fakeGit(behavior: {
       collectCalls.push({ path, base })
       return behavior.collect ?? { commits: [], commitsTotal: 0, dirtyFiles: [], dirtyFilesTotal: 0, changedFiles: 0 }
     },
+    dirtyLines: async () => [],
     isAncestor: async () => false,
     merge: async () => {},
     removeWorktree: async () => 'removed' as const,
@@ -1182,5 +1205,190 @@ describe('R2/R3 settlement race regressions', () => {
     const t = store.get('t-run')!
     expect(t.status).toBe('todo')
     expect(t.executions[0]!.outcome).toBe('cancelled')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 0.6.3 multi-repo mirror
+// ---------------------------------------------------------------------------
+
+/** Scripted per-repo git fake: prepare/collect behavior keyed by arguments. */
+function fakeMirrorGit(opts: {
+  detect?: boolean
+  prepare?: (root: string, path: string, branch: string, mode?: string) => { path: string; branch: string; baseCommit: string; reused?: boolean } | undefined
+  collect?: (path: string, base: string) => import('../src/host/git.ts').SettlementFacts
+}) {
+  const detectCalls: string[] = []
+  const prepareCalls: Array<{ root: string; path: string; branch: string; mode?: string }> = []
+  const collectCalls: Array<{ path: string; base: string }> = []
+  return {
+    detectCalls,
+    prepareCalls,
+    collectCalls,
+    detect: async (root: string) => { detectCalls.push(root); return opts.detect ?? true },
+    binaryAvailable: async () => true,
+    prepareWorktree: async (root: string, path: string, branch: string, mode?: string) => {
+      prepareCalls.push({ root, path, branch, mode })
+      return opts.prepare?.(root, path, branch, mode)
+    },
+    collect: async (path: string, base: string) => {
+      collectCalls.push({ path, base })
+      return opts.collect?.(path, base) ?? { commits: [], commitsTotal: 0, dirtyFiles: [], dirtyFilesTotal: 0, changedFiles: 0 }
+    },
+    isAncestor: async () => false,
+    merge: async () => {},
+    removeWorktree: async () => 'removed' as const,
+    deleteBranch: async () => {},
+    dirtyLines: async () => [],
+    showCommit: async () => undefined,
+    showPathDiff: async () => undefined,
+  }
+}
+
+/** Fake nested-repo scanner returning fixed relative paths. */
+function fakeScanner(rels: string[]): import('../src/host/repos.ts').RepoScanner {
+  return {
+    findNestedRepos: async () => rels.map(rel => ({ relPath: rel, absPath: '/proj/a/' + rel })),
+    clearCache: () => {},
+  }
+}
+
+const MIRROR = '/proj/a/.dsh-worktrees/t-run'
+
+describe('ExecutionService multi-repo mirror (0.6.3)', () => {
+  it('mirrors root + nested repos: per-repo prepare, branches pinned, repos recorded, framing lists them', async () => {
+    const store = await storeWith(task({ isolation: 'worktree' }))
+    const agents = fakeAgents()
+    const git = fakeMirrorGit({
+      prepare: (_root, path, branch) => ({ path, branch, baseCommit: path === MIRROR ? 'r0' : path.endsWith('dsh-taskboard') ? 't1' : 't2' }),
+    })
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git, scanner: fakeScanner(['dsh-taskboard', 'dsh-devlaunch']) })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+
+    // One worktree per repo, root first, each on the same task branch.
+    expect(git.prepareCalls.map(c => c.path)).toEqual([
+      MIRROR,
+      MIRROR + '/dsh-taskboard',
+      MIRROR + '/dsh-devlaunch',
+    ])
+    expect(git.prepareCalls.every(c => c.branch === 'task/Run-me+t-run')).toBe(true)
+
+    // Branches pinned: legacy field for the root, map for the nested repos.
+    const t = store.get('t-run')!
+    expect(t.branch).toBe('task/Run-me+t-run')
+    expect(t.branches).toEqual({ 'dsh-taskboard': 'task/Run-me+t-run', 'dsh-devlaunch': 'task/Run-me+t-run' })
+
+    // Per-repo isolation facts recorded on the execution; flat fields carry the root.
+    const execution = t.executions[0]!
+    expect(execution.isolation).toBe('worktree')
+    expect(execution.worktreePath).toBe(MIRROR)
+    expect(execution.baseCommit).toBe('r0')
+    expect(execution.repos).toHaveLength(3)
+    expect(execution.repos!.map(r => r.repo)).toEqual(['', 'dsh-taskboard', 'dsh-devlaunch'])
+    expect(execution.repos![0]!.baseCommit).toBe('r0')
+
+    // Session cwd stays the project root; framing names the mirror.
+    expect(agents.created[0]!.cwd).toBe('/proj/a')
+    const inject = agents.injects[0] as { content: Array<{ text: string }> }
+    const text = inject.content[0]!.text
+    expect(text).toContain('多仓库镜像模式')
+    expect(text).toContain(MIRROR + '/dsh-taskboard')
+    expect(text).toContain('dsh-devlaunch')
+
+    // Settlement: evidence collected PER REPO and dual-written.
+    if (!result.ok) return
+    agents.idle(result.sessionId)
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
+    const settled = store.get('t-run')!.executions[0]!
+    expect(settled.repos).toHaveLength(3)
+    expect(settled.repos!.every(r => r.worktreePath.length > 0)).toBe(true)
+  })
+
+  it('a nested repo failing to prepare is SKIPPED (禁改), not a whole-run degrade', async () => {
+    const store = await storeWith(task({ isolation: 'worktree' }))
+    const agents = fakeAgents()
+    const git = fakeMirrorGit({
+      prepare: (_root, path, branch) => {
+        if (path.endsWith('dsh-devlaunch')) return undefined
+        return { path, branch, baseCommit: path === MIRROR ? 'r0' : 't1' }
+      },
+    })
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git, scanner: fakeScanner(['dsh-taskboard', 'dsh-devlaunch']) })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+
+    const execution = store.get('t-run')!.executions[0]!
+    expect(execution.isolation).toBe('worktree') // NOT degraded
+    expect(execution.repos).toHaveLength(2)
+    expect(store.get('t-run')!.branches).toEqual({ 'dsh-taskboard': 'task/Run-me+t-run' })
+    const inject = agents.injects[0] as { content: Array<{ text: string }> }
+    const text = inject.content[0]!.text
+    expect(text).toContain('未能建立镜像')
+    expect(text).toContain('dsh-devlaunch')
+    expect(text).toContain('严禁改动')
+  })
+
+  it('the FIRST (root) repo failing degrades the whole run (legacy semantics)', async () => {
+    const store = await storeWith(task({ isolation: 'worktree' }))
+    const agents = fakeAgents()
+    const git = fakeMirrorGit({
+      prepare: () => undefined,
+    })
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git, scanner: fakeScanner(['dsh-taskboard']) })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+
+    const t = store.get('t-run')!
+    const execution = t.executions[0]!
+    expect(execution.isolation).toBe('none')
+    expect(execution.isolationNote).toContain('worktree 准备失败')
+    expect(execution.repos).toBeUndefined()
+    expect(t.branch).toBeUndefined()
+  })
+
+  it('more repos than the mirror cap degrades with a readable note', async () => {
+    const store = await storeWith(task({ isolation: 'worktree' }))
+    const agents = fakeAgents()
+    const git = fakeMirrorGit({})
+    const svc = new ExecutionService({
+      store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git,
+      scanner: fakeScanner(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8']), // root + 8 > cap 8
+    })
+
+    const result = await svc.run('t-run', 'manual')
+    expect(result.ok).toBe(true)
+    const execution = store.get('t-run')!.executions[0]!
+    expect(execution.isolation).toBe('none')
+    expect(execution.isolationNote).toContain('镜像上限')
+    expect(git.prepareCalls).toHaveLength(0)
+  })
+
+  it('续跑 across the mirror: reuse mode per repo, resume wording in the framing', async () => {
+    const store = await storeWith(task({ isolation: 'worktree' }))
+    const agents = fakeAgents()
+    const git = fakeMirrorGit({
+      prepare: (_root, path, branch) => ({ path, branch, baseCommit: 'kept', reused: true }),
+    })
+    const svc = new ExecutionService({
+      store, agents, workspaces, events: fakeEvents(), now: () => 1_000, git,
+      scanner: fakeScanner(['dsh-taskboard']),
+    })
+
+    const result = await svc.run('t-run', 'manual', { reuseWorktree: true })
+    expect(result.ok).toBe(true)
+    expect(git.prepareCalls[0]!.mode).toBe('reuse')
+    expect(git.prepareCalls[1]!.mode).toBe('reuse')
+
+    const execution = store.get('t-run')!.executions[0]!
+    expect(execution.baseCommit).toBe('kept')
+    expect(execution.repos!.every(r => r.baseCommit === 'kept')).toBe(true)
+    const inject = agents.injects[0] as { content: Array<{ text: string }> }
+    const text = inject.content[0]!.text
+    expect(text).toContain('本次为续跑')
+    expect(text).toContain('多仓库镜像模式')
   })
 })

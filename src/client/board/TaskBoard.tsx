@@ -10,7 +10,8 @@ import type { BoardController, ControllerState } from '../controller.ts'
 import type { TaskRecord, TaskStatus, Urgency } from '../../shared/protocol.ts'
 import { MAIN_STATUSES, canTransition } from '../../shared/protocol.ts'
 import { PLUGIN_VERSION } from '../../shared/version.ts'
-import { COLUMN_LABELS, URGENCY_LABEL } from './labels.ts'
+import { COLUMN_KEYS, URGENCY_KEYS } from './labels.ts'
+import { useT } from '../i18n/runtime.ts'
 import { fmtTime, isStaleClaim } from './format.ts'
 import { DRAG_TYPE, TaskCard } from './TaskCard.tsx'
 import { TaskDetail } from './TaskDetail.tsx'
@@ -55,7 +56,8 @@ export interface TaskBoardProps {
  * The board view root.
  * @param props - controller plus optional Better Sidebar integration callbacks.
  */
-export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardProps) {
+export function TaskBoard({ controller }: { controller: BoardController }) {
+  const t = useT()
   const state = useSyncExternalStore(
     cb => controller.subscribe(cb),
     () => controller.getSnapshot(),
@@ -115,8 +117,8 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
       data-dsh-atb-visible={visible === false ? 'false' : 'true'}
     >
       <div className="dsh-atb-toolbar">
-        <h2 className="dsh-atb-title">Agent 任务看板</h2>
-        <span className="dsh-atb-count">{live.length} 任务 · rev {state.ledger.revision}</span>
+        <h2 className="dsh-atb-title">{t('board.title')}</h2>
+        <span className="dsh-atb-count">{t('board.count.tasks', { n: live.length, rev: state.ledger.revision })}</span>
         <div className="dsh-atb-newmenu">
           <button
             type="button"
@@ -128,33 +130,26 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
               if (next) controller.prepareTemplateMenu()
             }}
           >
-            + 新建任务 ▼
+            {t('board.action.newTask')}
           </button>
           {newMenuOpen && (
             <>
               <div className="dsh-atb-newmenu-backdrop" onClick={closeMenu} />
               <div className="dsh-atb-newmenu-list">
-                <button type="button" className="dsh-atb-newmenu-opt" onClick={() => { closeMenu(); controller.setComposer(true) }}>空白任务</button>
+                <button type="button" className="dsh-atb-newmenu-opt" onClick={() => { closeMenu(); controller.setComposer(true) }}>{t('board.action.blankTask')}</button>
+                {state.templates.map(t => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="dsh-atb-newmenu-opt"
+                    title={t.task.description !== undefined && t.task.description.length > 0 ? t.task.description.slice(0, 120) : t.name}
+                    onClick={() => { closeMenu(); controller.newFromTemplate(t.task) }}
+                  >
+                    {t.name}
+                  </button>
+                ))}
                 <div className="dsh-atb-newmenu-sep" />
-                {visibleTemplates.length === 0
-                  ? (
-                    <div className="dsh-atb-newmenu-empty">
-                      当前分类暂无模板，请在看板设置中调整模板分类
-                    </div>
-                  )
-                  : visibleTemplates.map(t => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className="dsh-atb-newmenu-opt"
-                      title={t.task.description !== undefined && t.task.description.length > 0 ? t.task.description.slice(0, 120) : t.name}
-                      onClick={() => { closeMenu(); controller.newFromTemplate(t.task) }}
-                    >
-                      {t.name}
-                    </button>
-                  ))}
-                <div className="dsh-atb-newmenu-sep" />
-                <button type="button" className="dsh-atb-newmenu-opt" onClick={() => { closeMenu(); controller.openTemplateManager() }}>⌗ 管理模板…</button>
+                <button type="button" className="dsh-atb-newmenu-opt" onClick={() => { closeMenu(); controller.openTemplateManager() }}>{t('board.action.manageTemplates')}</button>
               </div>
             </>
           )}
@@ -163,7 +158,7 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
         <input
           className="dsh-atb-input dsh-atb-search"
           value={state.search}
-          placeholder="搜索标题 / ID…"
+          placeholder={t('board.search.placeholder')}
           spellCheck={false}
           onChange={e => controller.setSearch(e.target.value)}
         />
@@ -172,20 +167,20 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
           value={state.filters.workspaceId ?? ''}
           onChange={e => controller.setWorkspaceFilter(e.target.value === '' ? undefined : e.target.value)}
         >
-          <option value="">全部项目</option>
+          <option value="">{t('board.filter.allProjects')}</option>
           {state.workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.title || ws.path}</option>)}
         </select>
         <select
           className="dsh-atb-select"
           value={state.sortBy}
-          title="列内排序"
+          title={t('board.sort.title')}
           onChange={e => controller.setSortBy(e.target.value as typeof state.sortBy)}
         >
-          <option value="default">默认排序</option>
-          <option value="updated">最近更新</option>
-          <option value="urgency">按紧急度</option>
-          <option value="created">创建时间</option>
-          <option value="title">按标题</option>
+          <option value="default">{t('board.sort.default')}</option>
+          <option value="updated">{t('board.sort.updated')}</option>
+          <option value="urgency">{t('board.sort.urgency')}</option>
+          <option value="created">{t('board.sort.created')}</option>
+          <option value="title">{t('board.sort.byTitle')}</option>
         </select>
         {(['urgent', 'normal', 'relaxed'] as const).map(u => (
           <button
@@ -197,23 +192,23 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
             onClick={() => controller.toggleUrgency(u)}
           >
             <span className="dsh-atb-dot" data-urgency={u} />
-            {URGENCY_LABEL[u]}
+            {t(URGENCY_KEYS[u])}
           </button>
         ))}
         <button type="button" className="dsh-atb-btn" onClick={() => controller.toggleSecondary()}>
-          {state.secondaryOpen ? '返回看板' : '其它任务'}
+          {state.secondaryOpen ? t('board.action.backToBoard') : t('board.action.otherTasks')}
         </button>
-        <button type="button" className="dsh-atb-btn" title="看板设置：新建任务的默认执行隔离等" onClick={() => controller.openSettings()}>🛠 设置</button>
-        <button type="button" className="dsh-atb-btn" title="健康诊断：遗留 worktree、台账基本项" onClick={() => controller.openDiagnostics()}>⚙ 诊断</button>
-        <button type="button" className="dsh-atb-btn" title="从 JSON 备份文件导入台账（预览后合并或整册替换）" onClick={() => controller.openImport()}>⬆ 导入</button>
+        <button type="button" className="dsh-atb-btn" title={t('board.action.settingsTitle')} onClick={() => controller.openSettings()}>{t('board.action.settings')}</button>
+        <button type="button" className="dsh-atb-btn" title={t('board.action.diagTitle')} onClick={() => controller.openDiagnostics()}>{t('board.action.diag')}</button>
+        <button type="button" className="dsh-atb-btn" title={t('board.action.importTitle')} onClick={() => controller.openImport()}>{t('board.action.import')}</button>
         <div className="dsh-atb-newmenu">
           <button
             type="button"
             className="dsh-atb-btn"
-            title="导出台账：完整 JSON 备份或任务清单 CSV"
+            title={t('board.action.exportTitle')}
             onClick={() => setExportOpen(!exportOpen)}
           >
-            ⬇ 导出 ▼
+            {t('board.action.export')}
           </button>
           {exportOpen && (
             <>
@@ -222,18 +217,18 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
                 <button
                   type="button"
                   className="dsh-atb-newmenu-opt"
-                  title="完整台账备份（含执行历史与看板设置），可用于导入恢复"
+                  title={t('board.export.jsonTitle')}
                   onClick={() => { closeExport(); controller.exportJson() }}
                 >
-                  完整台账（JSON）
+                  {t('board.export.json')}
                 </button>
                 <button
                   type="button"
                   className="dsh-atb-newmenu-opt"
-                  title="任务清单表格（Excel 可直接打开，中文已加 BOM）"
+                  title={t('board.export.csvTitle')}
                   onClick={() => { closeExport(); controller.exportCsv() }}
                 >
-                  任务清单（CSV）
+                  {t('board.export.csv')}
                 </button>
               </div>
             </>
@@ -283,7 +278,7 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
                     const task = state.ledger.tasks.find(t => t.id === id)
                     if (task === undefined || task.status === status) return
                     if (!canTransition(task.status, status)) {
-                      showAlert(`无法从「${COLUMN_LABELS[task.status]}」拖至「${COLUMN_LABELS[status]}」`)
+                      showAlert(t('board.drag.forbidden', { from: t(COLUMN_KEYS[task.status]), to: t(COLUMN_KEYS[status]) }))
                       return
                     }
                     void controller.move(id, task.version, status)
@@ -303,7 +298,7 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
                     }}
                   >
                     <span className="dsh-atb-dot" data-status={status} />
-                    <span>{COLUMN_LABELS[status]}</span>
+                    {t(COLUMN_KEYS[status])}
                     <span className="dsh-atb-colcount">{columnTasks.length}</span>
                     <span className="dsh-atb-coltoggle" aria-hidden="true">▾</span>
                   </div>
@@ -318,7 +313,7 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
                         onAlert={showAlert}
                       />
                     ))}
-                    {columnTasks.length === 0 && <div className="dsh-atb-empty">无任务</div>}
+                    {columnTasks.length === 0 && <div className="dsh-atb-empty">{t('board.empty')}</div>}
                   </div>
                 </div>
               )
@@ -364,6 +359,7 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
 
 /** ⚙ Health-diagnostics panel (plan §3.6): ledger basics + orphan worktrees + one-click cleanup. */
 function DiagnosticsPanel({ controller }: { controller: BoardController }) {
+  const t = useT()
   const state = controller.getSnapshot()
   const diag = state.diagnostics
   const wsName = (id: string): string => {
@@ -372,52 +368,52 @@ function DiagnosticsPanel({ controller }: { controller: BoardController }) {
   }
   return (
     <div className="dsh-atb-modal-backdrop" onClick={e => { if (e.target === e.currentTarget) controller.closeDiagnostics() }}>
-      <div className="dsh-atb-modal dsh-atb-diag" role="dialog" aria-modal="true" aria-label="健康诊断">
+      <div className="dsh-atb-modal dsh-atb-diag" role="dialog" aria-modal="true" aria-label={t('diag.title')}>
         <div className="dsh-atb-modal-head">
           <span className="dsh-atb-modal-headicon">⚙</span>
           <div className="dsh-atb-modal-headtext">
-            <h3>健康诊断</h3>
-            <p>台账基本项与 worktree 遗留清理</p>
+            <h3>{t('diag.title')}</h3>
+            <p>{t('diag.subtitle')}</p>
           </div>
-          <button type="button" className="dsh-atb-modal-close" aria-label="关闭" onClick={() => controller.closeDiagnostics()}>✕</button>
+          <button type="button" className="dsh-atb-modal-close" aria-label={t('shared.close')} onClick={() => controller.closeDiagnostics()}>✕</button>
         </div>
         <div className="dsh-atb-modal-body">
           {diag === undefined
-            ? <div className="dsh-atb-empty2">读取中…</div>
+            ? <div className="dsh-atb-empty2">{t('shared.loading')}</div>
             : (
               <>
                 <div className="dsh-atb-diag-grid">
-                  <div className="dsh-atb-diag-item"><b>{diag.revision}</b><span>台账修订号</span></div>
-                  <div className="dsh-atb-diag-item"><b>{diag.tasks}</b><span>任务总数</span></div>
-                  <div className="dsh-atb-diag-item" data-bad={diag.staleRunning > 0 ? 'true' : undefined}><b>{diag.staleRunning}</b><span>执行中</span></div>
-                  <div className="dsh-atb-diag-item" data-bad={diag.orphanWorktrees.length > 0 ? 'true' : undefined}><b>{diag.orphanWorktrees.length}</b><span>遗留 worktree</span></div>
+                  <div className="dsh-atb-diag-item"><b>{diag.revision}</b><span>{t('diag.revision')}</span></div>
+                  <div className="dsh-atb-diag-item"><b>{diag.tasks}</b><span>{t('diag.tasks')}</span></div>
+                  <div className="dsh-atb-diag-item" data-bad={diag.staleRunning > 0 ? 'true' : undefined}><b>{diag.staleRunning}</b><span>{t('diag.running')}</span></div>
+                  <div className="dsh-atb-diag-item" data-bad={diag.orphanWorktrees.length > 0 ? 'true' : undefined}><b>{diag.orphanWorktrees.length}</b><span>{t('diag.orphans')}</span></div>
                 </div>
                 <div className="dsh-atb-diag-sec">
-                  <h4>遗留 worktree（台账无主但目录存在）</h4>
+                  <h4>{t('diag.orphans.heading')}</h4>
                   {diag.orphanWorktrees.length === 0
-                    ? <div className="dsh-atb-empty2">无遗留 — 各项目 .dsh-worktrees 目录干净</div>
+                    ? <div className="dsh-atb-empty2">{t('diag.orphans.none')}</div>
                     : (
                         <div className="dsh-atb-diag-orphans">
                           {diag.orphanWorktrees.map(o => (
                             <div key={o.path} className="dsh-atb-diag-orphan">
                               <span className="dsh-atb-diag-orphan-path" title={o.path}>{wsName(o.workspaceId)} · {o.taskId}</span>
-                              <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => void controller.cleanupOrphan(o.workspaceId, o.taskId)}>清理</button>
+                              <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => void controller.cleanupOrphan(o.workspaceId, o.taskId)}>{t('diag.orphans.cleanup')}</button>
                             </div>
                           ))}
                         </div>
                       )}
-                  <div className="dsh-atb-empty2">提示：有未提交修改的遗留目录会被拒绝清理，请先手动处理其内容。live 任务的 worktree 请在任务详情页删除。</div>
+                  <div className="dsh-atb-empty2">{t('diag.orphans.hint')}</div>
                 </div>
                 <div className="dsh-atb-diag-sec">
-                  <h4>gitignore 建议</h4>
+                  <h4>{t('diag.gitignore.heading')}</h4>
                   {(diag.gitIgnoreSuggestions ?? []).length === 0
-                    ? <div className="dsh-atb-empty2">无待办 — 各 git 项目已忽略 .dsh-worktrees 目录</div>
+                    ? <div className="dsh-atb-empty2">{t('diag.gitignore.none')}</div>
                     : (
                         <div className="dsh-atb-diag-orphans">
                           {diag.gitIgnoreSuggestions.map(s => (
                             <div key={s.workspaceId} className="dsh-atb-diag-orphan">
                               <span className="dsh-atb-diag-orphan-path" title={s.workspacePath}>
-                                {wsName(s.workspaceId)} · 建议在 .gitignore 加入一行 <code>.dsh-worktrees/</code>（不会自动修改）
+                                {wsName(s.workspaceId)} · {t('diag.gitignore.suggestA')} <code>.dsh-worktrees/</code>{t('diag.gitignore.suggestB')}
                               </span>
                             </div>
                           ))}
@@ -434,25 +430,21 @@ function DiagnosticsPanel({ controller }: { controller: BoardController }) {
 
 /** Secondary tab: tasks grouped into canceled / archived / trashed columns. */
 function SecondaryTab({ controller, tasks }: { controller: BoardController; tasks: TaskRecord[] }) {
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({
-    canceled: true,
-    archived: true,
-    trashed: true,
-  })
+  const t = useT()
   // Trashed takes precedence (a trashed task still carries its old status,
   // but what matters to the user is the pending purge).
   const trashed = tasks.filter(t => t.trashedAt !== undefined)
   const archived = tasks.filter(t => t.trashedAt === undefined && t.status === 'archived')
   const canceled = tasks.filter(t => t.trashedAt === undefined && t.status === 'canceled')
   const groups = [
-    { key: 'canceled', label: '已取消', dot: 'canceled', rows: canceled },
-    { key: 'archived', label: '已归档', dot: 'archived', rows: archived },
-    { key: 'trashed', label: '已删除', dot: 'trashed', rows: trashed },
+    { label: t('status.column.canceled'), dot: 'canceled', rows: canceled },
+    { label: t('status.column.archived'), dot: 'archived', rows: archived },
+    { label: t('board.group.trashed'), dot: 'trashed', rows: trashed },
   ]
   if (trashed.length + archived.length + canceled.length === 0) {
     return (
       <div className="dsh-atb-secondary">
-        <div className="dsh-atb-empty">无已取消 / 已归档 / 已删除任务</div>
+        <div className="dsh-atb-empty">{t('board.secondary.empty')}</div>
       </div>
     )
   }
@@ -492,8 +484,14 @@ function SecondaryTab({ controller, tasks }: { controller: BoardController; task
               {group.rows.length === 0 && <div className="dsh-atb-empty">无任务</div>}
             </div>
           </div>
-        )
-      })}
+          <div className="dsh-atb-cards">
+            {group.rows.map(task => (
+              <TaskCard key={task.id} task={task} controller={controller} />
+            ))}
+            {group.rows.length === 0 && <div className="dsh-atb-empty">{t('board.empty')}</div>}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

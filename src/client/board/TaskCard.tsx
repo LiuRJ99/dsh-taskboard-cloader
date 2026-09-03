@@ -15,7 +15,8 @@ import { useState } from 'react'
 import type { BoardController } from '../controller.ts'
 import type { TaskRecord } from '../../shared/protocol.ts'
 import { fmtTime, isStaleClaim } from './format.ts'
-import { OUTCOME_LABEL, URGENCY_LABEL } from './labels.ts'
+import { OUTCOME_KEYS, URGENCY_KEYS } from './labels.ts'
+import { useT } from '../i18n/runtime.ts'
 
 /** dataTransfer type carrying the dragged task id. */
 export const DRAG_TYPE = 'application/x-dsh-atb-task'
@@ -35,6 +36,7 @@ function shortId(id: string | undefined): string {
  * @param onAlert - show an alert message (replaces native alert).
  */
 export function TaskCard({ task, controller, draggable = false, now, onAlert }: { task: TaskRecord; controller: BoardController; draggable?: boolean; now?: number; onAlert?: (msg: string) => void }) {
+  const t = useT()
   const [rejectOpen, setRejectOpen] = useState(false)
   const [note, setNote] = useState('')
   const last = task.executions.length > 0 ? task.executions[task.executions.length - 1] : undefined
@@ -63,7 +65,7 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
         // Block drag if a session is still executing this task
         if (running !== undefined) {
           e.preventDefault()
-          const msg = `该任务正由会话执行中（${task.title}），不能拖动`
+          const msg = t('card.drag.running', { title: task.title })
           if (onAlert !== undefined) onAlert(msg)
           else alert(msg)
           return
@@ -85,55 +87,63 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
     >
       <div className="dsh-atb-card-title">{task.title}</div>
       <div className="dsh-atb-card-meta">
-        <span className="dsh-atb-badge">{URGENCY_LABEL[task.urgency]}</span>
-        {task.blocked && <span className="dsh-atb-badge" data-kind="blocked">受阻</span>}
-        {stale && <span className="dsh-atb-badge" data-kind="stale">⏱ 认领超时</span>}
+        <span className="dsh-atb-badge">{t(URGENCY_KEYS[task.urgency])}</span>
+        {task.blocked && <span className="dsh-atb-badge" data-kind="blocked">{t('shared.blocked')}</span>}
+        {stale && <span className="dsh-atb-badge" data-kind="stale">{t('card.badge.stale')}</span>}
         {task.execution.mode === 'scheduled' && (
           <span className="dsh-atb-badge" data-kind="scheduled">⏰ {fmtTime(task.execution.nextRunAt)}</span>
         )}
         {task.model !== undefined && (
           <span
             className="dsh-atb-badge"
-            title={`固定模型: ${task.model.provider}/${task.model.model}${task.model.reasoningEffort !== undefined ? ` · 思考强度: ${task.model.reasoningEffort}` : ''}`}
+            title={t('card.badge.modelTitle', { model: task.model.provider + '/' + task.model.model }) + (task.model.reasoningEffort !== undefined ? t('card.badge.modelEffort', { effort: task.model.reasoningEffort }) : '')}
           >
             {task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}
           </span>
         )}
-        {task.speed === 'fast' && <span className="dsh-atb-badge">⚡ 快速</span>}
-        {task.permissionMode !== undefined && <span className="dsh-atb-badge" title="执行会话权限模式">{task.permissionMode === 'danger-full-access' ? 'Full access' : task.permissionMode === 'workspace-write' ? 'Workspace Write' : 'Read Only'}</span>}
+        {task.permission === 'read-only' && (
+          <span className="dsh-atb-badge" data-kind="blocked" title={t('card.badge.permReadOnlyTitle')}>
+            {t('card.badge.permReadOnly')}
+          </span>
+        )}
+        {task.permission === 'danger-full-access' && (
+          <span className="dsh-atb-badge" data-kind="urgent" title={t('card.badge.permFullTitle')}>
+            {t('card.badge.permFull')}
+          </span>
+        )}
         {task.checklist !== undefined && task.checklist.length > 0 && (
           <span
             className="dsh-atb-badge"
             data-kind={task.status === 'in_review' && task.checklist.some(i => !i.checked) ? 'blocked' : 'checklist'}
-            title={task.status === 'in_review' && task.checklist.some(i => !i.checked) ? '待验收：清单未全部勾选' : '验收清单进度'}
+            title={task.status === 'in_review' && task.checklist.some(i => !i.checked) ? t('card.badge.checklistReview') : t('card.badge.checklist')}
           >
             ☑ {task.checklist.filter(i => i.checked).length}/{task.checklist.length}
           </span>
         )}
-        {task.status === 'done' && <span className="dsh-atb-badge" data-kind="done">完成</span>}
+        {task.status === 'done' && <span className="dsh-atb-badge" data-kind="done">{t('status.pill.done')}</span>}
         {last !== undefined && (
           <span className="dsh-atb-badge" data-kind={last.outcome === 'running' ? 'running' : last.outcome}>
-            {OUTCOME_LABEL[last.outcome] ?? last.outcome}
+            {t(OUTCOME_KEYS[last.outcome] ?? last.outcome)}
           </span>
         )}
         {targetSessionId !== undefined && (
           <button
             type="button"
             className="dsh-atb-card-session"
-            title={`点击一键跳转到会话：${targetSessionId}`}
+            title={t('card.session.jumpTitle', { id: targetSessionId })}
             onClick={(e) => {
               e.stopPropagation()
               void controller.openSession(targetSessionId).then(result => {
                 if (result === 'missing') {
-                  const msg = `该会话已被删除（${shortId(targetSessionId)}），无法打开`
+                  const msg = t('card.session.missing', { id: shortId(targetSessionId) })
                   if (onAlert !== undefined) onAlert(msg)
                   else alert(msg)
                 } else if (result === 'archived') {
-                  const msg = `该会话已归档（${shortId(targetSessionId)}），已从会话列表隐藏`
+                  const msg = t('card.session.archived', { id: shortId(targetSessionId) })
                   if (onAlert !== undefined) onAlert(msg)
                   else alert(msg)
                 } else if (result === 'unavailable') {
-                  const msg = `会话导航不可用，会话 ID：${targetSessionId}`
+                  const msg = t('card.session.unavailable', { id: targetSessionId })
                   if (onAlert !== undefined) onAlert(msg)
                   else alert(msg)
                 }
@@ -144,7 +154,7 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
           </button>
         )}
         {task.comments.length > 0 && <span>💬 {task.comments.length}</span>}
-        {task.trashedAt !== undefined && <span className="dsh-atb-badge" data-kind="trashed">待清除</span>}
+        {task.trashedAt !== undefined && <span className="dsh-atb-badge" data-kind="trashed">{t('card.badge.pendingPurge')}</span>}
         <span style={{ marginLeft: 'auto' }}>{fmtTime(task.updatedAt)}</span>
       </div>
       {reviewing && (rejectOpen
@@ -153,7 +163,7 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
               <input
                 className="dsh-atb-input dsh-atb-quick-note"
                 value={note}
-                placeholder="退回原因（可选，agent 开工前会读）…"
+                placeholder={t('card.reject.placeholder')}
                 autoFocus
                 spellCheck={false}
                 onChange={e => setNote(e.target.value)}
@@ -162,8 +172,8 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
                   else if (e.key === 'Escape') { setRejectOpen(false); setNote('') }
                 }}
               />
-              <button type="button" className="dsh-atb-quickbtn" data-act="reject-confirm" onClick={submitReject}>退回待办</button>
-              <button type="button" className="dsh-atb-quickbtn" data-act="reject-cancel" onClick={() => { setRejectOpen(false); setNote('') }}>取消</button>
+              <button type="button" className="dsh-atb-quickbtn" data-act="reject-confirm" onClick={submitReject}>{t('card.reject.confirm')}</button>
+              <button type="button" className="dsh-atb-quickbtn" data-act="reject-cancel" onClick={() => { setRejectOpen(false); setNote('') }}>{t('shared.cancel')}</button>
             </div>
           )
         : (
@@ -172,19 +182,19 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
                 type="button"
                 className="dsh-atb-quickbtn"
                 data-act="done"
-                title="验收完成：移至已完成"
+                title={t('card.action.doneTitle')}
                 onClick={() => void controller.move(task.id, task.version, 'done')}
               >
-                ✓ 完成
+                {t('card.action.done')}
               </button>
               <button
                 type="button"
                 className="dsh-atb-quickbtn"
                 data-act="reject"
-                title="退回待办，可附退回原因"
+                title={t('card.action.rejectTitle')}
                 onClick={() => setRejectOpen(true)}
               >
-                ✗ 退回
+                {t('card.action.reject')}
               </button>
             </div>
           ))}

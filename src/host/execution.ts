@@ -11,7 +11,7 @@
  * @module dsh-taskboard/host/execution
  */
 import {
-  approvalPolicyForPermissionMode,
+  DEFAULT_PERMISSION,
   effectiveIsolation,
   effectivePrompt,
   effectiveTaskSpeed,
@@ -20,13 +20,16 @@ import {
   normalizeBody,
   requiredCapabilitiesOf,
   type ExecutionRecord,
+  type ExecutionRepoEvidence,
   type IsolationMode,
   type PermissionMode,
   type TaskModel,
   type TaskRecord,
   type TaskSpeed,
 } from '../shared/protocol.ts'
-import { sanitizeBranchName, worktreePathOf, type GitFace, type SettlementFacts } from './git.ts'
+import { sanitizeBranchName, type GitFace, type SettlementFacts } from './git.ts'
+import { isLegacySingle, prepareMirror, type PreparedMirror, type PreparedMirrorRepo } from './isolation.ts'
+import { createRepoScanner, type RepoScanner } from './repos.ts'
 import { MessageId } from './sdk.ts'
 import { PRIORITY_SERVICE_TIER, serviceTierForTaskSpeed, type ModelCapability } from '../shared/model-capabilities.ts'
 import type { ModelExecutionSpeed } from '../shared/model-execution.ts'
@@ -75,7 +78,7 @@ export interface ExecutionWorkspaceFace {
 
 /** Narrow event-bus face for settlement listening. */
 export interface EventsFace {
-  onSessionEvent(listener: (sessionId: string, event: { type: string; data?: unknown }) => void): () => void
+  onSessionEvent(listener: (sessionId: string, event: { type: string; data?: unknown }, sessionMeta?: { header?: { cwd?: string } }) => void): () => void
 }
 
 /** Everything the execution service needs. */
@@ -111,6 +114,11 @@ export interface ExecutionDeps {
    */
   git?: GitFace
   /**
+   * Nested-repo scanner for multi-repo mirrors (0.6.3). Absent → a default
+   * real-filesystem scanner is built on first use.
+   */
+  scanner?: RepoScanner
+  /**
    * Resolve the preset composition for an execution session (0.3.3): hands
    * the session its tool set. Absent → sessions run on the bare host
    * composition (pre-preset behavior). A rejection fails the run through
@@ -118,6 +126,10 @@ export interface ExecutionDeps {
    * session (same rollback semantics as apiproxy).
    */
   composeAgent?: (presetId?: string) => Promise<AgentComposition | undefined>
+  /**
+   * Set execution session permission (0.5.5; 'workspace-write' | 'read-only' | 'danger-full-access').
+   */
+  setPermission?: (sessionId: string, permission: PermissionMode) => void
 }
 
 /** Outcome of a run request (immediate; the run settles asynchronously). */
@@ -143,25 +155,6 @@ function isErrorTurnEnd(data: unknown): { message: string } | undefined {
   return { message }
 }
 
-/** Append the canonical permission events when no optional runtime face was supplied. */
-function appendPermissionMode(session: unknown, mode: PermissionMode): void {
-  if (typeof session !== 'object' || session === null || typeof (session as { append?: unknown }).append !== 'function') {
-    throw new Error('permission mode unavailable: execution session has no append face')
-  }
-  const append = (session as { append: (type: string, data: unknown) => unknown }).append.bind(session)
-  append('sandbox/mode', { mode })
-  append('approval/policy', { policy: approvalPolicyForPermissionMode(mode) })
-}
-
-/** Prepared worktree facts threaded through a live run (settlement evidence). */
-export interface PreparedWorktree {
-  branch: string
-  worktreePath: string
-  baseCommit: string
-  /** True when an existing live worktree was kept as-is (续跑). */
-  reused?: boolean
-}
-
 /** Per-run options. */
 export interface RunOptions {
   /**
@@ -175,8 +168,8 @@ export interface RunOptions {
 /** One live execution tracked for settlement and cancellation. */
 interface RunEntry {
   sessionId: string
-  /** Worktree prepared for this run (evidence collection at ANY settlement). */
-  prepared?: PreparedWorktree
+  /** Task mirror prepared for this run (evidence collection at ANY settlement). */
+  prepared?: PreparedMirror
   settle: () => void
   dispose: () => Promise<void>
 }
@@ -215,28 +208,74 @@ export class ExecutionService {
   }
 
   /**
-   * Best-effort evidence collection for a prepared run (fail-soft: undefined
-   * on any git problem — settlement NEVER blocks on git).
+   * Best-effort evidence collection for a prepared mirror: a repo whose git
+   * collect fails is SKIPPED (missing pieces stay unset — settlement NEVER
+   * blocks on git); all-fail resolves undefined.
    */
-  private async collectEvidence(prepared: PreparedWorktree | undefined): Promise<SettlementFacts | undefined> {
-    if (prepared === undefined || this.deps.git === undefined) return undefined
-    try {
-      return await this.deps.git.collect(prepared.worktreePath, prepared.baseCommit)
-    } catch {
-      return undefined
+  private async collectEvidence(prepared: PreparedMirror | undefined): Promise<Array<{ repo: PreparedMirrorRepo; facts: SettlementFacts }> | undefined> {
+    if (prepared === undefined || this.deps.git === undefined || prepared.repos.length === 0) return undefined
+    const out: Array<{ repo: PreparedMirrorRepo; facts: SettlementFacts }> = []
+    // The root worktree's status lists its nested child worktrees as untracked
+    // noise — exclude them so a fully committed mirror doesn't report fake
+    // dirty evidence (0.6.3 review fix).
+    const nestedRels = prepared.repos.filter(r => r.repo !== '').map(r => r.repo)
+    for (const repo of prepared.repos) {
+      try {
+        const facts = await this.deps.git.collect(
+          repo.worktreePath,
+          repo.baseCommit,
+          repo.repo === '' && nestedRels.length > 0 ? nestedRels : undefined,
+        )
+        out.push({ repo, facts })
+      } catch {
+        /* fail-soft: this repo contributes no evidence */
+      }
+    }
+    return out.length > 0 ? out : undefined
+  }
+
+  /** Map one repo's settlement facts onto evidence record fields. */
+  private factsFields(facts: SettlementFacts): Omit<ExecutionRepoEvidence, 'repo' | 'branch' | 'worktreePath' | 'baseCommit'> {
+    return {
+      ...(facts.headCommit !== undefined ? { headCommit: facts.headCommit } : {}),
+      commits: facts.commits,
+      commitsTotal: facts.commitsTotal,
+      dirtyFiles: facts.dirtyFiles,
+      dirtyFilesTotal: facts.dirtyFilesTotal,
+      changedFiles: facts.changedFiles,
+      ...(facts.diffStat !== undefined ? { diffStat: facts.diffStat } : {}),
     }
   }
 
-  /** Copy collected facts onto an execution record (in place). */
-  private applyFacts(execution: ExecutionRecord, facts: SettlementFacts | undefined): void {
-    if (facts === undefined) return
-    if (facts.headCommit !== undefined) execution.headCommit = facts.headCommit
-    execution.commits = facts.commits
-    execution.commitsTotal = facts.commitsTotal
-    execution.dirtyFiles = facts.dirtyFiles
-    execution.dirtyFilesTotal = facts.dirtyFilesTotal
-    execution.changedFiles = facts.changedFiles
-    if (facts.diffStat !== undefined) execution.diffStat = facts.diffStat
+  /**
+   * Copy collected facts onto an execution record (in place). The legacy
+   * flat fields always carry the FIRST repo (the workspace root when it has
+   * one) so single-repo records stay byte-identical to the pre-mirror shape;
+   * non-legacy mirrors additionally fill the per-repo `repos` evidence.
+   */
+  private applyFacts(
+    execution: ExecutionRecord,
+    prepared: PreparedMirror | undefined,
+    evidence: Array<{ repo: PreparedMirrorRepo; facts: SettlementFacts }> | undefined,
+  ): void {
+    if (evidence === undefined || evidence.length === 0) return
+    const first = evidence[0]!.facts
+    if (first.headCommit !== undefined) execution.headCommit = first.headCommit
+    execution.commits = first.commits
+    execution.commitsTotal = first.commitsTotal
+    execution.dirtyFiles = first.dirtyFiles
+    execution.dirtyFilesTotal = first.dirtyFilesTotal
+    execution.changedFiles = first.changedFiles
+    if (first.diffStat !== undefined) execution.diffStat = first.diffStat
+    if (prepared !== undefined && !isLegacySingle(prepared)) {
+      execution.repos = evidence.map(({ repo, facts }) => ({
+        repo: repo.repo,
+        branch: repo.branch,
+        worktreePath: repo.worktreePath,
+        baseCommit: repo.baseCommit,
+        ...this.factsFields(facts),
+      }))
+    }
   }
 
   /** Resolve the adapter-facing tier from provider metadata, fail-soft. */
@@ -262,7 +301,7 @@ export class ExecutionService {
     // The failed session may already have committed work — collect the
     // evidence (best effort) BEFORE marking the execution failed (0.3.1).
     const entry = [...this.runs.values()].find(e => e.sessionId === sessionId)
-    return this.collectEvidence(entry?.prepared).then(facts =>
+    return this.collectEvidence(entry?.prepared).then(evidence =>
       this.deps.store.mutate('execution-recorded', (ledger) => {
         for (const task of ledger.tasks) {
           for (const execution of task.executions) {
@@ -270,7 +309,7 @@ export class ExecutionService {
               execution.outcome = 'failed'
               execution.error = message.slice(0, 500)
               execution.endedAt = this.deps.now()
-              this.applyFacts(execution, facts)
+              this.applyFacts(execution, entry?.prepared, evidence)
               // The failed session will not finish the work: hand the task back
               // instead of leaving it stuck in in_progress forever — and leave a
               // system comment so the GUI shows why.
@@ -349,7 +388,6 @@ export class ExecutionService {
     //    the original directory fail-soft on any git problem.
     const isolation: IsolationMode = effectiveIsolation(task)
     const branch = task.branch ?? sanitizeBranchName(task.title, task.id)
-    const worktreePath = worktreePathOf(workspace.path, task.id)
 
     // 1. Open the execution record, flip the card to in_progress, and record
     //    the executing session as the claim holder — atomically.
@@ -390,23 +428,39 @@ export class ExecutionService {
 
     // 1b. Worktree preparation (fail-soft): any failure degrades this run to
     //     the original directory with an isolationNote — the ledger and the
-    //     execution pipeline itself never fail over git.
+    //     execution pipeline itself never fail over git. 0.6.3: preparation
+    //     builds a whole-workspace MIRROR (root repo + nested repos); a plain
+    //     single-repo workspace keeps the legacy record shape everywhere.
     let isolationNote: string | undefined
-    let prepared: PreparedWorktree | undefined
+    let prepared: PreparedMirror | undefined
     if (isolation === 'worktree') {
-      const outcome = await this.prepareIsolation(task, workspace.path, worktreePath, branch, options?.reuseWorktree === true)
-      if (outcome.prepared !== undefined) {
-        prepared = outcome.prepared
-        // Persist the isolation facts of the run (branch is already on the
-        // record from the gate mutation).
-        await this.patchExecution(executionId, {
-          worktreePath: outcome.prepared.worktreePath,
-          baseCommit: outcome.prepared.baseCommit,
-        })
-      } else {
-        isolationNote = outcome.note
-        // Degraded run: clear the optimistic worktree markers.
+      if (this.deps.git === undefined) {
+        isolationNote = 'git 集成不可用，已在原目录执行'
         await this.patchExecution(executionId, { isolation: 'none', isolationNote, branch: undefined, worktreePath: undefined, baseCommit: undefined })
+      } else {
+        const outcome = await prepareMirror(
+          { git: this.deps.git, scanner: this.deps.scanner ?? createRepoScanner() },
+          { workspacePath: workspace.path, taskId: task.id, branch, reuse: options?.reuseWorktree === true },
+        )
+        if ('mirror' in outcome) {
+          prepared = outcome.mirror
+          await this.pinBranches(task, prepared)
+          // Persist the isolation facts of the run (branch is already on the
+          // record from the gate mutation). The root repo keeps the legacy
+          // flat fields; non-legacy mirrors also record per-repo entries.
+          const root = prepared.repos[0]
+          await this.patchExecution(executionId, {
+            worktreePath: root?.worktreePath,
+            baseCommit: root?.baseCommit,
+            ...(!isLegacySingle(prepared)
+              ? { repos: prepared.repos.map(r => ({ repo: r.repo, branch: r.branch, worktreePath: r.worktreePath, baseCommit: r.baseCommit })) }
+              : {}),
+          })
+        } else {
+          isolationNote = outcome.note
+          // Degraded run: clear the optimistic worktree markers.
+          await this.patchExecution(executionId, { isolation: 'none', isolationNote, branch: undefined, worktreePath: undefined, baseCommit: undefined })
+        }
       }
     }
 
@@ -435,9 +489,7 @@ export class ExecutionService {
       await this.patchExecution(executionId, { outcome: 'failed', error: `preset 组合失败：${message.slice(0, 400)}`, endedAt: this.deps.now() })
       await this.revertProgress(taskId)
       // S1: a run that never started must not leave its worktree behind.
-      if (prepared !== undefined && this.deps.git !== undefined) {
-        try { await this.deps.git.removeWorktree(workspace.path, prepared.worktreePath) } catch { /* best effort (dirty worktrees are kept) */ }
-      }
+      await this.cleanupMirror(prepared, workspace.path)
       return { ok: false, error: `preset composition failed: ${message}` }
     }
     let handle: Awaited<ReturnType<AgentsFace['create']>>
@@ -469,9 +521,7 @@ export class ExecutionService {
       await this.patchExecution(executionId, { outcome: 'failed', error: message.slice(0, 500), endedAt: this.deps.now() })
       await this.revertProgress(taskId)
       // S1: a run that never started must not leave its worktree behind.
-      if (prepared !== undefined && this.deps.git !== undefined) {
-        try { await this.deps.git.removeWorktree(workspace.path, prepared.worktreePath) } catch { /* best effort (dirty worktrees are kept) */ }
-      }
+      await this.cleanupMirror(prepared, workspace.path)
       return { ok: false, error: message }
     }
 
@@ -512,9 +562,7 @@ export class ExecutionService {
     if (!stillRunning) {
       await handle.dispose().catch(() => { /* best effort */ })
       // S1: do not leave the startup artifacts behind a cancelled run either.
-      if (prepared !== undefined && this.deps.git !== undefined) {
-        try { await this.deps.git.removeWorktree(workspace.path, prepared.worktreePath) } catch { /* best effort */ }
-      }
+      await this.cleanupMirror(prepared, workspace.path)
       return { ok: false, error: 'cancelled during startup' }
     }
 
@@ -536,6 +584,13 @@ export class ExecutionService {
 
     // 3. Attach the session to the workspace (GUI project session list).
     await this.deps.workspaces.attach(task.workspaceId, sessionId).catch(() => { /* cosmetic */ })
+
+    // 3a. Apply execution session permission (0.5.5; 'workspace-write' | 'read-only' | 'danger-full-access').
+    if (this.deps.setPermission !== undefined) {
+      try {
+        this.deps.setPermission(sessionId, task.permission ?? DEFAULT_PERMISSION)
+      } catch { /* best effort */ }
+    }
 
     // 3b. Best-effort rename: pin the session title to the task title so the
     //     session list shows the task name (a user-sourced title also stops
@@ -600,9 +655,9 @@ export class ExecutionService {
   private async settleExecution(
     executionId: string,
     sessionId: string,
-    prepared: PreparedWorktree | undefined,
+    prepared: PreparedMirror | undefined,
   ): Promise<void> {
-    const facts = await this.collectEvidence(prepared)
+    const evidence = await this.collectEvidence(prepared)
     await this.deps.store.mutate('execution-recorded', (ledger) => {
       for (const t of ledger.tasks) {
         const execution = t.executions.find(e => e.id === executionId)
@@ -610,7 +665,7 @@ export class ExecutionService {
           const now = this.deps.now()
           execution.outcome = 'succeeded'
           execution.endedAt = now
-          this.applyFacts(execution, facts)
+          this.applyFacts(execution, prepared, evidence)
           if (t.status === 'in_progress' && t.claimedBy === sessionId) {
             delete t.claimedBy
             delete t.claimedAt
@@ -637,57 +692,60 @@ export class ExecutionService {
   }
 
   /**
-   * Prepare the dedicated worktree for a run (fail-soft): detect git, then
-   * create/reset the fixed task branch — fresh baseline, or keep a live
-   * worktree as-is for 续跑. On success the branch name is pinned onto the
-   * task once (renames never change it); on any failure the run degrades
-   * with a human-readable note.
+   * Pin branch names at FIRST successful creation (§9: 改名不改分支) — the
+   * workspace root repo onto the legacy `branch` field, every nested repo
+   * into the `branches` map. Re-checked inside the mutation (the task may
+   * have moved between preparation and commit).
    */
-  private async prepareIsolation(
-    task: TaskRecord,
-    workspacePath: string,
-    worktreePath: string,
-    branch: string,
-    reuse: boolean,
-  ): Promise<{ prepared?: PreparedWorktree; note?: string }> {
-    const git = this.deps.git
-    if (git === undefined) return { note: 'git 集成不可用，已在原目录执行' }
-    let inside = false
-    try {
-      inside = await git.detect(workspacePath)
-    } catch { /* fail-soft */ }
-    if (!inside) {
-      // Distinguish 未装 git from 非 git 仓库 (0.3.1): probe the binary so the
-      // degradation note names the real cause.
-      let hasBinary = true
-      try {
-        hasBinary = await git.binaryAvailable()
-      } catch { /* fail-soft → treat as repo-side */ }
-      return { note: hasBinary ? '当前项目不是 git 仓库，已在原目录执行' : 'git 不可用（未安装或不在 PATH），已在原目录执行' }
+  private async pinBranches(task: TaskRecord, mirror: PreparedMirror): Promise<void> {
+    const wanted: Array<{ repo: string; branch: string }> = []
+    for (const repo of mirror.repos) {
+      if (repo.repo === '') {
+        if (task.branch === undefined) wanted.push({ repo: '', branch: repo.branch })
+      } else if (task.branches?.[repo.repo] === undefined) {
+        wanted.push({ repo: repo.repo, branch: repo.branch })
+      }
     }
-    let info
-    try {
-      info = await git.prepareWorktree(workspacePath, worktreePath, branch, reuse ? 'reuse' : 'fresh')
-    } catch { /* fail-soft */ }
-    if (info === undefined) return { note: 'worktree 准备失败（git 报错或目录被占用），已在原目录执行' }
-    // Pin the branch name at first SUCCESSFUL creation (§9: 改名不改分支).
-    if (task.branch === undefined) {
-      await this.deps.store.mutate('task-updated', (ledger) => {
-        const target = ledger.tasks.find(t => t.id === task.id)
-        if (target !== undefined && target.branch === undefined) {
-          target.branch = branch
-          return [target]
+    if (wanted.length === 0) return
+    await this.deps.store.mutate('task-updated', (ledger) => {
+      const target = ledger.tasks.find(t => t.id === task.id)
+      if (target === undefined) return undefined
+      let touched = false
+      for (const w of wanted) {
+        if (w.repo === '') {
+          if (target.branch === undefined) {
+            target.branch = w.branch
+            touched = true
+          }
+        } else if (target.branches?.[w.repo] === undefined) {
+          target.branches = { ...target.branches, [w.repo]: w.branch }
+          touched = true
         }
-        return undefined
-      })
-    }
-    return {
-      prepared: {
-        branch: info.branch,
-        worktreePath: info.path,
-        baseCommit: info.baseCommit,
-        ...(info.reused === true ? { reused: true } : {}),
-      },
+      }
+      return touched ? [target] : undefined
+    })
+  }
+
+  /**
+   * Best-effort mirror teardown after a failed start (S1): each repo's
+   * worktree is removed through its OWN repo root; dirty worktrees are kept
+   * — never a data-loss primitive.
+   */
+  private async cleanupMirror(mirror: PreparedMirror | undefined, workspacePath: string): Promise<void> {
+    if (mirror === undefined || this.deps.git === undefined) return
+    // Children first (removeMirror's rule): the root worktree's status shows
+    // its still-present child worktrees as untracked, so removing it first
+    // hits a false dirty-worktree refusal and leaves residue behind. The root
+    // gets the noise exemption but NO force: a reused worktree's real agent
+    // dirt must keep it alive. (Structural-noise residue stays recoverable
+    // through the routes' aggregated mirror removal.)
+    const nestedRels = mirror.repos.filter(r => r.repo !== '').map(r => r.repo)
+    for (const repo of [...mirror.repos].reverse()) {
+      const root = repo.repo === '' ? workspacePath : workspacePath + '/' + repo.repo
+      try {
+        await this.deps.git.removeWorktree(root, repo.worktreePath,
+          repo.repo === '' && nestedRels.length > 0 ? { exempt: nestedRels } : undefined)
+      } catch { /* best effort (dirty worktrees are kept) */ }
     }
   }
 
@@ -719,7 +777,7 @@ export class ExecutionService {
 
     // The cancelled session may already have committed work — keep the
     // evidence (best effort) so the user can inspect or 续跑 (0.3.1).
-    const facts = await this.collectEvidence(entry?.prepared)
+    const evidence = await this.collectEvidence(entry?.prepared)
     let settled = false
     await this.deps.store.mutate('execution-recorded', (ledger) => {
       const target = ledger.tasks.find(t => t.id === taskId)
@@ -729,7 +787,7 @@ export class ExecutionService {
       settled = true
       execution.outcome = 'cancelled'
       execution.endedAt = this.deps.now()
-      this.applyFacts(execution, facts)
+      this.applyFacts(execution, entry?.prepared, evidence)
       if (target.status === 'in_progress') {
         target.status = 'todo'
         target.updatedAt = this.deps.now()
@@ -786,11 +844,10 @@ export class ExecutionService {
    * the user reviews at merge time); 续跑 and degraded runs each add their
    * own steering line (0.3.1).
    * @param task - the task.
-   * @param prepared - worktree facts when this run is isolated.
+   * @param prepared - the task mirror when this run is isolated.
    * @param degradeNote - why a worktree task degraded to the main directory.
    */
-  private pluginFraming(task: TaskRecord, prepared?: PreparedWorktree, degradeNote?: string, effectiveSpeed?: TaskSpeed): string {
-    const displaySpeed = effectiveSpeed ?? effectiveTaskSpeed(task)
+  private pluginFraming(task: TaskRecord, prepared?: PreparedMirror, degradeNote?: string): string {
     let text = `【任务看板】${task.title}（ID: ${task.id}）\n`
       + `本会话由任务看板执行服务启动，任务已置为进行中——无需认领；「已完成」仅限用户在界面操作（代码已限制，移了会被拒）。\n`
       + (task.model !== undefined ? `执行模型：${task.model.provider}/${task.model.model}${task.model.reasoningEffort !== undefined ? ` · 推理等级 ${task.model.reasoningEffort}` : ''}\n` : '')
@@ -810,13 +867,40 @@ export class ExecutionService {
       text += `\n本任务有验收清单（DoD，${done}/${task.checklist.length} 已完成）——按清单干活：\n${items}\n完成一项就用 taskboard_checklist（action=check，附 note 证据）勾选；未完成项会在验收时高亮，全部完成再移待验收。需要补充验收项也可用 action=add 追加。`
     }
     if (prepared !== undefined) {
-      if (prepared.reused === true) {
-        text += `\n本任务启用了 Git Worktree 隔离，且本次为续跑：任务工作目录是独立分支 ${prepared.branch} 的 worktree——\n${prepared.worktreePath}\n上一次执行的改动与提交都保留在原处——请先查看已有改动（git status / git log）再继续，避免重复劳动，并把新完成的工作提交到该分支。`
+      if (isLegacySingle(prepared)) {
+        // Byte-identical legacy single-repo steering (0.3.0–0.6.2 wording).
+        const only = prepared.repos[0]!
+        if (only.reused === true) {
+          text += `\n本任务启用了 Git Worktree 隔离，且本次为续跑：任务工作目录是独立分支 ${only.branch} 的 worktree——\n${only.worktreePath}\n上一次执行的改动与提交都保留在原处——请先查看已有改动（git status / git log）再继续，避免重复劳动，并把新完成的工作提交到该分支。`
+        } else {
+          text += `\n本任务启用了 Git Worktree 隔离：任务工作目录是独立分支 ${only.branch} 的全新 worktree——\n${only.worktreePath}\n（全新检出，不含 node_modules/构建产物，构建或测试前可能需要先安装依赖）。\n⚠ 边界纪律：你的会话根目录是整个项目，但本任务的全部改动必须只发生在上述 worktree 目录内——命令用 workdir 指向它、文件读写用它的绝对路径；不要改动主工作区的任何其它文件；把完成的工作提交（git commit）到该分支，验收将基于该分支的提交记录合并。`
+        }
       } else {
-        text += `\n本任务启用了 Git Worktree 隔离：任务工作目录是独立分支 ${prepared.branch} 的全新 worktree——\n${prepared.worktreePath}\n（全新检出，不含 node_modules/构建产物，构建或测试前可能需要先安装依赖）。\n⚠ 边界纪律：你的会话根目录是整个项目，但本任务的全部改动必须只发生在上述 worktree 目录内——命令用 workdir 指向它、文件读写用它的绝对路径；不要改动主工作区的任何其它文件；把完成的工作提交（git commit）到该分支，验收将基于该分支的提交记录合并。`
+        text += this.mirrorFraming(prepared)
       }
     } else if (degradeNote !== undefined) {
       text += `\n⚠ 本次执行未能建立隔离，正在主项目目录中工作（原因：${degradeNote}）。该目录可能有他人未提交的改动：动手前先 git status 检查现状，改动尽量集中，结束时在评论中说明动了哪些文件；避免把未经验证的改动直接提交到主分支。`
+    }
+    return text
+  }
+
+  /**
+   * The multi-repo mirror section of the framing line (0.6.3): per-repo
+   * checkout list, the (possibly partial) coverage boundary, per-repo commit
+   * discipline, and the 禁改 list for repos that failed to mirror.
+   */
+  private mirrorFraming(mirror: PreparedMirror): string {
+    const mode = mirror.allReused ? '续跑' : '全新'
+    const lines = mirror.repos
+      .map(r => `- ${r.repo === '' ? '根仓库' : r.repo} → ${r.worktreePath}（分支 ${r.branch}${r.reused === true ? '，续跑' : ''}）`)
+      .join('\n')
+    let text = `\n本任务启用了 Git Worktree 隔离（多仓库镜像模式，本次${mode}）：整个工作区已镜像到任务目录——\n${mirror.root}\n各仓库检出位置与任务分支（每仓库各一个同名任务分支）：\n${lines}\n（全新检出的镜像不含 node_modules/构建产物，构建或测试前可能需要先安装依赖）。\n⚠ 边界纪律：你的会话根目录是整个项目，但本任务的全部改动必须只发生在上述任务目录内对应仓库的镜像里——命令用 workdir 指向它、文件读写用它的绝对路径；不要改动镜像之外的任何文件；改动发生在哪个仓库，就把完成的工作提交（git commit）到那个仓库的任务分支，验收将按仓库合并各分支的提交记录。`
+    if (mirror.skipped.length > 0) {
+      const skipped = mirror.skipped.map(s => `- ${s.repo}（原因：${s.reason}）`).join('\n')
+      text += `\n⚠ 以下仓库未能建立镜像：\n${skipped}\n本次执行严禁改动这些仓库的主目录。`
+    }
+    if (mirror.allReused) {
+      text += `\n本次为续跑：各仓库上一次执行的改动与提交都保留在镜像原处——动手前先在各仓库镜像里查看已有改动（git status / git log），避免重复劳动。`
     }
     return text
   }

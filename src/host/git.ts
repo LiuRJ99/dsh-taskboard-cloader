@@ -34,6 +34,30 @@ const HEAVY_TIMEOUT_MS = 15_000
 /** Directory under a workspace where task worktrees live. */
 export const WORKTREE_DIR = '.dsh-worktrees'
 
+/**
+ * The path segment of one `status --porcelain` line. Shape-aware: the RAW
+ * line is `XY path` (path at index 3) while the plugin's trimmed evidence
+ * lines collapse a leading-space status to `X path` (path at index 2) —
+ * slicing a fixed 3 misparses exactly the gitlink/unstaged shapes a
+ * multi-repo mirror produces (` M sub-repo`), 0.6.3 review fix.
+ */
+export function statusLinePath(line: string): string {
+  if (line.length >= 3 && line[2] === ' ') return line.slice(3)
+  if (line.length >= 2 && line[1] === ' ') return line.slice(2)
+  return line
+}
+
+/**
+ * Whether a `status --porcelain` line targets one of `rels` (a repo-relative
+ * path) or anything under it. Porcelain prints untracked directories with a
+ * trailing slash (`?? sub/`), so all three shapes match. Empty rels never
+ * match (0.6.3 review fix).
+ */
+export function statusLineUnder(line: string, rels: readonly string[]): boolean {
+  const p = statusLinePath(line)
+  return rels.some(rel => rel.length > 0 && (p === rel || p === rel + '/' || p.startsWith(rel + '/')))
+}
+
 /** Evidence caps: commits kept per execution record (newest first). */
 export const MAX_COMMIT_EVIDENCE = 50
 
@@ -118,18 +142,40 @@ export interface GitFace {
    * undefined on any failure — callers degrade to the original directory.
    */
   prepareWorktree(root: string, path: string, branch: string, mode?: 'fresh' | 'reuse'): Promise<WorktreeInfo | undefined>
-  /** Collect settlement facts (never throws; missing pieces stay unset). */
-  collect(worktreePath: string, baseCommit: string): Promise<SettlementFacts>
-  /** Merge `branch` into the main worktree (`--no-ff`); THROWS with a readable reason. */
-  merge(root: string, branch: string): Promise<void>
+  /**
+   * Collect settlement facts (never throws; missing pieces stay unset).
+   * `excludeRelPaths` drops `status --porcelain` lines targeting those
+   * repo-relative paths (or anything under them) — the mirror's NESTED repo
+   * worktrees read as untracked noise in the root worktree's status and are
+   * not this repo's uncommitted changes (0.6.3 review fix).
+   */
+  collect(worktreePath: string, baseCommit: string, excludeRelPaths?: readonly string[]): Promise<SettlementFacts>
+  /**
+   * Uncommitted-change lines of a working tree ([] = clean; undefined on git
+   * failure). Mirror removal pre-checks EVERY repo worktree before deleting
+   * any, so one dirty repo refuses the whole mirror (0.6.3).
+   */
+  dirtyLines(cwd: string): Promise<string[] | undefined>
+  /**
+   * Merge `branch` into the main worktree (`--no-ff`); THROWS with a readable
+   * reason. `exemptRelPaths` extends the main-clean exemption beyond
+   * `.dsh-worktrees`: uncommitted-shape noise under those repo-relative paths
+   * (parallel repos are self-governing — their content AND their gitlink
+   * entries don't gate the root repo's merge, 0.6.3 review fix).
+   */
+  merge(root: string, branch: string, exemptRelPaths?: readonly string[]): Promise<void>
   /** Whether `branch` is already an ancestor of HEAD (a merge would be a no-op). */
   isAncestor(root: string, branch: string): Promise<boolean>
   /**
    * Remove a worktree. Resolves 'removed' on success, 'unregistered' when git
    * no longer knows the path (an orphaned directory). THROWS when it still
    * has uncommitted changes, or on any other git failure (readable reason).
+   * `opts.exempt` drops mirror-structural noise from the dirty check and
+   * `opts.force` lets `git worktree remove` accept it — for callers that have
+   * ALREADY aggregated the real-dirty check themselves (the mirror removal:
+   * noise-exempt clean → force is safe; real dirt never gets here).
    */
-  removeWorktree(root: string, worktreePath: string): Promise<'removed' | 'unregistered'>
+  removeWorktree(root: string, worktreePath: string, opts?: { exempt?: readonly string[]; force?: boolean }): Promise<'removed' | 'unregistered'>
   /** Delete a branch; THROWS (e.g. still checked out in a worktree). */
   deleteBranch(root: string, branch: string): Promise<void>
   /**
@@ -266,7 +312,7 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
       return { path, branch, baseCommit }
     }),
 
-    async collect(worktreePath, baseCommit) {
+    async collect(worktreePath, baseCommit, excludeRelPaths) {
       const facts: SettlementFacts = { commits: [], commitsTotal: 0, dirtyFiles: [], dirtyFilesTotal: 0, changedFiles: 0 }
       const range = `${baseCommit}..HEAD`
 
@@ -292,7 +338,14 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
 
       const status = await quick(['status', '--porcelain'], worktreePath)
       if (status.ok) {
-        const dirty = status.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+        // excludeRelPaths drops the mirror's nested repo worktrees — they
+        // read as untracked noise / gitlink drift here, not as this repo's
+        // uncommitted changes. Excluded on the RAW line (path extraction is
+        // shape-aware); the stored evidence keeps its trimmed 0.3.x shape.
+        const dirty = status.stdout.split('\n')
+          .filter(l => l.trim().length > 0)
+          .filter(l => !statusLineUnder(l, excludeRelPaths ?? []))
+          .map(l => l.trim())
         facts.dirtyFilesTotal = dirty.length
         facts.dirtyFiles = dirty.slice(0, MAX_DIRTY_EVIDENCE)
       }
@@ -306,19 +359,22 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
       return facts
     },
 
-    merge: (root, branch) => withRootLock(root, async () => {
+    async dirtyLines(cwd) {
+      const status = await quick(['status', '--porcelain'], cwd)
+      if (!status.ok) return undefined
+      return status.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+    },
+
+    merge: (root, branch, exemptRelPaths) => withRootLock(root, async () => {
       // Main-clean check. The plugin's own worktree directory
       // (<root>/.dsh-worktrees) shows up as untracked noise and is EXEMPT —
       // otherwise merging would be impossible without gitignoring it first.
       const status = await quick(['status', '--porcelain'], root)
       if (status.ok) {
         const dirtyLines = status.stdout.split('\n')
+          .filter(l => l.trim().length > 0)
+          .filter(l => !statusLineUnder(l, [WORKTREE_DIR, ...(exemptRelPaths ?? [])]))
           .map(l => l.trim())
-          .filter(l => {
-            if (l.length === 0) return false
-            const path = l.slice(3)
-            return path !== WORKTREE_DIR && !path.startsWith(`${WORKTREE_DIR}/`)
-          })
         if (dirtyLines.length > 0) {
           // Machine-readable tag: callers classify without parsing zh-CN text.
           throw Object.assign(new Error(`主工作区有 ${dirtyLines.length} 处未提交修改，请先提交或暂存后再合并`), { code: 'dirty-tree' })
@@ -339,14 +395,24 @@ export function createGitFace(exec: ExecFn = realExec): GitFace {
       return r.ok
     },
 
-    removeWorktree: (root, worktreePath) => withRootLock(root, async (): Promise<'removed' | 'unregistered'> => {
+    removeWorktree: (root, worktreePath, opts) => withRootLock(root, async (): Promise<'removed' | 'unregistered'> => {
       const status = await quick(['status', '--porcelain'], worktreePath)
       if (status.ok && status.stdout.trim().length > 0) {
-        const lines = status.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0)
-        // Machine-readable tag: purge flows classify without parsing zh-CN text.
-        throw Object.assign(new Error(`worktree 有 ${lines.length} 处未提交修改，拒绝删除：\n${lines.slice(0, 10).join('\n')}`), { code: 'dirty-worktree' })
+        // opts.exempt drops mirror-structural noise (nested child worktrees /
+        // gitlink drift) — the caller's aggregated check already refused real
+        // dirt before reaching here.
+        const lines = status.stdout.split('\n')
+          .filter(l => l.trim().length > 0)
+          .filter(l => !statusLineUnder(l, opts?.exempt ?? []))
+          .map(l => l.trim())
+        if (lines.length > 0) {
+          // Machine-readable tag: purge flows classify without parsing zh-CN text.
+          throw Object.assign(new Error(`worktree 有 ${lines.length} 处未提交修改，拒绝删除：\n${lines.slice(0, 10).join('\n')}`), { code: 'dirty-worktree' })
+        }
       }
-      const removed = await heavy(['worktree', 'remove', worktreePath], root)
+      const removed = await heavy(opts?.force === true
+        ? ['worktree', 'remove', '--force', worktreePath]
+        : ['worktree', 'remove', worktreePath], root)
       if (removed.ok) return 'removed'
       // S3: classify the failure WITHOUT parsing git's (localizable) stderr —
       // a path absent from `worktree list` is an unregistered leftover, not
