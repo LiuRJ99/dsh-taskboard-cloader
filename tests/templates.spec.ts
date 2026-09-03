@@ -37,20 +37,20 @@ describe('TemplateStore', () => {
     const legacy = BUILTIN_TEMPLATES.map((template, index) => {
       const task = { ...template.task }
       delete task.speed
-      delete task.permissionMode
+      delete task.permission
       const { category: _category, ...withoutCategory } = template
       return { ...withoutCategory, task, builtin: true, createdAt: index, updatedAt: index }
     })
     await writeFile(file, JSON.stringify({ templates: legacy }), 'utf8')
 
     const list = await new TemplateStore(file).list()
-    expect(list.find(t => t.id === 'tpl-bugfix')?.task).toMatchObject({ speed: 'standard', permissionMode: 'workspace-write' })
-    expect(list.find(t => t.id === 'tpl-patrol')?.task).toMatchObject({ speed: 'standard', permissionMode: 'read-only' })
+    expect(list.find(t => t.id === 'tpl-bugfix')?.task).toMatchObject({ speed: 'standard', permission: 'workspace-write' })
+    expect(list.find(t => t.id === 'tpl-patrol')?.task).toMatchObject({ speed: 'standard', permission: 'read-only' })
     expect(list.find(t => t.id === 'tpl-bugfix')?.category).toBe('开发')
     expect(list.find(t => t.id === 'tpl-patrol')?.category).toBe('运营')
 
-    const persisted = JSON.parse(await readFile(file, 'utf8')) as { templates: Array<{ id: string; category?: string; task: { speed?: string; permissionMode?: string } }> }
-    expect(persisted.templates.find(t => t.id === 'tpl-release')?.task).toMatchObject({ speed: 'standard', permissionMode: 'workspace-write' })
+    const persisted = JSON.parse(await readFile(file, 'utf8')) as { templates: Array<{ id: string; category?: string; task: { speed?: string; permission?: string } }> }
+    expect(persisted.templates.find(t => t.id === 'tpl-release')?.task).toMatchObject({ speed: 'standard', permission: 'workspace-write' })
     expect(persisted.templates.find(t => t.id === 'tpl-release')?.category).toBe('开发')
   })
 

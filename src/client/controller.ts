@@ -7,11 +7,12 @@
  *
  * @module dsh-taskboard/client/controller
  */
-import type { ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
+import type { ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, MergeRepoResult, PromptCompletionsResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
 import type { ChecklistItem, TaskCapability, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
 import type { SessionJumpResult } from './session-jump.ts'
+import { translate } from './i18n/runtime.ts'
 
 /** View filters over the ledger. */
 export interface BoardFilters {
@@ -283,6 +284,12 @@ export class BoardController {
     return this.state.workspaces.find(w => w.id === workspaceId)?.gitAvailable === true
   }
 
+  /** How many repos a task mirror of this workspace would cover (0.6.3 mirror badge). */
+  repoCount(workspaceId: string | undefined): number {
+    if (workspaceId === undefined) return 1
+    return this.state.workspaces.find(w => w.id === workspaceId)?.repoCount ?? 1
+  }
+
   /**
    * Install the session-jump bridge (built from the runtime sessions service
    * by the client entry). Without it openSession reports 'unavailable'.
@@ -352,6 +359,54 @@ export class BoardController {
   /** The installed preset roster face, when the runtime provides one. */
   get presetCatalog(): (() => Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }>) | undefined {
     return this.catalogFaces.presets
+  }
+
+  /**
+   * Fetch model catalog: prefers installed runtime face, falls back to Taskboard client API (0.5.5).
+   */
+  async fetchModelCatalog(): Promise<Array<{
+    provider: string
+    model: string
+    name?: string
+    description?: string
+    reasoning?: {
+      efforts: Array<{ id: string; name: string; description?: string }>
+      defaultEffort?: string
+    }
+  }>> {
+    if (this.catalogFaces.models !== undefined) {
+      try {
+        const list = await this.catalogFaces.models()
+        if (list !== undefined && list.length > 0) return list
+      } catch { /* fallback to client */ }
+    }
+    try {
+      const res = await this.client.modelCatalog()
+      return res.models ?? []
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Fetch preset roster: prefers installed runtime face, falls back to Taskboard client API (0.5.5).
+   */
+  async fetchPresetCatalog(): Promise<{ presets: Array<{ id: string; name?: string }>; defaultId?: string }> {
+    if (this.catalogFaces.presets !== undefined) {
+      try {
+        const roster = await this.catalogFaces.presets()
+        if (roster !== undefined && roster.presets !== undefined && roster.presets.length > 0) return roster
+      } catch { /* fallback to client */ }
+    }
+    try {
+      const res = await this.client.modelCatalog()
+      return {
+        presets: res.presets ?? [],
+        ...(res.defaultPresetId !== undefined ? { defaultId: res.defaultPresetId } : {}),
+      }
+    } catch {
+      return { presets: [] }
+    }
   }
 
   /**
@@ -464,8 +519,8 @@ export class BoardController {
     }
   }
 
-  /** Diff view (0.4.0): one execution's commit or changed path; errors surface via throw. */
-  async fetchDiff(taskId: string, query: { execution: string; commit?: string; path?: string }): Promise<DiffResponse | undefined> {
+  /** Diff view (0.4.0): one execution's commit or changed path; `repo` picks a mirror repo (0.6.3). */
+  async fetchDiff(taskId: string, query: { execution: string; commit?: string; path?: string; repo?: string }): Promise<DiffResponse | undefined> {
     try {
       return await this.client.diff(taskId, query)
     } catch (error) {
@@ -511,13 +566,16 @@ export class BoardController {
 
   /**
    * ⇥ 合并 (detail page): merge the task branch into the main worktree.
-   * @returns the outcome; `noop` means the branch had no new commits (nothing merged).
+   * @returns the outcome; `noop` means the branch had no new commits (nothing
+   * merged); multi-repo tasks (0.6.3) additionally carry per-repo `results`.
    */
-  async mergeBranch(id: string): Promise<{ ok: true; noop?: boolean } | { ok: false; error: string }> {
+  async mergeBranch(id: string): Promise<{ ok: true; noop?: boolean; results?: MergeRepoResult[] } | { ok: false; error: string }> {
     try {
       const value = await this.client.mergeBranch(id)
       await this.refresh()
-      return value.noop === true ? { ok: true, noop: true } : { ok: true }
+      return value.noop === true
+        ? { ok: true, noop: true }
+        : value.results !== undefined ? { ok: true, results: value.results } : { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
@@ -601,7 +659,7 @@ export class BoardController {
     try {
       await this.client.create({
         // Keep the suffix under the host's 200-char title cap (review P1).
-        title: `${task.title.slice(0, 196)}（副本）`,
+        title: task.title.slice(0, 196) + translate('shared.duplicate.suffix'),
         workspaceId: task.workspaceId,
         urgency: task.urgency,
         description: task.description.length > 0 ? task.description : undefined,
@@ -611,10 +669,10 @@ export class BoardController {
           : { mode: 'claim' },
         model: task.model,
         speed: task.speed,
-        permissionMode: task.permissionMode,
         isolation: task.isolation,
         requiredCapabilities: task.requiredCapabilities,
         ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
+        ...(task.permission !== undefined ? { permission: task.permission } : {}),
         ...(task.checklist !== undefined && task.checklist.length > 0 ? { checklist: task.checklist.map(i => i.text) } : {}),
       })
       await this.refresh()
@@ -689,13 +747,22 @@ export class BoardController {
           : { mode: 'claim' },
         model: task.model,
         speed: task.speed,
-        permissionMode: task.permissionMode,
         isolation: task.isolation,
         requiredCapabilities: task.requiredCapabilities,
         ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
+        ...(task.permission !== undefined ? { permission: task.permission } : {}),
         ...(task.checklist !== undefined && task.checklist.length > 0 ? { checklist: task.checklist.map(i => i.text) } : {}),
       },
     })
+  }
+
+  /** Load prompt completions (skills + slash commands) from host (0.5.5). */
+  async fetchPromptCompletions(): Promise<PromptCompletionsResponse | undefined> {
+    try {
+      return await this.client.promptCompletions()
+    } catch {
+      return undefined
+    }
   }
 
   // ------------------------------------------------ import (0.4.0)
@@ -747,13 +814,13 @@ export class BoardController {
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
       return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
-    const header = ['id', 'title', 'status', 'urgency', 'blocked', 'project', 'claimedBy', 'mode', 'cron', 'nextRunAt', 'model', 'reasoningEffort', 'speed', 'permissionMode', 'createdAt', 'updatedAt', 'comments', 'executions']
+    const header = ['id', 'title', 'status', 'urgency', 'blocked', 'project', 'claimedBy', 'mode', 'cron', 'nextRunAt', 'model', 'reasoningEffort', 'speed', 'permission', 'createdAt', 'updatedAt', 'comments', 'executions']
     const rows = this.state.ledger.tasks.map(t => [
       t.id, t.title, t.status, t.urgency, t.blocked ? 'yes' : 'no', t.workspaceId,
       t.claimedBy ?? '', t.execution.mode, t.execution.cron ?? '',
       t.execution.nextRunAt !== undefined ? new Date(t.execution.nextRunAt).toISOString() : '',
       t.model !== undefined ? `${t.model.provider}/${t.model.model}` : '',
-      t.model?.reasoningEffort ?? '', t.speed ?? '', t.permissionMode ?? '',
+      t.model?.reasoningEffort ?? '', t.speed ?? '', t.permission ?? '',
       new Date(t.createdAt).toISOString(), new Date(t.updatedAt).toISOString(),
       t.comments.length, t.executions.length,
     ].map(esc).join(','))

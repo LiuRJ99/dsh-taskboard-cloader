@@ -8,17 +8,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  ALL_PERMISSIONS,
   ALL_STATUSES,
   DEFAULT_ISOLATION,
+  DEFAULT_PERMISSION,
   MAIN_STATUSES,
   approvalPolicyForPermissionMode,
   asPermissionMode,
   asTaskSpeed,
   asBoardSettings,
+  asPermission,
   canTransition,
   checklistFromTexts,
   checklistProgress,
   defaultIsolationOf,
+  defaultPermissionOf,
+  defaultSyncExternalSessionsOf,
   effectiveIsolation,
   emptyLedger,
   effectiveTaskSpeed,
@@ -33,6 +38,9 @@ import {
   parseCron,
   summarize,
   validateImportedTask,
+  isValidRelRepoPath,
+  normalizeBranchesMap,
+  normalizeRepoEvidence,
   validateLedgerImport,
   isValidTaskId,
   type TaskRecord,
@@ -131,13 +139,16 @@ describe('cron', () => {
     expect(() => normalizeModel({ provider: 'deepseek', model: 'chat', reasoningEffort: 3 })).toThrow('reasoningEffort')
 
     expect(asTaskSpeed('fast')).toBe('fast')
+    expect(asPermission('danger-full-access')).toBe('danger-full-access')
+    expect(asPermission('workspaceWrite')).toBe('workspace-write')
     expect(asPermissionMode('danger-full-access')).toBe('danger-full-access')
     expect(effectiveTaskSpeed({})).toBe('standard')
     expect(approvalPolicyForPermissionMode('read-only')).toBe('ask')
     expect(approvalPolicyForPermissionMode('workspace-write')).toBe('ask')
     expect(approvalPolicyForPermissionMode('danger-full-access')).toBe('never')
     expect(() => asTaskSpeed('turbo')).toThrow('standard, fast')
-    expect(() => asPermissionMode('full-access')).toThrow('read-only')
+    expect(() => asPermissionMode('full-access')).toThrow("permission must be")
+    expect(() => asPermission('full-access')).toThrow("permission must be")
   })
 })
 
@@ -317,13 +328,17 @@ describe('board settings & default isolation (0.5.0)', () => {
     expect(effectiveIsolation({ isolation: 'none' })).toBe('none')
   })
 
-  it('asBoardSettings sanitizes; defaultIsolationOf resolves setting → factory', () => {
-    expect(asBoardSettings({ defaultIsolation: 'worktree', templateMenuCategory: ' 开发 ', junk: 1 })).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '开发' })
+  it('asBoardSettings sanitizes; defaultIsolationOf, defaultSyncExternalSessionsOf, and defaultPermissionOf resolve setting → factory', () => {
+    expect(asBoardSettings({ defaultIsolation: 'worktree', templateMenuCategory: ' 开发 ', syncExternalSessions: true, defaultPermission: 'read-only', junk: 1 })).toEqual({ defaultIsolation: 'worktree', templateMenuCategory: '开发', syncExternalSessions: true, defaultPermission: 'read-only' })
+    expect(asBoardSettings({ syncExternalSessions: false })).toEqual({ syncExternalSessions: false })
+    expect(asBoardSettings({ defaultPermission: 'fullAccess' })).toEqual({ defaultPermission: 'danger-full-access' })
     expect(asBoardSettings({})).toEqual({})
     expect(() => asBoardSettings({ defaultIsolation: 'docker' })).toThrow("isolation must be")
     expect(() => asBoardSettings({ defaultIsolation: 42 })).toThrow("defaultIsolation must be")
     expect(() => asBoardSettings({ templateMenuCategory: 42 })).toThrow('template category must be a string')
     expect(() => asBoardSettings({ templateMenuCategory: 'x'.repeat(31) })).toThrow('1..30')
+    expect(() => asBoardSettings({ syncExternalSessions: 'yes' })).toThrow("syncExternalSessions must be a boolean")
+    expect(() => asBoardSettings({ defaultPermission: 'super-user' })).toThrow("permission must be")
     expect(normalizeTemplateCategory('  开发  ')).toBe('开发')
     expect(normalizeTemplateCategory('')).toBeUndefined()
     expect(() => normalizeTemplateCategory(null)).toThrow('must be a string')
@@ -331,6 +346,26 @@ describe('board settings & default isolation (0.5.0)', () => {
     expect(defaultIsolationOf(undefined)).toBe('none')
     expect(defaultIsolationOf({})).toBe('none')
     expect(defaultIsolationOf({ defaultIsolation: 'worktree' })).toBe('worktree')
+    expect(defaultSyncExternalSessionsOf(undefined)).toBe(false)
+    expect(defaultSyncExternalSessionsOf({})).toBe(false)
+    expect(defaultSyncExternalSessionsOf({ syncExternalSessions: true })).toBe(true)
+    expect(defaultSyncExternalSessionsOf({ syncExternalSessions: false })).toBe(false)
+    expect(DEFAULT_PERMISSION).toBe('workspace-write')
+    expect(ALL_PERMISSIONS).toEqual(['workspace-write', 'read-only', 'danger-full-access'])
+    expect(defaultPermissionOf(undefined)).toBe('workspace-write')
+    expect(defaultPermissionOf({})).toBe('workspace-write')
+    expect(defaultPermissionOf({ defaultPermission: 'read-only' })).toBe('read-only')
+  })
+
+  it('asPermission normalizes camelCase and kebab-case aliases', () => {
+    expect(asPermission('workspace-write')).toBe('workspace-write')
+    expect(asPermission('workspaceWrite')).toBe('workspace-write')
+    expect(asPermission('read-only')).toBe('read-only')
+    expect(asPermission('readOnly')).toBe('read-only')
+    expect(asPermission('danger-full-access')).toBe('danger-full-access')
+    expect(asPermission('fullAccess')).toBe('danger-full-access')
+    expect(asPermission(undefined)).toBe('workspace-write')
+    expect(() => asPermission('root')).toThrow("permission must be")
   })
 
   it('validateLedgerImport carries sanitized board settings; rejects broken ones', () => {
@@ -402,7 +437,9 @@ describe('ledger import validation', () => {
     expect(task.presetId).toBe('standard')
     expect(task.model).toEqual({ provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
     expect(task.speed).toBe('fast')
-    expect(task.permissionMode).toBe('read-only')
+    // Legacy `permissionMode` import is canonicalized onto `permission`.
+    expect((task as unknown as Record<string, unknown>).permissionMode).toBeUndefined()
+    expect(task.permission).toBe('read-only')
     expect(task.claimedBy).toBe('sess-x')
     expect(task.createdBy).toEqual({ kind: 'user' })
   })
@@ -440,6 +477,34 @@ describe('TaskStore', () => {
     await second.load()
     expect(second.get('t-1')?.title).toBe('changed')
     expect(second.snapshot().revision).toBe(2)
+  })
+
+  it('persists and restores board settings across store reloads (0.5.5)', async () => {
+    const file = join(dir, 'settings-reload.json')
+    const store = new TaskStore({ file })
+    await store.mutate('settings-updated', ledger => {
+      ledger.settings = {
+        defaultIsolation: 'worktree',
+        syncExternalSessions: true,
+        defaultPermission: 'read-only',
+      }
+      return []
+    })
+
+    expect(store.snapshot().settings).toEqual({
+      defaultIsolation: 'worktree',
+      syncExternalSessions: true,
+      defaultPermission: 'read-only',
+    })
+
+    // Reload in a completely fresh store instance simulating server restart
+    const restarted = new TaskStore({ file })
+    await restarted.load()
+    expect(restarted.snapshot().settings).toEqual({
+      defaultIsolation: 'worktree',
+      syncExternalSessions: true,
+      defaultPermission: 'read-only',
+    })
   })
 
   it('quarantines a corrupt ledger instead of throwing', async () => {
@@ -925,5 +990,79 @@ describe('R4: task id charset gate (import + path building)', () => {
       expect(validateImportedTask({ ...base, id }, 0)).toMatchObject({ ok: false })
     }
     expect(validateImportedTask({ ...base, id: 't-abc-def' }, 0)).toMatchObject({ ok: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 0.6.3 multi-repo mirror: rel-path keys, branches map, per-repo evidence
+// ---------------------------------------------------------------------------
+
+describe('mirror protocol additions (0.6.3)', () => {
+  it('isValidRelRepoPath: "" and clean relative paths pass; traversal/absolute/dot shapes fail', () => {
+    expect(isValidRelRepoPath('')).toBe(true)
+    expect(isValidRelRepoPath('dsh-taskboard')).toBe(true)
+    expect(isValidRelRepoPath('a/b/c')).toBe(true)
+    for (const bad of ['..', 'a/../b', '../x', '/abs', 'C:\\repo', '\\\\srv\\share', '.', 'a/', '.hidden/x']) {
+      expect(isValidRelRepoPath(bad)).toBe(false)
+    }
+  })
+
+  it('normalizeBranchesMap keeps legal entries, drops junk, caps at MAX_MIRROR_REPOS', () => {
+    expect(normalizeBranchesMap(undefined)).toBeUndefined()
+    expect(normalizeBranchesMap({})).toBeUndefined()
+    expect(normalizeBranchesMap({ 'dsh-taskboard': 'task/x', 'bad/../key': 'task/y', '': 'task/z', k: 42 })).toEqual({ 'dsh-taskboard': 'task/x' })
+    const many: Record<string, string> = {}
+    for (let i = 0; i < 12; i++) many['r' + i] = 'task/x'
+    const out = normalizeBranchesMap(many)!
+    expect(Object.keys(out)).toHaveLength(8)
+  })
+
+  it('normalizeRepoEvidence rebuilds legal entries, drops structurally broken ones, caps evidence', () => {
+    const good = {
+      repo: 'dsh-taskboard',
+      branch: 'task/x',
+      worktreePath: '/ws/.dsh-worktrees/t-1/dsh-taskboard',
+      baseCommit: 'a1',
+      headCommit: 'b2',
+      commits: [{ hash: 'b2', subject: 'feat: done' }, { hash: 5 }],
+      dirtyFiles: [' M a', 7],
+      commitsTotal: 2,
+      dirtyFilesTotal: 1,
+    }
+    const out = normalizeRepoEvidence(good)!
+    expect(out.commits).toEqual([{ hash: 'b2', subject: 'feat: done' }])
+    expect(out.dirtyFiles).toEqual([' M a'])
+    expect(normalizeRepoEvidence({ ...good, repo: '../escape' })).toBeUndefined()
+    expect(normalizeRepoEvidence({ ...good, branch: '' })).toBeUndefined()
+    expect(normalizeRepoEvidence({ ...good, worktreePath: '' })).toBeUndefined()
+    expect(normalizeRepoEvidence('nope')).toBeUndefined()
+  })
+
+  it('validateImportedTask carries branches + per-repo evidence through a round trip', () => {
+    const base = {
+      id: 't-mirror-1',
+      title: 'Mirror',
+      workspaceId: 'ws-a',
+      comments: [],
+      executions: [{
+        id: 'e-1', trigger: 'manual', outcome: 'succeeded',
+        isolation: 'worktree', branch: 'task/x', worktreePath: '/ws/.dsh-worktrees/t-mirror-1',
+        repos: [{
+          repo: 'sub', branch: 'task/x', worktreePath: '/ws/.dsh-worktrees/t-mirror-1/sub',
+          baseCommit: 'a1', headCommit: 'b2', commits: [{ hash: 'b2', subject: 's' }], commitsTotal: 1,
+        }],
+      }],
+      branches: { sub: 'task/x' },
+    }
+    const result = validateImportedTask(base, 0)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.task.branches).toEqual({ sub: 'task/x' })
+    const execution = result.task.executions[0]!
+    expect(execution.repos).toHaveLength(1)
+    expect(execution.repos![0]).toMatchObject({ repo: 'sub', branch: 'task/x', headCommit: 'b2' })
+    // An illegal branches key is silently dropped (legal ones survive).
+    const mixed = validateImportedTask({ ...base, branches: { sub: 'task/x', '../evil': 'task/y' } }, 0)
+    expect(mixed.ok && mixed.task.branches).toEqual({ sub: 'task/x' })
   })
 })

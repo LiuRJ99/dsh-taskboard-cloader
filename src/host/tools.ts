@@ -25,7 +25,7 @@ import { defineTool } from './sdk.ts'
 import {
   MAX_CHECKLIST_ITEMS,
   asIsolation,
-  asPermissionMode,
+  asPermission,
   asStatus,
   asTaskSpeed,
   asUrgency,
@@ -67,7 +67,7 @@ function taskLine(t: {
   blocked: boolean
   executionMode: string
   speed?: string
-  permissionMode?: string
+  permission?: string
   commentCount?: number
   lastExecutionOutcome?: string
   checklist?: { done: number; total: number }
@@ -80,7 +80,7 @@ function taskLine(t: {
   if (t.blocked) parts.push('·受阻')
   if (t.executionMode === 'scheduled') parts.push('·定时')
   if (t.speed === 'fast') parts.push('·快速')
-  if (t.permissionMode !== undefined) parts.push(`·权限 ${t.permissionMode}`)
+  if (t.permission !== undefined) parts.push(`·权限 ${t.permission}`)
   if (t.commentCount !== undefined && t.commentCount > 0) parts.push(`·评论${t.commentCount}`)
   if (t.checklist !== undefined && t.checklist.total > 0) parts.push(`·清单${t.checklist.done}/${t.checklist.total}`)
   if (t.lastExecutionOutcome !== undefined) parts.push(`·上次执行${t.lastExecutionOutcome}`)
@@ -94,14 +94,14 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
     `任务 ${t.id} 「${t.title}」`,
     `状态: ${t.status} (v${t.version}) · 紧急度: ${t.urgency} · 项目: ${t.workspaceId}${t.blocked ? ' · 受阻' : ''}`,
     `执行方式: ${t.execution.mode}${t.execution.cron !== undefined ? ` cron=${t.execution.cron}` : ''}`,
-    `隔离: ${t.isolation === 'none' ? '关闭（原目录执行）' : 'Git Worktree'}${t.branch !== undefined ? `（分支 ${t.branch}）` : ''}`,
+    `隔离: ${t.isolation === 'none' ? '关闭（原目录执行）' : 'Git Worktree'}${t.branch !== undefined ? `（分支 ${t.branch}）` : ''}${t.branches !== undefined ? `（多仓库镜像 ${Object.keys(t.branches).length + (t.branch !== undefined ? 1 : 0)} 个仓库）` : ''}`,
   ]
   const holder = isClaimedBy(t)
   if (holder !== undefined) lines.push(`认领: agent ${String(holder).slice(0, 24)}（持有期间其他会话不可移动）`)
   if (t.execution.nextRunAt !== undefined) lines.push(`下次触发: ${new Date(t.execution.nextRunAt).toISOString()}`)
   if (t.model !== undefined) lines.push(`固定模型: ${t.model.provider}/${t.model.model}${t.model.reasoningEffort !== undefined ? ` (思考强度: ${t.model.reasoningEffort})` : ''}`)
   if (t.speed !== undefined) lines.push(`速度: ${t.speed === 'fast' ? '快速' : '标准'}`)
-  if (t.permissionMode !== undefined) lines.push(`权限模式: ${t.permissionMode}`)
+  if (t.permission !== undefined) lines.push(`权限模式: ${t.permission}`)
   if (t.presetId !== undefined) lines.push(`执行模式: ${t.presetId}（未指定时为部署默认 preset）`)
   lines.push(`执行能力: ${requiredCapabilitiesOf(t).join(', ')}`)
   lines.push(`描述: ${t.description.length > 0 ? t.description : '（无）'}`)
@@ -376,7 +376,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       'Create a task on the board. Required: title, workspaceId (project), urgency (urgent/normal/relaxed). '
       + 'Optional: description, prompt (sent to a fresh session on execution), status (default todo), '
       + 'execution mode (claim|scheduled + cron), model {provider, model, reasoningEffort?} to pin executions to a model, '
-      + 'speed (standard|fast), and permissionMode (read-only|workspace-write|danger-full-access). '
+      + 'speed (standard|fast), and permission (read-only|workspace-write|danger-full-access; legacy alias permissionMode is also accepted). '
       + 'Do not track trivial requests as tasks.',
     parameters: {
       title: { type: 'string', required: true, description: 'Short imperative line (1..200 chars).' },
@@ -408,9 +408,14 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         type: 'string',
         description: 'Taskboard speed preference: standard | fast. It is preserved as an adapter-facing execution hint.',
       },
+      permission: {
+        type: 'string',
+        description: 'Harness file-permission preset: workspace-write (default) | read-only | danger-full-access.',
+      },
+      // Legacy fork alias; canonicalized onto `permission`.
       permissionMode: {
         type: 'string',
-        description: 'Harness file-permission mode: read-only | workspace-write | danger-full-access.',
+        description: 'Legacy alias of permission (read-only | workspace-write | danger-full-access).',
       },
       isolation: {
         type: 'string',
@@ -444,6 +449,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       execution?: { mode?: string; cron?: string }
       model?: { provider?: string; model?: string; reasoningEffort?: string }
       speed?: string
+      permission?: string
       permissionMode?: string
       isolation?: string
       presetId?: string
@@ -463,7 +469,9 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         const execution = normalizeExecution(args.execution ?? {}, deps.now())
         const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
         const speed = args.speed === undefined ? undefined : asTaskSpeed(args.speed)
-        const permissionMode = args.permissionMode === undefined ? undefined : asPermissionMode(args.permissionMode)
+        const permission = args.permission === undefined
+          ? (args.permissionMode === undefined ? undefined : asPermission(args.permissionMode))
+          : asPermission(args.permission)
         // 0.5.0: an omitted isolation is MATERIALIZED from the board setting
         // (看板设置) at creation, so later setting changes never rewrite
         // existing tasks.
@@ -487,7 +495,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           model,
           requiredCapabilities: [TASKBOARD_CAPABILITY],
           ...(speed !== undefined ? { speed } : {}),
-          ...(permissionMode !== undefined ? { permissionMode } : {}),
+          ...(permission !== undefined ? { permission } : {}),
           isolation,
           ...(presetId !== undefined ? { presetId } : {}),
           ...(checklist !== undefined ? { checklist } : {}),

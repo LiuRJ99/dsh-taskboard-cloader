@@ -15,7 +15,9 @@ import type {
   ImportCommitResponse,
   ImportPreviewResponse,
   MergeBranchResponse,
+  ModelCatalogResponse,
   MoveTaskBody,
+  PromptCompletionsResponse,
   RejectTaskBody,
   RunTaskBody,
   SettingsResponse,
@@ -81,7 +83,7 @@ export interface TaskboardClient {
   /** Clean up one orphan worktree directory (task no longer in the ledger). */
   worktreeCleanup(workspaceId: string, taskId: string): Promise<{ cleaned: true; path: string }>
   /** Diff view: one execution's commit or changed path (read-only, capped). */
-  diff(taskId: string, query: { execution: string; commit?: string; path?: string }): Promise<DiffResponse>
+  diff(taskId: string, query: { execution: string; commit?: string; path?: string; repo?: string }): Promise<DiffResponse>
   /** Import dry-run: classify the uploaded ledger against the live one. */
   importPreview(file: unknown): Promise<ImportPreviewResponse>
   /** Commit an import (merge upserts; replace swaps the whole ledger, backing it up first). */
@@ -96,6 +98,10 @@ export interface TaskboardClient {
   settings(): Promise<SettingsResponse>
   /** Replace board settings (whole-object semantics; affects new tasks only). */
   updateSettings(body: UpdateSettingsBody): Promise<SettingsResponse>
+  /** Prompt completions for skills and slash commands (0.5.5). */
+  promptCompletions(): Promise<PromptCompletionsResponse>
+  /** Model catalog and agent preset roster (0.5.5). */
+  modelCatalog(): Promise<ModelCatalogResponse>
   /** Subscribe to change frames; the disposer stops the stream. */
   stream(onChange: (event: ChangeEvent) => void, onGap: () => void): () => void
 }
@@ -122,6 +128,7 @@ export function createClient(): TaskboardClient {
       const params = new URLSearchParams({ execution: query.execution })
       if (query.commit !== undefined) params.set('commit', query.commit)
       if (query.path !== undefined) params.set('path', query.path)
+      if (query.repo !== undefined) params.set('repo', query.repo)
       return get<DiffResponse>(`/dsh-taskboard/tasks/${encodeURIComponent(taskId)}/diff?${params.toString()}`)
     },
     importPreview: file => post('/dsh-taskboard/import/preview', file),
@@ -131,6 +138,8 @@ export function createClient(): TaskboardClient {
     templateDelete: id => post('/dsh-taskboard/templates/delete', { id }),
     settings: () => get<SettingsResponse>('/dsh-taskboard/settings'),
     updateSettings: body => post('/dsh-taskboard/settings/update', body),
+    promptCompletions: () => get<PromptCompletionsResponse>('/dsh-taskboard/prompt-completions'),
+    modelCatalog: () => get<ModelCatalogResponse>('/dsh-taskboard/model-catalog'),
     stream(onChange, onGap) {
       const es = new EventSource('/dsh-taskboard/events')
       let revision: number | undefined

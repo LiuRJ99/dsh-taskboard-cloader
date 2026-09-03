@@ -11,7 +11,7 @@ A **task board plugin for DeepSeek Harness**: humans create cards, agents claim 
 - **10 `taskboard_*` agent tools** plus code-level protocol gates: agents can never move a task to *done*, held tasks cannot be snatched away, cross-project claims are rejected
 - **Optional Lazy Gate integration**: when `dsh-tool-lazy-gate` is enabled for `taskboard`, the user-only `/taskboard` skill unlocks the `taskboard_*` tools and `plugin:dsh-taskboard` protocol section; the association is published by this plugin's Skill metadata
 - **Execution**: manual or cron-scheduled (host-side scheduling keeps firing with the browser closed); every execution opens a brand-new session inside the task's project, optionally pinned to a model and preset
-- **Git worktree isolation**: each run works on its own worktree + dedicated task branch, one-click merge at acceptance; non-git projects fall back automatically
+- **Git worktree isolation**: each run works on its own worktree + dedicated task branch, one-click merge at acceptance; parallel multi-repo workspaces are mirrored whole (0.6.3); non-git projects fall back automatically
 - **Efficient acceptance**: DoD acceptance checklists (agent checks items off with evidence), structured execution reports (summary / changed files / checks / artifacts / risks), in-board diff viewer
 - **Better Sidebar integration**: when `dsh-better-sidebar` (≥ 0.16.1) is present, the board registers as a native tab with panel/free-window placement, current-session `@` references, and session-workspace-guarded file opening; without it, the legacy DOM board remains available
 - **Live board**: SSE real-time refresh, five-column flow, persisted filters & sorting, JSON import/export, task templates
@@ -160,6 +160,10 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - Create/edit modal: project, model (with reasoning effort), urgency, execution mode, cron with live validation & next-run preview, isolation toggle, checklist editor
 - Detail panel: status transitions (*done* is human-only; completing with unchecked items asks for confirmation and shows the count), agent/user comment thread, execution history (newest first; session IDs open the execution session on click; deleted/archived targets get distinct notices), stop execution, worktree isolation block (branch / commits / change stats / merge & cleanup), execution report block, acceptance checklist block
 - Quick actions on In Review cards: "✓ Done" one-click accept, "✗ Send back" returns to Todo with an optional reason agents read before starting
+- **Two-column wide task form + slash completion (0.6.0)**: the create/edit modal goes two-column (core fields and execution config on the left, description and prompt on the right); typing `/` in the description/prompt pops command and skill completion (↑↓/Enter/Tab/Esc keyboard navigation; host-discovered items merge over the built-in list); Markdown images in description/prompt render as thumbnails with a click-to-zoom lightbox
+- **Execution permission (0.6.0)**: per-task three-way execution permission (📁 workspace write / 🔒 read-only / ⚡ full access) picked in the form plus a default-permission board setting; permission badges on cards, the detail panel and the template list
+- **Bilingual UI, zh/en (0.6.0)**: every piece of board copy follows DSH's "Settings - General - Language" switch live (no reload); the preference is stored by DSH itself (locale.preference in settings.yaml) and the plugin adds no settings of its own; environments without the DSH locale service fall back to the browser language
+- **External session auto-sync (0.5.5)**: with "🔄 auto-capture sessions" enabled in board settings, sessions created directly in a workspace spawn task cards automatically — the project is resolved from the session's cwd and the first user message becomes the title/description; running sessions enter In Progress with the session bound (one-click jump works), successful turns settle into In Review, failures fall back to Todo; subagent sessions are filtered too since 0.6.0; off by default
 - **One-click session jump (0.5.4)**: task cards get a "🤖 sessionId ↗" button, the detail panel a "🤖 Jump to session" button, and the holder chip is clickable too — straight to the running (or most recent) execution's session (the board collapses over it); archived / deleted / unavailable sessions each get a precise notice
 - **Remember the last model (0.5.4)**: the new-task form brings back the last chosen model and reasoning effort (template prefill and editing are unaffected)
 - **DoD acceptance checklists (0.4.0)**: define acceptance criteria at creation (≤30 items); agents add/tick items via `taskboard_checklist` (with evidence notes); users tick them directly in the detail panel; unchecked items glow red while In Review and the card shows a "☑ n/m" badge (red until all ticked); checklist editing manages the whole group in the form (tick states and evidence preserved)
@@ -176,6 +180,7 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - Manual runs or cron schedules: each execution opens a brand-new session in the task's project (clean context, optional model, optional preset); two opening messages arrive in the same turn — the plugin context line carries the task frame and hand-off protocol (including failure fallback guidance), while the card payload (title+description+prompt) arrives as a normal user message
 - **Per-task presets (0.3.3)**: an "execution mode (preset)" dropdown in the create/edit form — execution sessions are composed from that preset (tool sets and persona come from it, matching how the GUI composes new sessions); defaults to the deployment default preset, or pick "follow deployment default"; a broken preset fails the execution outright and records why in the execution history (no half-composed sessions); changeable anytime, effective next round
 - **Git worktree isolated execution (0.3.0)**: per-task toggle (since 0.5.0 the default for newly created tasks comes from Board Settings; factory default runs in place). Every execution happens on a dedicated worktree at `<project>/.dsh-worktrees/<taskId>`, branch `task/<title>+<taskId>` (fixed after first creation; renaming doesn't rename branches). The executing session stays rooted at the project directory (grouping, tools, and the file sandbox fully available — DSH requires session cwd === workspace root, fixed in 0.3.2), and the worktree path plus boundary rules are spelled out in the opening instructions. Settlement collects commit lists / uncommitted-changes warnings / change stats automatically. Non-git projects or missing git degrade gracefully to in-place execution (the reason is recorded; the ledger and execution flow never fail because of git). At acceptance: one-click `--no-ff` merge into the main working tree (dirty tree / conflicts reported verbatim, never auto-resolved), worktree deletion (refused with uncommitted changes), optional branch deletion. "↻ Resume" continues on the existing worktree/branch (previous commits and edits kept)
+- **Multi-repo mirror isolation (0.6.3)**: when a workspace holds several parallel git repositories (a root repo plus nested independent ones), worktree mode upgrades into a whole-workspace task mirror — a bounded scan discovers every repo (depth ≤3, capped at 8, 60s cache; submodule / linked-worktree shapes are skipped), each repo gets its own worktree on the same task branch mounted at its relative path under `<project>/.dsh-worktrees/<taskId>/`; the session framing lists every repo's mirror path and branch and marks un-mirrored repos do-not-touch; commit evidence, diff viewing (`?repo=`) and merging (per-repo `--no-ff`, one conflict never blocking the others, per-repo summaries) all work per repo; mirror cleanup aggregates dirty checks across all repo worktrees and removes children before the root; the new `branches` / `repos` record fields are purely additive — single-repo behavior and old data are untouched; container workspaces whose root repo tracks sub-repos as gitlinks (embedded repos) are fully supported too — the structural noise nested child mirrors produce in the root mirror's status (untracked directories / gitlink drift) is exempted automatically from evidence collection, merge clean-checks, and mirror removal; the create-task form shows an "mirrors N repos" note on multi-repo workspaces, and pure-container workspaces (root not a repo, parallel sub-repos only) can pick worktree isolation too
 - **Board settings (0.5.0)**: "🛠 Settings" in the toolbar — choose how new tasks execute by default (🌿 Worktree isolation / 📁 run in place; factory default is the latter). Saving applies to newly created tasks; later changes never affect existing ones
   > Worktree isolation is a collaboration convention, not a sandbox: execution sessions hold full tool permissions, isolation rests on the branch convention, and it is not suitable for running untrusted code.
 - Host-side scheduling: fires with the browser closed; missed windows are skipped, never replayed
@@ -205,7 +210,7 @@ Data files (all under the DSH home directory; uninstalling the plugin keeps them
 | `dsh-taskboard.json` | Task ledger (all tasks / executions / comments) |
 | `dsh-taskboard-templates.json` | Task templates |
 | `dsh-taskboard.json.backup-<timestamp>` | Automatic backup taken before a full-replace import |
-| `<project>/.dsh-worktrees/<taskId>/` | Per-task execution worktree |
+| `<project>/.dsh-worktrees/<taskId>/` | Per-task execution worktree (multi-repo workspaces: a whole-workspace mirror with one sub-worktree per repo) |
 
 Export a full backup anytime with "⬇ JSON" in the toolbar, or the task list as CSV ("⬇ Export", BOM included, opens straight in Excel).
 
@@ -238,12 +243,51 @@ That's pnpm build authorization — add the key printed in the error to `allowBu
 git clone https://github.com/cloader/dsh-taskboard.git
 cd dsh-taskboard
 npm install && npm run build    # dual build: host ESM + client CJS
-npm test                        # full vitest suite (~150 cases)
+npm test                        # full vitest suite (266 cases, incl. the real-git mirror integration spec)
 node tests/manual-git-e2e.mjs   # real-git end-to-end manual test (full worktree chain + resume + diff viewer)
 node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
+
+### 0.6.4
+
+- **Fix: the UI language could freeze to English ([#16](https://github.com/cloader/dsh-taskboard/issues/16))**: when the client activated before the locale service, the one-shot fallback read the server-rendered static `<html lang="en">` and never retried — it now follows `<html lang>` changes live and briefly polls for the locale service, attaching it the moment it provides
+
+### 0.6.3
+
+- **Worktree mirror mode for parallel multi-repo workspaces**: worktree isolation upgrades into a whole-workspace task mirror — a bounded scan (depth ≤3, capped at 8 repos, 60s cache; submodule / linked-worktree shapes skipped) discovers every parallel git repo, gives each its own worktree on the same task branch mounted at its relative path under `<project>/.dsh-worktrees/<taskId>/`; commit evidence, diff viewing (`?repo=`), merging (per-repo `--no-ff`, one conflict never blocking the others) and cleanup (aggregated dirty checks, children before root) all work per repo, and un-mirrored repos are marked do-not-touch in the framing; the new `branches` / `repos` fields are purely additive — single-repo behavior and old data untouched
+- **Container workspaces (root repo tracking sub-repos as gitlinks) fully supported**: the structural noise nested child mirrors produce in the root mirror's status (untracked directories / gitlink drift `M sub-repo`) is exempted from evidence collection, merge clean-checks, and mirror-removal pre-checks — previously a fully committed mirror was refused forever by every cleanup route on real git and settlement evidence showed phantom uncommitted changes; a real-git end-to-end spec (untracked + gitlink shapes) locks the loop
+- **DSH STORE compatibility matrix extended to the 0.1.2-alpha line**: 0.1.2-alpha.2 / alpha.3 / alpha.4 each declared `compatible` (every version smoke-tested on a disposable profile: install → link-mount the plugin → headless `dsh web` → route probes at HTTP 200 → uninstall), clearing the "no compatible verdict for the latest 3 official releases" temporary unlisting ([DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321))
+
+### 0.6.2
+
+- **Fix the two DSH STORE listing blockers ([DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321))**: the client bundle is minified (320,851 → 203,793 bytes, back under the 256 KiB per-file review bound); `package.json` gains the `dsh.compatibility.dshReleases` matrix and `engines.node >= 22`; a client size-budget test prevents silent regression — build & manifest remediation only, no functional changes
+
+### 0.6.1
+
+- **Fix: the `/` completion popup was clipped by the task-modal scroll container**: the popup portals to document.body, fixed-anchored to the textarea, so the scrollable form body can no longer clip it; flips below when tight, clamps at the edges, and follows scrolling/resizes live
+- **Fix: arrow-key selection did not scroll the completion list**: the highlighted item is scrolled fully into view (wrap-around included) by adjusting the list's own scrollTop, never the modal body behind the popup
+### 0.6.0
+
+- **Two-column wide task form, `/` slash completion and execution-permission picker: [@jw5555555555](https://github.com/jw5555555555) ([#14](https://github.com/cloader/dsh-taskboard/pull/14))**
+  - The create/edit modal becomes a two-column wide layout (core fields and execution config on the left, description and execution prompt on the right)
+  - The description and prompt inputs gain `/` slash autocomplete for slash commands and agent skills (↑↓ navigate, Enter/Tab pick, Esc close; host-discovered commands/skills merge over the built-in list)
+  - New per-task three-way "execution permission" picker (📁 workspace write / 🔒 read-only / ⚡ full access) plus a default-permission board setting, with permission badges on cards and the detail panel
+  - Markdown images in description/prompt render as clickable thumbnails with a lightbox
+  - Fixes model-catalog discovery (falls back to the host API when the runtime face is missing)
+  - Session auto-sync now filters out subagent sessions to avoid spurious cards
+- **Bilingual UI following the DSH language setting**
+  - All board copy (columns / cards / detail / form / templates / import-export / settings / diagnostics / sidebar entry) now consumes the DSH locale service — switching zh/en under "Settings → General → Language" applies live without a reload
+  - The preference stays stored by DSH itself (locale.preference in settings.yaml); the plugin adds no settings of its own
+  - Deployments without the locale service fall back to the browser language (zh on Chinese browsers, en otherwise)
+  - Adds src/client/i18n/ (zh/en dictionaries + a thin adapter + a useT hook); labels.ts becomes enum key maps
+  - zh/en key parity enforced three ways (compile-time types, unit tests, a source scan)
+  - Also fixes the PLUGIN_VERSION drift against package.json (0.5.4 → 0.5.5)
+
+### 0.5.5
+
+- **Sync external workspace sessions onto the board: [@jw5555555555](https://github.com/jw5555555555) ([#13](https://github.com/cloader/dsh-taskboard/pull/13))**: board settings gain an "auto-sync external sessions" toggle (off by default) — once enabled, sessions created directly in a workspace spawn task cards automatically: the project is resolved from the session's cwd, and the first user message plus the session title become the task's description and title; running sessions enter In Progress with the session ID bound (cards gain one-click jump), successful turns settle into In Review with a system comment, failures return to Todo; the board's own internal execution sessions are filtered out to avoid duplicate cards; multi-turn continuations keep the same card
 
 ### 0.5.4
 
@@ -251,12 +295,6 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 - **New-task form remembers the last model, with reasoning-effort support: [@jw5555555555](https://github.com/jw5555555555) ([#11](https://github.com/cloader/dsh-taskboard/pull/11))**: create mode brings back the last chosen model and effort (template prefill and editing are unaffected); a model can pin a reasoning effort (e.g. low/medium/high) passed down to the execution session; reasoning-capable models read their available efforts from the DSH model catalog
 - **Column sort gains "by title": [@Amoss-1](https://github.com/Amoss-1) ([#4](https://github.com/cloader/dsh-taskboard/pull/4))**: numeric-aware comparison keeps numeric prefixes in true numeric order (`01 < 02 < 10 < 90` — plain string comparison would put `10` before `02`); the choice persists with the rest of the view state
 - Interface polish: selects and inputs adapt to light/dark themes (DSH theme variables + color-scheme); template manager dialog layout improvements
-
-### 0.5.3
-
-- **The execution prompt is now append-style**: a custom prompt no longer replaces the opening instructions wholesale — the session receives "title + description + prompt", so context written in the description is no longer dropped; the create/edit form copy and the `taskboard_create` tool description were updated to match
-- **New built-in "New feature" template**: placed before "Bug fix" — title prefix "New:", four steps (clarify requirements → implement → add tests → run suites), with a three-item acceptance checklist
-- **"Bug fix" template first line now reads "fix the issues above"**: the description now reaches the session before the prompt, so "above" is the right pointer
 
 > 📜 For the complete history of earlier versions, see [changelog.md](changelog.md) (in Chinese).
 

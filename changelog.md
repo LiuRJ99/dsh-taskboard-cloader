@@ -1,5 +1,116 @@
 # 更新日志 / Changelog
 
+### 0.6.4
+
+- **修复：client 激活早于 locale 服务时界面语言被永久定型为英文（[#16](https://github.com/cloader/dsh-taskboard/issues/16)，@imroc 报告并验证方案）**：taskboard client 零依赖、先于 `dsh-client-locale` 激活，`initI18n` 拿不到服务时的一次性回退检测撞上服务端渲染的静态 `<html lang="en">`，此后无重试。修复：无服务分支增加「迟挂载」——MutationObserver 监听 `<html lang>` 变化即时重新检测发布（locale 运行时激活同步 lang 后立即跟随），并以 250ms×8 轮询重试 `ctx.get('locale')`、服务出现即正常订阅接管；dispose 全量拆除
+
+**English:**
+
+- **Fix: the board language froze to English when the client activated before the locale service ([#16](https://github.com/cloader/dsh-taskboard/issues/16), reported and fix verified by @imroc)**: the taskboard client has zero service deps and activates BEFORE `dsh-client-locale` provides; the one-shot fallback detection in `initI18n` then hit the server-rendered static `<html lang="en">` and never retried. Fix: a LATE ATTACH on the no-service path — a MutationObserver on `<html lang>` re-detects and publishes the moment the locale runtime syncs it, and a 250ms×8 poll retries `ctx.get('locale')`, attaching (and subscribing to) the real service as soon as it exists; dispose tears everything down
+
+### 0.6.3
+
+- **并列多仓库工作空间的 Worktree 镜像模式**
+  - Worktree 隔离升级为「任务镜像」：自动发现工作区内的并列 git 仓库（根仓库 + 有界扫描嵌套仓库，深度 ≤3、上限 8 个、60s 缓存），每个仓库各自建立同名任务分支的 worktree，按其在工作区中的相对路径挂进 `<项目>/.dsh-worktrees/<任务ID>/`，形成结构同构的任务镜像
+  - 每仓库独立的提交证据（commits / 未提交修改 / diff 统计）与合并：详情页「合并」按仓库顺序逐个 `--no-ff` 合并，一个仓库冲突不阻断其他仓库，系统评论与弹窗按仓库汇总结果（✓ 已合并 / ⟲ 无新提交 / ✗ 失败原因）
+  - 部分失败不破界：某仓库镜像准备失败仅将其从镜像中剔除并在执行引导中标注「禁改」，首个（根）仓库失败仍整体降级原目录执行；仓库数超上限整体降级并注明原因
+  - Diff 查看器支持 `?repo=` 按仓库查看：镜像 worktree 优先，回落该仓库主检出；任务镜像清理（删 worktree / 物理清除 / 孤儿清理）聚合所有仓库的未提交检查后「先子后根」删除，任一仓库有未提交修改则整体拒绝
+  - 任务记录新增 `branches`（各仓库分支 pin）与执行记录 `repos`（各仓库证据），纯附加字段——单仓库工作区行为、账本格式、旧数据完全不变
+  - 不支持 git submodule / linked worktree 形态的嵌套目录（发现阶段跳过）
+  - 镜像清理与证据的评审修复：根镜像的 dirty 检查/证据采集/合并 clean 检查现在豁免镜像结构性噪声（嵌套子镜像的 untracked 目录与 gitlink 漂移 `M 子仓`）——此前真实 git 下已全部提交的镜像仍被判 dirty，三条清理路由永远拒绝、settle 证据永远显示有未提交修改、容器工作区（根仓库以 gitlink 跟踪子仓）根分支无法合并；镜像删除修正为真正的「先子后根」并在聚合预检查通过后对根镜像以豁免+force 移除；新增真实 git 端到端集成测试（`tests/mirror-real-git.spec.ts`）覆盖整条闭环
+  - DSH STORE 复检修复：`dsh.compatibility.dshReleases` 兼容矩阵扩展至 0.1.2-alpha 线（0.1.2-alpha.2 / alpha.3 / alpha.4 逐项声明 `compatible`），解除「最新 3 个官方版本无兼容结论」的暂时下架（[DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321)）；三个版本均以一次性 Profile 实测通过——独立 DSH_HOME 安装对应 dsh 版本 + link 挂载本插件 → 无头启动 `dsh web` → `/dsh-taskboard/state`、`/dsh-taskboard/workspaces` 探活 HTTP 200 → 卸载
+  - 表单镜像徽章与纯容器工作区修复：新建任务表单的 Worktree 隔离选项在多仓库工作区显示「将自动整区镜像 N 个仓库」提示（workspaces 路由新增 `repoCount`）；工作区可用性判定从「根目录是 git 仓库」扩展为「根仓库或扫描到并列嵌套仓库」——纯容器工作区（根非仓库、只有并列子仓）不再被误标「非 git 仓库」而禁用 worktree 选项（host 端 prepareMirror 本就支持该形态）；看板设置默认隔离的 worktree 说明补充多仓库自动镜像
+
+**English:**
+
+- **Worktree mirror mode for parallel multi-repo workspaces**
+  - Worktree isolation becomes a whole-workspace task mirror: the plugin discovers every parallel git repository in the workspace (root repo plus a bounded nested scan — depth ≤3, capped at 8 repos, 60s cache) and prepares one worktree per repo on the same task branch, mounted at its relative path under `<project>/.dsh-worktrees/<taskId>/`
+  - Per-repo commit evidence (commits / dirty files / diff stats) and merging: the detail-page merge runs `--no-ff` per repo sequentially — one repo's conflict never blocks the others; the system comment and the alert summarize per-repo outcomes (✓ merged / ⟲ nothing to merge / ✗ failed)
+  - Partial failure never blurs the boundary: a repo whose mirror preparation fails is dropped from the mirror and marked do-not-touch in the session framing; a failing first (root) repo still degrades the whole run; exceeding the repo cap degrades with a readable note
+  - The diff viewer accepts `?repo=` per repo (mirror worktree first, falling back to that repo's main checkout); mirror cleanup (worktree-remove / purge / orphan cleanup) aggregates dirty checks across ALL repo worktrees and removes children before the root — any dirty repo refuses everything
+  - Additive records only: `TaskRecord.branches` and `ExecutionRecord.repos` are new optional fields — single-repo workspaces keep byte-identical behavior, ledger format, and old data
+  - Nested directories in submodule / linked-worktree form (.git as a file) are skipped by discovery
+  - Review fixes for mirror cleanup and evidence: the root mirror's dirty checks, evidence collection, and merge clean-check now EXEMPT mirror-structural noise (untracked nested child worktrees and gitlink drift `M sub-repo`) — on real git a fully committed mirror still read as dirty, every cleanup route refused forever, settlement evidence always showed phantom uncommitted changes, and container workspaces (root repo tracking sub-repos as gitlinks) could never merge the root branch; mirror removal is now genuinely children-first and force-removes the root through that exempted noise once the aggregated real-dirty check has passed; a new real-git end-to-end integration test (`tests/mirror-real-git.spec.ts`) covers the whole loop
+  - DSH STORE recheck fix: the `dsh.compatibility.dshReleases` matrix now covers the 0.1.2-alpha line (0.1.2-alpha.2 / alpha.3 / alpha.4 each declared `compatible`), clearing the "no compatible verdict for the latest 3 official releases" temporary unlisting ([DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321)); all three verified on disposable profiles — per-version install with an isolated DSH_HOME + link-mounted plugin → headless `dsh web` → `/dsh-taskboard/state` and `/dsh-taskboard/workspaces` probed at HTTP 200 → uninstalled
+  - Form mirror badge + pure-container fix: the create-task form's worktree option now shows an "automatically mirrors N repos" note on multi-repo workspaces (the workspaces route gains `repoCount`); workspace availability widens from "the root is a git repo" to "a root repo OR any parallel nested repo" — pure-container workspaces (root not a repo, parallel sub-repos only) are no longer mislabeled non-git with the worktree option locked away (prepareMirror has supported that shape all along); the board-settings worktree hint mentions the auto-mirror
+
+### 0.6.2
+
+- **修复：DSH STORE 收录的两个确定性阻断（[DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321)）**
+  - client 打包开启压缩（rolldown minify）：wrap 后 `lib/client.js` 从 320,851 字节降至 203,793 字节，重新低于 DSH STORE 单文件 262,144 字节（256 KiB）审核上限，解除「更新暂缓」
+  - `package.json` 新增 `dsh.compatibility.dshReleases` 逐版本兼容声明（`0.1.1-rc.2: compatible`；`0.1.0-rc.8` / `0.1.1-rc.1: unknown`），并声明 `engines.node >=22`，解除「兼容性暂时下架」
+  - 新增 `tests/client-size-budget.spec.ts` 体积预算测试：client 产物超出 256 KiB 上限减 16 KiB 预算线即测试失败，防止未来增长无声撞线
+  - 无功能变化，纯构建配置与清单整改
+
+**English:**
+
+- **Fix: the two deterministic blockers to the DSH STORE listing ([DSH-Store#321](https://github.com/AI-Scarlett/DSH-Store/issues/321))**
+  - The client bundle is now minified (rolldown minify): the wrapped `lib/client.js` shrinks from 320,851 to 203,793 bytes, back under DSH STORE's 262,144-byte (256 KiB) per-file review bound — clearing "update deferred"
+  - `package.json` now declares per-release `dsh.compatibility.dshReleases` (`0.1.1-rc.2: compatible`; `0.1.0-rc.8` / `0.1.1-rc.1: unknown`) plus `engines.node >=22`, clearing "compatibility unlisted"
+  - New `tests/client-size-budget.spec.ts` size-budget test fails the suite whenever the client artifact exceeds the 256 KiB bound minus a 16 KiB headroom, so future growth cannot silently re-trip the gate
+  - No functional changes; build configuration and manifest remediation only
+
+### 0.6.1
+
+- **修复：`/` 快捷补全弹层被任务弹窗滚动容器裁剪**
+  - 弹层改为 portal 到 document.body 并以 fixed 定位锚定输入框的视口矩形，滚动容器再也不会裁掉命令列表
+  - 优先向上展开，上方空间不足自动下翻；贴边时收拢最大高度，由列表内部滚动兜底
+  - 弹层打开期间跟随滚动与窗口缩放实时重定位（捕获阶段监听，覆盖表体内部滚动）
+- **修复：键盘 ↑/↓ 选择补全项时列表不滚动**
+  - 高亮项越出可视区时自动滚动列表使其完整可见（含首尾 wrap-around 跳变）
+  - 直接调整列表自身 scrollTop，不用 scrollIntoView，避免连带滚动弹层后面的模态表体
+
+**English:**
+
+- **Fix: the `/` completion popup was clipped by the task-modal scroll container**
+  - The popup now portals to document.body, fixed-positioned from the textarea's viewport rect — the scrollable form body can no longer clip the command list
+  - Opens above by preference and flips below when the top is tight; clamps its max height at the edges with the list scrolling internally
+  - Repositions live while open on scrolling and viewport resizes (a capture-phase listener covers the modal body's own scrolling)
+- **Fix: arrow-key selection did not scroll the completion list**
+  - The keyboard-highlighted item is scrolled fully into view automatically, including wrap-around jumps
+  - Adjusts the list's own scrollTop directly instead of scrollIntoView, which would also scroll the modal body behind the popup
+### 0.6.0
+
+- **任务弹窗左右双栏宽屏布局、输入框 / 快捷补全与执行权限选择： [@jw5555555555](https://github.com/jw5555555555)（[#14](https://github.com/cloader/dsh-taskboard/pull/14)）**
+  - 新建/编辑弹窗升级为左右双栏宽屏布局（左栏核心字段与执行配置、右栏描述与执行 Prompt）
+  - 描述与 Prompt 输入框支持输入 `/` 快捷补全 Slash 命令与 Agent 技能（↑↓ 选择、Enter/Tab 确认、Esc 关闭，宿主动态发现的命令技能与内置清单合并）
+  - 新增任务级「执行权限」三档选择（📁 可写入工作区 / 🔒 仅可查看 / ⚡ 完全权限），看板设置同步新增默认执行权限，卡片与详情页显示权限徽章
+  - 描述与 Prompt 中的 Markdown 图片渲染为可点击缩略图并支持灯箱放大
+  - 修复模型列表发现（运行时缺失时回落宿主 API）
+  - 会话自动同步过滤子代理会话，避免子会话误建卡
+- **界面中英双语，跟随 DSH 语言设置**
+  - 看板全部界面文案（列头 / 卡片 / 详情 / 表单 / 模板 / 导入导出 / 设置 / 诊断 / 侧边栏入口）接入 DSH locale 服务，「设置 → 通用设置 → 语言」切换 zh/en 即时生效（无需刷新）
+  - 语言偏好由 DSH 统一存储（settings.yaml 的 locale.preference），插件自身不新增任何配置
+  - 无 locale 服务的部署按浏览器语言自动降级（中文环境 zh，其余 en）
+  - 新增 src/client/i18n/（zh/en 双语字典 + 轻量适配器 + useT hook），labels 枚举文案改为键映射
+  - 字典键集中英强制一致（编译期类型 + 单测 + 源码扫描三重校验）
+  - 顺带修正 PLUGIN_VERSION 与 package.json 的版本漂移（0.5.4 → 0.5.5）
+
+**English:**
+
+- **Two-column wide task form, `/` slash completion and execution-permission picker: [@jw5555555555](https://github.com/jw5555555555) ([#14](https://github.com/cloader/dsh-taskboard/pull/14))**
+  - The create/edit modal becomes a two-column wide layout (core fields and execution config on the left, description and execution prompt on the right)
+  - The description and prompt inputs gain `/` slash autocomplete for slash commands and agent skills (↑↓ navigate, Enter/Tab pick, Esc close; host-discovered commands/skills merge over the built-in list)
+  - New per-task three-way "execution permission" picker (📁 workspace write / 🔒 read-only / ⚡ full access) plus a default-permission board setting, with permission badges on cards and the detail panel
+  - Markdown images in description/prompt render as clickable thumbnails with a lightbox
+  - Fixes model-catalog discovery (falls back to the host API when the runtime face is missing)
+  - Session auto-sync now filters out subagent sessions to avoid spurious cards
+- **Bilingual UI following the DSH language setting**
+  - All board copy (columns / cards / detail / form / templates / import-export / settings / diagnostics / sidebar entry) now consumes the DSH locale service — switching zh/en under "Settings → General → Language" applies live without a reload
+  - The preference stays stored by DSH itself (locale.preference in settings.yaml); the plugin adds no settings of its own
+  - Deployments without the locale service fall back to the browser language (zh on Chinese browsers, en otherwise)
+  - Adds src/client/i18n/ (zh/en dictionaries + a thin adapter + a useT hook); labels.ts becomes enum key maps
+  - zh/en key parity enforced three ways (compile-time types, unit tests, a source scan)
+  - Also fixes the PLUGIN_VERSION drift against package.json (0.5.4 → 0.5.5)
+
+### 0.5.5
+
+- **外部工作区会话自动同步看板： [@jw5555555555](https://github.com/jw5555555555)（[#13](https://github.com/cloader/dsh-taskboard/pull/13)）**：看板「设置」新增「自动同步工作区会话」开关（出厂默认关闭）——开启后，工作区直接新建的会话自动在看板生成任务卡片：按会话工作目录（cwd）映射到对应项目，取首条用户消息与会话标题作为任务的描述与标题；运行中自动进入「进行中」并绑定会话 ID（卡片可一键跳转），执行成功自动流转「待验收」并生成系统评论，异常退回「待办」；自动过滤看板自身创建的内部执行会话防止重复建卡；多轮续跑延续同一张卡片
+
+**English:**
+
+- **Sync external workspace sessions onto the board: [@jw5555555555](https://github.com/jw5555555555) ([#13](https://github.com/cloader/dsh-taskboard/pull/13))**: board settings gain an "auto-sync external sessions" toggle (off by default) — once enabled, sessions created directly in a workspace spawn task cards automatically: the project is resolved from the session's cwd, and the first user message plus the session title become the task's description and title; running sessions enter In Progress with the session ID bound (cards gain one-click jump), successful turns settle into In Review with a system comment, failures return to Todo; the board's own internal execution sessions are filtered out to avoid duplicate cards; multi-turn continuations keep the same card
+
 ### 0.5.4
 
 - **看板卡片与任务详情一键跳转执行会话： [@jw5555555555](https://github.com/jw5555555555)（[#11](https://github.com/cloader/dsh-taskboard/pull/11)）**：卡片元数据行新增「🤖 会话ID ↗」按钮、详情页顶部新增「🤖 跳转会话 ↗」按钮、持有者 Chip 可点击——进行中优先、其次最近一次执行对应的会话一键直达（看板自动收起）；已归档 / 已删除 / 会话服务不可用分别给出明确提示

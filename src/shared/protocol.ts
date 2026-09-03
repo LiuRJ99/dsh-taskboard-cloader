@@ -189,18 +189,8 @@ export const DEFAULT_ISOLATION: IsolationMode = 'none'
  * standard route remains unchanged when no adapter honors it. */
 export type TaskSpeed = 'standard' | 'fast'
 
-/** The three file-permission modes shown by the Harness access selector. */
-export type PermissionMode = 'read-only' | 'workspace-write' | 'danger-full-access'
-
 /** Every valid task speed. */
 export const TASK_SPEEDS: readonly TaskSpeed[] = ['standard', 'fast']
-
-/** Every valid permission mode, in the product's display order. */
-export const PERMISSION_MODES: readonly PermissionMode[] = [
-  'read-only',
-  'workspace-write',
-  'danger-full-access',
-]
 
 /** Validate an isolation value. */
 export function asIsolation(raw: string): IsolationMode {
@@ -223,14 +213,6 @@ export function asTaskSpeed(raw: string): TaskSpeed {
   return raw as TaskSpeed
 }
 
-/** Validate a Harness permission mode value. */
-export function asPermissionMode(raw: string): PermissionMode {
-  if (!PERMISSION_MODES.includes(raw as PermissionMode)) {
-    throw new Error(`permissionMode must be one of: ${PERMISSION_MODES.join(', ')}`)
-  }
-  return raw as PermissionMode
-}
-
 /** Maximum length for a user-defined template category label. */
 export const MAX_TEMPLATE_CATEGORY_LENGTH = 30
 
@@ -247,6 +229,42 @@ export function normalizeTemplateCategory(raw: unknown): string | undefined {
 }
 
 /**
+ * Execution permission preset (0.5.5). Matches DSH permission presets:
+ * - 'workspace-write': 可写入工作区 (factory default)
+ * - 'read-only': 仅可查看
+ * - 'danger-full-access': 完全权限
+ */
+export type PermissionMode = 'workspace-write' | 'read-only' | 'danger-full-access'
+
+/** Factory default permission preset (0.5.5). */
+export const DEFAULT_PERMISSION: PermissionMode = 'workspace-write'
+
+/** Canonical list of supported permission modes. */
+export const ALL_PERMISSIONS: readonly PermissionMode[] = ['workspace-write', 'read-only', 'danger-full-access']
+
+/** Validate and normalize a permission string into a valid {@link PermissionMode}. */
+export function asPermission(raw: unknown): PermissionMode {
+  if (typeof raw !== 'string') return DEFAULT_PERMISSION
+  const normalized = raw.trim()
+  if (normalized === 'workspace-write' || normalized === 'workspaceWrite') return 'workspace-write'
+  if (normalized === 'read-only' || normalized === 'readOnly') return 'read-only'
+  if (normalized === 'danger-full-access' || normalized === 'fullAccess') return 'danger-full-access'
+  throw new Error("permission must be 'workspace-write', 'read-only', or 'danger-full-access'")
+}
+
+/**
+ * Legacy alias (fork 0.5.x): normalize a Harness permission string with the
+ * same grammar as {@link asPermission}, accepting the historical
+ * `permissionMode` values. Kept only for migrating older ledgers/imports.
+ */
+export function asPermissionMode(raw: string): PermissionMode {
+  return asPermission(raw)
+}
+
+/** Legacy alias kept for fork-era importers. */
+export const PERMISSION_MODES: readonly PermissionMode[] = ALL_PERMISSIONS
+
+/**
  * Board-level settings persisted with the ledger (0.5.0). Only fields the
  * user explicitly set are present; absent fields follow factory defaults.
  */
@@ -255,6 +273,10 @@ export type BoardSettings = {
   defaultIsolation?: IsolationMode
   /** Category filtered into the + 新建任务 menu; absent = all categories. */
   templateMenuCategory?: string
+  /** Automatically capture external workspace sessions into the taskboard (default: false). */
+  syncExternalSessions?: boolean
+  /** Default permission preset applied when a NEW task is created without an explicit choice (0.5.5, default: 'workspace-write'). */
+  defaultPermission?: PermissionMode
 }
 
 /** Validate raw input into sanitized {@link BoardSettings} (unknown fields dropped). */
@@ -274,6 +296,15 @@ export function asBoardSettings(raw: unknown): BoardSettings {
     const category = normalizeTemplateCategory(e.templateMenuCategory)
     if (category !== undefined) out.templateMenuCategory = category
   }
+  if (e.syncExternalSessions !== undefined) {
+    if (typeof e.syncExternalSessions !== 'boolean') {
+      throw new Error('syncExternalSessions must be a boolean')
+    }
+    out.syncExternalSessions = e.syncExternalSessions
+  }
+  if (e.defaultPermission !== undefined) {
+    out.defaultPermission = asPermission(e.defaultPermission)
+  }
   return out
 }
 
@@ -290,6 +321,16 @@ export function effectiveTaskSpeed(task: Pick<TaskRecord, 'speed'>): TaskSpeed {
 /** Resolve the approval policy paired with the three file-permission modes. */
 export function approvalPolicyForPermissionMode(mode: PermissionMode): 'ask' | 'never' {
   return mode === 'danger-full-access' ? 'never' : 'ask'
+}
+
+/** The effective external session sync switch (board setting → factory default false). */
+export function defaultSyncExternalSessionsOf(settings?: BoardSettings): boolean {
+  return settings?.syncExternalSessions ?? false
+}
+
+/** The effective default permission preset for NEW tasks (board setting → factory default 'workspace-write'). */
+export function defaultPermissionOf(settings?: BoardSettings): PermissionMode {
+  return settings?.defaultPermission ?? DEFAULT_PERMISSION
 }
 
 /** How a task may run. */
@@ -431,6 +472,61 @@ export type CommentRecord = {
 /** One commit produced by an isolated execution (hash + subject). */
 export type CommitInfo = { hash: string; subject: string }
 
+// ---------------------------------------------------------------------------
+// Multi-repo mirror isolation (0.6.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Max repos ONE task mirror may cover (0.6.3): the workspace root repo plus
+ * its parallel nested repos. A workspace discovering more degrades the whole
+ * worktree run to the original directory (plan §4.1 — predictable, and never
+ * a half-built mirror).
+ */
+export const MAX_MIRROR_REPOS = 8
+
+/**
+ * Whether `rel` is a legal repo-path key (0.6.3): `''` = the workspace root
+ * repo; otherwise a relative forward-slash path with no traversal/absolute
+ * shape and no dot segments. These keys ride into filesystem joins
+ * (`<workspace>/<rel>`) and ledger maps — the same R4 paranoia as task ids.
+ */
+export function isValidRelRepoPath(rel: string): boolean {
+  if (rel === '') return true
+  if (rel.length === 0 || rel.length > 300) return false
+  if (/^[A-Za-z]:[\\/]/.test(rel) || rel.startsWith('\\\\') || rel.startsWith('/')) return false
+  const parts = rel.split('/')
+  return parts.every(p =>
+    p.length > 0 && p !== '.' && p !== '..' && !p.startsWith('.') && !/[\\:*?"<>|]/.test(p))
+}
+
+/**
+ * Per-repo isolation + evidence facts for one execution (0.6.3 multi-repo
+ * mirror). Present only when the mirror covers MORE than the workspace root
+ * repo alone (or has skipped repos) — a plain single-repo run keeps the
+ * legacy flat fields above, untouched, so old ledgers/clients stay blind to
+ * this. The root repo (when mirrored) ALSO dual-writes the flat fields.
+ */
+export type ExecutionRepoEvidence = {
+  /** Repo path relative to the workspace ('' = the workspace root repo). */
+  repo: string
+  /** The task branch checked out in this repo's worktree. */
+  branch: string
+  /** Absolute path of the repo's worktree inside the task mirror. */
+  worktreePath: string
+  /** HEAD of the task branch before the execution started. */
+  baseCommit?: string
+  /** HEAD at settlement. */
+  headCommit?: string
+  /** Commits between baseCommit and headCommit (capped, newest first). */
+  commits?: CommitInfo[]
+  commitsTotal?: number
+  /** Uncommitted changes at settlement (`status --porcelain` lines, capped). */
+  dirtyFiles?: string[]
+  dirtyFilesTotal?: number
+  diffStat?: string
+  changedFiles?: number
+}
+
 /**
  * The structured execution report an agent submits at handoff (0.4.0).
  * Commits/dirty/diff facts are host-collected git evidence — the report
@@ -498,6 +594,8 @@ export type ExecutionRecord = {
   diffStat?: string
   /** How many files differ between baseCommit and headCommit. */
   changedFiles?: number
+  /** Per-repo facts of a multi-repo mirror run (0.6.3; absent on single-repo runs). */
+  repos?: ExecutionRepoEvidence[]
   /** The agent's structured report, submitted via taskboard_execution_report. */
   report?: ExecutionReport
 }
@@ -529,8 +627,6 @@ export type TaskRecord = {
   requiredCapabilities?: TaskCapability[]
   /** Taskboard-owned speed preference; omitted = standard. */
   speed?: TaskSpeed
-  /** File-permission mode for the fresh execution session; omitted = deployment default. */
-  permissionMode?: PermissionMode
   /** Code isolation for executions (omitted = the worktree default; see {@link IsolationMode}). */
   isolation?: IsolationMode
   /**
@@ -541,6 +637,10 @@ export type TaskRecord = {
    */
   presetId?: string
   /**
+   * Execution permission preset (0.5.5; see {@link PermissionMode}).
+   */
+  permission?: PermissionMode
+  /**
    * Definition-of-Done acceptance checklist (0.4.0). Agents may append items
    * and check/uncheck them (with evidence); the GUI may edit the whole list.
    * Unchecked items highlight at review time; done stays user-only.
@@ -549,8 +649,17 @@ export type TaskRecord = {
   /**
    * The task branch fixed at the FIRST worktree creation (`task/<标题>+<taskId>`).
    * Renaming the task afterwards never changes it (history preservation).
+   * Multi-repo mirror runs (0.6.3): this stays the WORKSPACE ROOT repo's
+   * branch; every nested repo pins its own under {@link branches}.
    */
   branch?: string
+  /**
+   * Per-repo task branches of a multi-repo mirror task (0.6.3): repo path
+   * relative to the workspace (never `''` — the root uses {@link branch})
+   * → branch name. Pinned at the repo's FIRST successful worktree creation,
+   * same rename-proof semantics as {@link branch}.
+   */
+  branches?: Record<string, string>
   /**
    * The session currently holding the in-progress claim (explicit claim or a
    * live execution). Present only while `status === 'in_progress'`: any move
@@ -950,6 +1059,61 @@ function numOr(raw: Record<string, unknown>, key: string, fallback: number): num
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback
 }
 
+/** Evidence caps for imported per-repo facts (aligns the host's collect caps). */
+const IMPORT_COMMIT_CAP = 50
+const IMPORT_DIRTY_CAP = 100
+
+/**
+ * Sanitize an imported per-task branches map (0.6.3): legal repo keys only,
+ * non-empty branch strings, capped at {@link MAX_MIRROR_REPOS} entries.
+ * @returns undefined when nothing legal remains.
+ */
+export function normalizeBranchesMap(raw: unknown): Record<string, string> | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (Object.keys(out).length >= MAX_MIRROR_REPOS) break
+    if (typeof value !== 'string' || value.trim().length === 0 || value.length > 200) continue
+    if (key === '' || !isValidRelRepoPath(key)) continue
+    out[key] = value.trim()
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+/**
+ * Sanitize ONE imported per-repo evidence entry (0.6.3): rebuilds the record
+ * field by field, capping evidence arrays like the host's own collection.
+ * @returns undefined for a structurally illegal entry (dropped, not fatal).
+ */
+export function normalizeRepoEvidence(raw: unknown): ExecutionRepoEvidence | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const e = raw as Record<string, unknown>
+  if (typeof e.repo !== 'string' || !isValidRelRepoPath(e.repo)) return undefined
+  if (typeof e.branch !== 'string' || e.branch.length === 0 || e.branch.length > 200) return undefined
+  if (typeof e.worktreePath !== 'string' || e.worktreePath.length === 0 || e.worktreePath.length > 1000) return undefined
+  const commits = Array.isArray(e.commits)
+    ? e.commits.filter((c): c is CommitInfo =>
+        typeof c === 'object' && c !== null && typeof (c as CommitInfo).hash === 'string'
+          && typeof (c as CommitInfo).subject === 'string').slice(0, IMPORT_COMMIT_CAP)
+    : undefined
+  const dirtyFiles = Array.isArray(e.dirtyFiles)
+    ? e.dirtyFiles.filter((l): l is string => typeof l === 'string').slice(0, IMPORT_DIRTY_CAP)
+    : undefined
+  return {
+    repo: e.repo,
+    branch: e.branch,
+    worktreePath: e.worktreePath,
+    ...(typeof e.baseCommit === 'string' ? { baseCommit: e.baseCommit.slice(0, 100) } : {}),
+    ...(typeof e.headCommit === 'string' ? { headCommit: e.headCommit.slice(0, 100) } : {}),
+    ...(commits !== undefined && commits.length > 0 ? { commits } : {}),
+    ...(typeof e.commitsTotal === 'number' && Number.isFinite(e.commitsTotal) ? { commitsTotal: e.commitsTotal } : {}),
+    ...(dirtyFiles !== undefined && dirtyFiles.length > 0 ? { dirtyFiles } : {}),
+    ...(typeof e.dirtyFilesTotal === 'number' && Number.isFinite(e.dirtyFilesTotal) ? { dirtyFilesTotal: e.dirtyFilesTotal } : {}),
+    ...(typeof e.diffStat === 'string' ? { diffStat: e.diffStat.slice(0, 500) } : {}),
+    ...(typeof e.changedFiles === 'number' && Number.isFinite(e.changedFiles) ? { changedFiles: e.changedFiles } : {}),
+  }
+}
+
 /**
  * Validate ONE imported task record (pure): rebuilds it field by field with
  * the normal validators, minting missing ids and re-arming cron. Executions
@@ -1023,6 +1187,7 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
           ...(typeof xe.dirtyFilesTotal === 'number' ? { dirtyFilesTotal: xe.dirtyFilesTotal } : {}),
           ...(typeof xe.diffStat === 'string' ? { diffStat: xe.diffStat } : {}),
           ...(typeof xe.changedFiles === 'number' ? { changedFiles: xe.changedFiles } : {}),
+          ...(Array.isArray(xe.repos) ? { repos: xe.repos.slice(0, MAX_MIRROR_REPOS).map(normalizeRepoEvidence).filter((r): r is ExecutionRepoEvidence => r !== undefined) } : {}),
           ...(typeof xe.report === 'object' && xe.report !== null ? { report: normalizeExecutionReport(xe.report) } : {}),
         })
       }
@@ -1031,6 +1196,7 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
     const actorOf = (v: unknown): Actor => (typeof v === 'object' && v !== null && (v as Actor).kind === 'agent' && typeof (v as { sessionId?: unknown }).sessionId === 'string'
       ? { kind: 'agent', sessionId: (v as { sessionId: string }).sessionId }
       : { kind: 'user' })
+    const branchesMap = normalizeBranchesMap(e.branches)
     const task: TaskRecord = {
       id,
       title: normalizeTitle(strOr(e, 'title', '')),
@@ -1044,11 +1210,15 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
       requiredCapabilities: normalizeRequiredCapabilities(e.requiredCapabilities),
       ...(typeof e.model === 'object' && e.model !== null ? { model: normalizeModel(e.model) } : {}),
       ...(typeof e.speed === 'string' ? { speed: asTaskSpeed(e.speed) } : {}),
-      ...(typeof e.permissionMode === 'string' ? { permissionMode: asPermissionMode(e.permissionMode) } : {}),
+      // Fork 0.5.x legacy ledgers stored the mode under `permissionMode`;
+      // migrate onto the canonical `permission` spelling (same three values).
+      ...(typeof e.permissionMode === 'string' ? { permission: asPermission(e.permissionMode) } : {}),
       ...(typeof e.isolation === 'string' && (e.isolation === 'worktree' || e.isolation === 'none') ? { isolation: e.isolation } : {}),
       ...(typeof e.presetId === 'string' && e.presetId.trim().length > 0 ? { presetId: e.presetId.trim() } : {}),
+      ...(typeof e.permission === 'string' ? { permission: asPermission(e.permission) } : {}),
       ...(Array.isArray(e.checklist) ? { checklist: normalizeChecklist(e.checklist) } : {}),
       ...(typeof e.branch === 'string' ? { branch: e.branch } : {}),
+      ...(branchesMap !== undefined ? { branches: branchesMap } : {}),
       ...(status === 'in_progress' && typeof e.claimedBy === 'string' ? { claimedBy: e.claimedBy } : {}),
       ...(status === 'in_progress' && typeof e.claimedAt === 'number' ? { claimedAt: e.claimedAt } : {}),
       version: Math.max(1, Math.trunc(numOr(e, 'version', 1))),
@@ -1138,8 +1308,10 @@ export type TaskSummary = {
   executionMode: ExecutionMode
   nextRunAt?: number
   model?: TaskModel
+  /** Taskboard-owned speed preference (omitted → standard). */
   speed?: TaskSpeed
-  permissionMode?: PermissionMode
+  /** Execution permission preset (see {@link PermissionMode}). */
+  permission?: PermissionMode
   version: number
   claimOwner?: string
   commentCount: number
@@ -1167,7 +1339,7 @@ export function summarize(task: TaskRecord): TaskSummary {
     nextRunAt: task.execution.nextRunAt,
     model: task.model,
     ...(task.speed !== undefined ? { speed: task.speed } : {}),
-    ...(task.permissionMode !== undefined ? { permissionMode: task.permissionMode } : {}),
+    ...(task.permission !== undefined ? { permission: task.permission } : {}),
     version: task.version,
     claimOwner: isClaimedBy(task),
     commentCount: task.comments.length,

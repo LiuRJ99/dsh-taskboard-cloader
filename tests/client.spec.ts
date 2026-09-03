@@ -5,7 +5,7 @@
  * entry, board mount, controller, SSE wiring) starts and renders into a
  * jsdom document without throwing.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { waitFor } from './wait-for.ts'
 
 /** Stub a route payload. */
@@ -47,6 +47,13 @@ class EventSourceMock {
 
 describe('client half', () => {
   const disposers: Array<() => void> = []
+
+  beforeEach(() => {
+    // i18n: no DSH locale service exists in this fake context, so the
+    // adapter resolves the fallback locale — pin it to zh to match the
+    // (historical, verbatim) zh copy these tests assert on.
+    document.documentElement.lang = 'zh-CN'
+  })
 
   afterEach(() => {
     for (const d of disposers.splice(0)) d()
@@ -701,6 +708,8 @@ describe('client half', () => {
       workspaces: async () => [
         { id: 'ws-git', path: '/p/g', title: 'G', sessionCount: 0, gitAvailable: true },
         { id: 'ws-plain', path: '/p/n', title: 'N', sessionCount: 0, gitAvailable: false },
+        // 0.6.3: a multi-repo workspace (repoCount > 1) shows the mirror note.
+        { id: 'ws-mirror', path: '/p/m', title: 'M', sessionCount: 0, gitAvailable: true, repoCount: 3 },
       ],
       stream: () => () => {},
       create: async (body: unknown) => { creates.push(body); return { id: 't-new' } },
@@ -721,7 +730,14 @@ describe('client half', () => {
 
     let selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
     expect(selects.find(select => select.value === 'standard')).toBeUndefined()
-    const modelSelect = selects.find(select => Array.from(select.options).some(option => option.textContent?.includes('Fast test model')))
+    // The catalog resolves asynchronously; poll briefly for the model row.
+    let modelSelect: HTMLSelectElement | undefined
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
+      modelSelect = selects.find(select => Array.from(select.options).some(option => option.textContent?.includes('Fast test model')))
+      if (modelSelect !== undefined) break
+      await new Promise(r => setTimeout(r, 10))
+    }
     expect(modelSelect).toBeDefined()
     modelSelect!.value = JSON.stringify({ provider: 'test-provider', model: 'gpt-5.6-luna' })
     modelSelect!.dispatchEvent(new Event('change', { bubbles: true }))
@@ -729,16 +745,16 @@ describe('client half', () => {
 
     selects = Array.from(host.querySelectorAll<HTMLSelectElement>('select'))
     const speedSelect = selects.find(select => select.value === 'standard')!
-    const permissionSelect = selects.find(select => select.value === 'workspace-write')!
     expect(speedSelect).toBeDefined()
-    expect(permissionSelect).toBeDefined()
-    expect(Array.from(permissionSelect.options).map(option => option.value)).toEqual(['read-only', 'workspace-write', 'danger-full-access'])
+    // Permission is a three-way picker (workspace-write default).
+    const permOpts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-perm-opt'))
+    expect(permOpts().length).toBe(3)
+    expect(permOpts()[0]!.dataset.on).toBe('true')
     speedSelect.value = 'fast'
     speedSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    permissionSelect.value = 'danger-full-access'
-    permissionSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    permOpts()[2]!.click() // danger-full-access
     await new Promise(r => setTimeout(r, 10))
-    expect(host.textContent).toContain('Full access 将关闭审批')
+    expect(host.textContent).toContain('将关闭审批')
 
     const opts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
     expect(opts().length).toBeGreaterThanOrEqual(2)
@@ -762,7 +778,7 @@ describe('client half', () => {
       title: 'Iso task',
       isolation: 'none',
       speed: 'fast',
-      permissionMode: 'danger-full-access',
+      permission: 'danger-full-access',
     })
 
     // Non-git workspace: both options disabled, hint shown, isolation omitted.
@@ -776,6 +792,14 @@ describe('client half', () => {
     await new Promise(r => setTimeout(r, 10))
     expect(creates[1]).toMatchObject({ workspaceId: 'ws-plain' })
     expect((creates[1] as Record<string, unknown>).isolation).toBeUndefined()
+
+    // Multi-repo workspace (0.6.3): worktree stays enabled and the mirror
+    // note names the repo count (auto-mirror, no per-task repo selection).
+    wsSelect.value = 'ws-mirror'
+    wsSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    expect(isoOpts().every(o => !o.disabled)).toBe(true)
+    expect(host.querySelector('.dsh-atb-isolation-note[data-mirror]')?.textContent).toContain('3')
 
     root.unmount()
     host.remove()
@@ -829,24 +853,32 @@ describe('client half', () => {
     root.render(React.createElement(SettingsModal, { controller }))
     await new Promise(r => setTimeout(r, 10))
 
-    const isoOpts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-mode-opt'))
+    const isoOpts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-diag-sec:nth-child(1) .dsh-atb-mode-opt'))
     expect(isoOpts().length).toBe(2)
     expect(isoOpts()[0]!.textContent).toContain('原目录执行')
     // Current setting worktree is the selected draft.
     expect(isoOpts()[0]!.dataset.on).toBe('false')
     expect(isoOpts()[1]!.dataset.on).toBe('true')
 
+    const syncOpts = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-diag-sec:nth-child(2) .dsh-atb-mode-opt'))
+    expect(syncOpts().length).toBe(2)
+    expect(syncOpts()[0]!.textContent).toContain('关闭同步')
+    expect(syncOpts()[1]!.textContent).toContain('自动纳入会话')
+    expect(syncOpts()[0]!.dataset.on).toBe('true') // default false
+    expect(syncOpts()[1]!.dataset.on).toBe('false')
+
     const saveBtn = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn'))
       .find(b => b.textContent === '保存设置')!
     expect(saveBtn().disabled).toBe(true) // clean draft → save disabled
 
-    // Pick 原目录执行 → dirty → save goes through the controller.
+    // Pick 原目录执行 & 自动纳入会话 → dirty → save goes through the controller.
     isoOpts()[0]!.click()
+    syncOpts()[1]!.click()
     await new Promise(r => setTimeout(r, 10))
     expect(saveBtn().disabled).toBe(false)
     saveBtn().click()
     await new Promise(r => setTimeout(r, 20))
-    expect(saved).toEqual([{ defaultIsolation: 'none' }])
+    expect(saved).toEqual([{ defaultIsolation: 'none', syncExternalSessions: true, defaultPermission: 'workspace-write' }])
 
     root.unmount()
     host.remove()
@@ -897,7 +929,12 @@ describe('client half', () => {
     expect(save.disabled).toBe(false)
     save.click()
     await new Promise(r => setTimeout(r, 20))
-    expect(saved).toEqual([{ defaultIsolation: 'worktree', templateMenuCategory: '运营' }])
+    expect(saved).toEqual([{
+      defaultIsolation: 'worktree',
+      syncExternalSessions: false,
+      defaultPermission: 'workspace-write',
+      templateMenuCategory: '运营',
+    }])
 
     root.unmount()
     host.remove()
@@ -2633,5 +2670,115 @@ describe('client half', () => {
     root.unmount()
     host.remove()
     controller.dispose()
+    localStorage.clear()
+  })
+
+  it('TaskFormModal: supports permission tri-picker and SlashPromptInput (0.5.5)', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskFormModal } = await import('../src/client/board/TaskFormModal.tsx')
+
+    const createdPayloads: unknown[] = []
+    const clientFake = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/proj/a', title: 'A', gitAvailable: true }],
+      create: async (body: unknown) => {
+        createdPayloads.push(body)
+        return { id: 't-perm', title: 'Task with permission', workspaceId: 'ws-a', status: 'todo', version: 1, createdAt: 0, updatedAt: 0 }
+      },
+      update: async () => ({ ok: true }),
+      stream: () => () => {},
+      promptCompletions: async () => ({
+        commands: [{ name: 'goal', kind: 'command' as const, description: '自主完成长期目标' }],
+        skills: [{ name: 'frontend-ui-engineering', kind: 'skill' as const, description: '前端UI工程' }],
+      }),
+      modelCatalog: async () => ({ models: [], presets: [] }),
+    }
+
+    const controller = new BoardController(clientFake as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    controller.setComposer(true)
+    root.render(React.createElement(TaskFormModal, { controller }))
+    await new Promise(r => setTimeout(r, 50))
+
+    // Check title input
+    const titleInput = host.querySelector<HTMLInputElement>('input[placeholder="一句话说清要做什么"]')!
+    expect(titleInput).not.toBeNull()
+    const titleSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    titleSetter?.call(titleInput, 'Task with read-only permission')
+    titleInput.dispatchEvent(new Event('input', { bubbles: true }))
+    titleInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+    // Check permission options: default is workspace-write
+    const permOpts = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-perm-opt'))
+    expect(permOpts.length).toBe(3)
+    expect(permOpts[0]!.textContent).toContain('可写入工作区')
+    expect(permOpts[1]!.textContent).toContain('仅可查看')
+    expect(permOpts[2]!.textContent).toContain('完全权限')
+    expect(permOpts[0]!.dataset.on).toBe('true')
+
+    // Click '仅可查看' (read-only)
+    permOpts[1]!.click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(permOpts[1]!.dataset.on).toBe('true')
+
+    // Find description textarea (SlashPromptInput)
+    const textareas = host.querySelectorAll('textarea')
+    expect(textareas.length).toBe(2)
+    const descTextarea = textareas[0] as HTMLTextAreaElement
+    const textareaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+    textareaSetter?.call(descTextarea, '使用 /goal 完成任务并按规范交付')
+    descTextarea.dispatchEvent(new Event('input', { bubbles: true }))
+    descTextarea.dispatchEvent(new Event('change', { bubbles: true }))
+
+    await new Promise(r => setTimeout(r, 20))
+
+    // Submit
+    const submitBtn = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-modal-footbtns .dsh-atb-btn'))
+      .find(b => b.textContent === '创建任务')!
+    submitBtn.click()
+    await new Promise(r => setTimeout(r, 30))
+
+    expect(createdPayloads).toHaveLength(1)
+    const payload = createdPayloads[0] as { title: string; permission?: string; description?: string }
+    expect(payload.title).toBe('Task with read-only permission')
+    expect(payload.permission).toBe('read-only')
+    expect(payload.description).toBe('使用 /goal 完成任务并按规范交付')
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('controller.fetchModelCatalog & fetchPresetCatalog fallback to client endpoint (0.5.5)', async () => {
+    const { BoardController } = await import('../src/client/controller.ts')
+    const clientFake = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [] }),
+      workspaces: async () => [],
+      modelCatalog: async () => ({
+        models: [{ provider: 'fallback-prov', model: 'fallback-model', name: 'Fallback Model' }],
+        presets: [{ id: 'standard', name: '标准模式' }],
+        defaultPresetId: 'standard',
+      }),
+      stream: () => () => {},
+    }
+
+    const controller = new BoardController(clientFake as never)
+    const models = await controller.fetchModelCatalog()
+    expect(models).toEqual([{ provider: 'fallback-prov', model: 'fallback-model', name: 'Fallback Model' }])
+
+    const presets = await controller.fetchPresetCatalog()
+    expect(presets).toEqual({
+      presets: [{ id: 'standard', name: '标准模式' }],
+      defaultId: 'standard',
+    })
   })
 })

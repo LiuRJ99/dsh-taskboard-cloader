@@ -18,7 +18,8 @@ import { useAlert } from './AlertModal.tsx'
 import { InitialAvatar } from './Avatar.tsx'
 import { Markdown } from '../markdown.tsx'
 import { fmtTime, isStaleClaim } from './format.ts'
-import { MOVE_LABEL, OUTCOME_LABEL, STATUS_LABEL, URGENCY_LABEL } from './labels.ts'
+import { MOVE_KEYS, OUTCOME_KEYS, STATUS_KEYS, URGENCY_KEYS } from './labels.ts'
+import { useT } from '../i18n/runtime.ts'
 
 /** Statuses a user may move this task to, per the state machine. */
 function moveTargets(task: TaskRecord): TaskRecord['status'][] {
@@ -200,35 +201,38 @@ function ReportFileRow({
 
 /**
  * Lazy diff viewer (0.4.0): loads on mount, renders inside a capped <pre>.
+ * `repo` picks one repo of a multi-repo mirror (0.6.3; absent = legacy root).
  * @param spec - what to show: one commit hash, or one changed path.
  */
-function DiffView({ controller, task, execution, commit, path }: {
+function DiffView({ controller, task, execution, commit, path, repo }: {
   controller: BoardController
   task: TaskRecord
   execution: ExecutionRecord
   commit?: string
   path?: string
+  repo?: string
 }) {
+  const t = useT()
   const [state, setState] = useState<{ loading: boolean; diff?: string; truncated?: boolean; failed?: boolean }>({ loading: true })
   useEffect(() => {
     let alive = true
     setState({ loading: true })
-    void controller.fetchDiff(task.id, { execution: execution.id, ...(commit !== undefined ? { commit } : { path: path ?? '' }) }).then(result => {
+    void controller.fetchDiff(task.id, { execution: execution.id, ...(commit !== undefined ? { commit } : { path: path ?? '' }), ...(repo !== undefined ? { repo } : {}) }).then(result => {
       if (!alive) return
       if (result === undefined) setState({ loading: false, failed: true })
       else setState({ loading: false, diff: result.diff, truncated: result.truncated })
     })
     return () => { alive = false }
-  }, [controller, task.id, execution.id, commit, path])
+  }, [controller, task.id, execution.id, commit, path, repo])
   return (
     <div className="dsh-atb-diffview">
       <div className="dsh-atb-diffview-head">
-        <span className="dsh-atb-diffview-title">{commit !== undefined ? `提交 ${shortHash(commit)}` : `文件 ${path}`}</span>
-        {state.loading && <span className="dsh-atb-diffview-hint">读取中…</span>}
-        {state.truncated === true && <span className="dsh-atb-diffview-hint">⚠ 内容过长已截断</span>}
+        <span className="dsh-atb-diffview-title">{commit !== undefined ? t('diff.commit', { hash: shortHash(commit) }) : t('diff.file', { path: path ?? '' })}</span>
+        {state.loading && <span className="dsh-atb-diffview-hint">{t('shared.loading')}</span>}
+        {state.truncated === true && <span className="dsh-atb-diffview-hint">{t('diff.truncated')}</span>}
       </div>
       {state.failed === true
-        ? <div className="dsh-atb-diffview-error">获取失败（原因见看板顶部错误条；对象可能已随 worktree 删除丢失）</div>
+        ? <div className="dsh-atb-diffview-error">{t('diff.failed')}</div>
         : <pre className="dsh-atb-diffview-pre">{state.diff ?? ''}</pre>}
     </div>
   )
@@ -239,6 +243,7 @@ function DiffView({ controller, task, execution, commit, path }: {
  * per row; unchecked items highlight while the task sits in in_review.
  */
 function ChecklistBlock({ task, controller }: { task: TaskRecord; controller: BoardController }) {
+  const t = useT()
   const items = task.checklist ?? []
   if (items.length === 0) return null
   const { done, total } = checklistProgress(task)
@@ -247,9 +252,9 @@ function ChecklistBlock({ task, controller }: { task: TaskRecord; controller: Bo
   return (
     <div className="dsh-atb-fieldcard" data-kind="checklist">
       <div className="dsh-atb-fieldcard-label">
-        验收清单（DoD）
+        {t('checklist.title')}
         <span className="dsh-atb-cl-progress" data-tone={reviewing && unchecked > 0 ? 'bad' : undefined}>
-          ☑ {done}/{total}{reviewing && unchecked > 0 ? ` · ${unchecked} 项未完成` : done === total ? ' · 全部完成' : ''}
+          ☑ {done}/{total}{reviewing && unchecked > 0 ? t('checklist.unchecked', { n: unchecked }) : done === total ? t('checklist.allDone') : ''}
         </span>
       </div>
       <div className="dsh-atb-cl-items">
@@ -268,9 +273,9 @@ function ChecklistBlock({ task, controller }: { task: TaskRecord; controller: Bo
             <span className="dsh-atb-cl-text">{item.text}</span>
             <span className="dsh-atb-cl-meta">
               {item.checked
-                ? `${item.checkedBy === 'user' ? '👤 用户' : `🤖 ${shortId(item.checkedBy)}`} · ${fmtTime(item.checkedAt)}`
-                : '未完成'}
-              {item.note !== undefined && item.note.length > 0 && <span className="dsh-atb-cl-note" title={item.note}>证据：{item.note}</span>}
+                ? `${item.checkedBy === 'user' ? t('checklist.byUser') : `🤖 ${shortId(item.checkedBy)}`} · ${fmtTime(item.checkedAt)}`
+                : t('checklist.uncheckedItem')}
+              {item.note !== undefined && item.note.length > 0 && <span className="dsh-atb-cl-note" title={item.note}>{t('checklist.evidence', { note: item.note })}</span>}
             </span>
           </label>
         ))}
@@ -318,6 +323,7 @@ function ReportBlock({
   scope?: SessionScope
   onOpenFile?: (path: string) => void
 }) {
+  const t = useT()
   const execution = [...task.executions].reverse().find(e => e.report !== undefined)
   const report = execution?.report
   if (execution === undefined || report === undefined) return null
@@ -348,7 +354,7 @@ function ReportBlock({
     : null
   return (
     <div className="dsh-atb-fieldcard" data-kind="report">
-      <div className="dsh-atb-fieldcard-label">执行报告<span className="dsh-atb-cl-progress">由执行会话提交 · {fmtTime(execution.endedAt ?? execution.startedAt)}</span></div>
+      <div className="dsh-atb-fieldcard-label">{t('report.title')}<span className="dsh-atb-cl-progress">{t('report.submitted', { time: fmtTime(execution.endedAt ?? execution.startedAt) })}</span></div>
       <PreviewText
         className="dsh-atb-rpt-summary"
         text={report.summary}
@@ -356,12 +362,12 @@ function ReportBlock({
         resolveFileMention={resolveFileMention}
         onOpenFile={onOpenFile}
       />
-      {section('改动文件', report.changedFiles, 'changed')}
-      {section('自验情况', report.checks)}
-      {section('产物', report.artifacts, 'artifact')}
+      {section(t('report.changedFiles'), report.changedFiles, 'changed')}
+      {section(t('report.checks'), report.checks)}
+      {section(t('report.artifacts'), report.artifacts, 'artifact')}
       {report.risk.length > 0 && (
         <div className="dsh-atb-rpt-sec">
-          <div className="dsh-atb-rpt-label">剩余风险</div>
+          <div className="dsh-atb-rpt-label">{t('report.risk')}</div>
           <PreviewText
             className="dsh-atb-rpt-risk"
             text={report.risk}
@@ -393,12 +399,13 @@ function IsolationBlock({
   scope?: SessionScope
   onOpenFile?: (path: string) => void
 }) {
+  const t = useT()
   const { alert: showAlert, el: alertEl } = useAlert()
   const [confirmMerge, setConfirmMerge] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState<'wt' | 'wtb' | null>(null)
   const [busy, setBusy] = useState(false)
-  // Diff viewer (0.4.0): which commit / changed path is expanded.
-  const [openDiff, setOpenDiff] = useState<{ commit?: string; path?: string } | null>(null)
+  // Diff viewer (0.4.0): which commit / changed path is expanded (0.6.3: + repo).
+  const [openDiff, setOpenDiff] = useState<{ commit?: string; path?: string; repo?: string } | null>(null)
   const [dirtyOpen, setDirtyOpen] = useState(false)
   const execution = latestIsolated(task)
   const running = task.executions.some(e => e.outcome === 'running')
@@ -409,8 +416,20 @@ function IsolationBlock({
     void controller.mergeBranch(task.id).then(result => {
       setBusy(false)
       setConfirmMerge(false)
-      if (!result.ok) showAlert(`合并失败：${result.error}`)
-      else if (result.noop === true) showAlert('该分支没有领先主工作区的新提交，无需合并（可退回续跑或直接清理）')
+      if (!result.ok) showAlert(t('iso.merge.failed', { error: result.error }))
+      else if (result.results !== undefined) {
+        // Multi-repo mirror (0.6.3): one compact per-repo outcome line.
+        const labelOf = (repo: string): string => repo === '' ? t('iso.repo.root') : repo
+        const summary = result.results
+          .map(r => `${labelOf(r.repo)} ${r.outcome === 'merged' ? '✓' : r.outcome === 'noop' ? '⟲' : '✗'}`)
+          .join(' · ')
+        const failed = result.results.some(r => r.outcome === 'failed')
+        const failedError = result.results.find(r => r.outcome === 'failed')?.error
+        showAlert(failed
+          ? t('iso.merge.partial', { summary, error: failedError ?? '' })
+          : t('iso.merge.done', { summary }))
+      }
+      else if (result.noop === true) showAlert(t('iso.merge.noop'))
     })
   }
 
@@ -419,8 +438,8 @@ function IsolationBlock({
     void controller.removeWorktree(task.id, deleteBranch).then(result => {
       setBusy(false)
       setConfirmRemove(null)
-      if (!result.ok) showAlert(`删除失败：${result.error}`)
-      else if (result.branchError !== undefined) showAlert(`worktree 已删除，但分支删除失败：${result.branchError}`)
+      if (!result.ok) showAlert(t('iso.remove.failed', { error: result.error }))
+      else if (result.branchError !== undefined) showAlert(t('iso.remove.branchFailed', { error: result.branchError }))
     })
   }
 
@@ -428,62 +447,109 @@ function IsolationBlock({
   if (execution.isolation !== 'worktree' || execution.worktreePath === undefined) {
     return (
       <div className="dsh-atb-fieldcard" data-kind="isolation">
-        <div className="dsh-atb-fieldcard-label">执行隔离</div>
-        <div className="dsh-atb-iso-none">📁 原目录执行{execution.isolationNote !== undefined ? ` · ${execution.isolationNote}` : ''}</div>
+        <div className="dsh-atb-fieldcard-label">{t('iso.title')}</div>
+        <div className="dsh-atb-iso-none">{t('iso.none')}{execution.isolationNote !== undefined ? ` · ${execution.isolationNote}` : ''}</div>
         {alertEl}
       </div>
     )
   }
 
-  const commits = execution.commits ?? []
-  const commitTotal = execution.commitsTotal ?? commits.length
-  const dirty = execution.dirtyFiles ?? []
-  const dirtyTotal = execution.dirtyFilesTotal ?? dirty.length
+  // 0.6.3: multi-repo mirrors render ONE section per repo (execution.repos);
+  // legacy single-repo records keep the exact old shape (a synthetic view).
+  const multi = execution.repos !== undefined && execution.repos.length > 0
+  const views: Array<{
+    repo?: string
+    label: string
+    branch?: string
+    worktreePath?: string
+    baseCommit?: string
+    headCommit?: string
+    commits: NonNullable<ExecutionRecord['commits']>
+    commitTotal: number
+    dirty: string[]
+    dirtyTotal: number
+    diffStat?: string
+    changedFiles?: number
+  }> = multi
+    ? (execution.repos ?? []).map(r => ({
+        repo: r.repo,
+        label: r.repo === '' ? t('iso.repo.root') : r.repo,
+        branch: r.branch,
+        worktreePath: r.worktreePath,
+        baseCommit: r.baseCommit,
+        headCommit: r.headCommit,
+        commits: r.commits ?? [],
+        commitTotal: r.commitsTotal ?? (r.commits ?? []).length,
+        dirty: r.dirtyFiles ?? [],
+        dirtyTotal: r.dirtyFilesTotal ?? (r.dirtyFiles ?? []).length,
+        ...(r.diffStat !== undefined ? { diffStat: r.diffStat } : {}),
+        ...(r.changedFiles !== undefined ? { changedFiles: r.changedFiles } : {}),
+      }))
+    : [{
+        label: t('iso.repo.root'),
+        branch: execution.branch ?? task.branch,
+        worktreePath: execution.worktreePath,
+        baseCommit: execution.baseCommit,
+        headCommit: execution.headCommit,
+        commits: execution.commits ?? [],
+        commitTotal: execution.commitsTotal ?? (execution.commits ?? []).length,
+        dirty: execution.dirtyFiles ?? [],
+        dirtyTotal: execution.dirtyFilesTotal ?? (execution.dirtyFiles ?? []).length,
+        ...(execution.diffStat !== undefined ? { diffStat: execution.diffStat } : {}),
+        ...(execution.changedFiles !== undefined ? { changedFiles: execution.changedFiles } : {}),
+      }]
 
-  return (
-    <div className="dsh-atb-fieldcard" data-kind="isolation">
-      <div className="dsh-atb-fieldcard-label">执行隔离 · Worktree</div>
+  const renderRepo = (view: (typeof views)[number]): ReactNode => (
+    <section key={view.repo ?? 'root'} className="dsh-atb-iso-repo" data-multi={multi ? 'true' : undefined}>
+      {multi && (
+        <div className="dsh-atb-iso-repohead" title={view.worktreePath}>
+          <code>{view.label}</code>
+          <span className="dsh-atb-iso-fact">{t('iso.branch')} <b>{view.branch}</b></span>
+        </div>
+      )}
       <div className="dsh-atb-iso-facts">
-        <span className="dsh-atb-iso-fact" title={execution.worktreePath}>🌿 分支 <b>{execution.branch ?? task.branch}</b></span>
-        <span className="dsh-atb-iso-fact">基线 {shortHash(execution.baseCommit)} → {shortHash(execution.headCommit)}</span>
-        {execution.changedFiles !== undefined && execution.changedFiles > 0 && (
-          <span className="dsh-atb-iso-fact">改动 {execution.changedFiles} 个文件</span>
+        {!multi && (
+          <span className="dsh-atb-iso-fact" title={view.worktreePath}>{t('iso.branch')} <b>{view.branch}</b></span>
         )}
-        {execution.diffStat !== undefined && <span className="dsh-atb-iso-fact" title={execution.diffStat}>{execution.diffStat}</span>}
+        <span className="dsh-atb-iso-fact">{t('iso.baseline', { base: shortHash(view.baseCommit), head: shortHash(view.headCommit) })}</span>
+        {view.changedFiles !== undefined && view.changedFiles > 0 && (
+          <span className="dsh-atb-iso-fact">{t('iso.changed', { n: view.changedFiles })}</span>
+        )}
+        {view.diffStat !== undefined && <span className="dsh-atb-iso-fact" title={view.diffStat}>{view.diffStat}</span>}
       </div>
 
-      {commits.length > 0
+      {view.commits.length > 0
         ? (
             <div className="dsh-atb-iso-commits">
-              {commits.slice(0, 10).map(c => (
-                <div key={c.hash} className="dsh-atb-iso-commit" data-open={openDiff?.commit === c.hash ? 'true' : undefined}>
+              {view.commits.slice(0, 10).map(c => (
+                <div key={c.hash} className="dsh-atb-iso-commit" data-open={openDiff?.commit === c.hash && openDiff?.repo === view.repo ? 'true' : undefined}>
                   <button
                     type="button"
                     className="dsh-atb-iso-commit-btn"
-                    title="点击展开该提交的 diff"
-                    onClick={() => setOpenDiff(openDiff?.commit === c.hash ? null : { commit: c.hash })}
+                    title={t('iso.commit.openTitle')}
+                    onClick={() => setOpenDiff(openDiff?.commit === c.hash && openDiff?.repo === view.repo ? null : { commit: c.hash, ...(view.repo !== undefined ? { repo: view.repo } : {}) })}
                   >
                     <code>{shortHash(c.hash)}</code>
                     <span>{c.subject}</span>
                   </button>
-                  {openDiff?.commit === c.hash && (
-                    <DiffView controller={controller} task={task} execution={execution} commit={c.hash} />
+                  {openDiff?.commit === c.hash && openDiff?.repo === view.repo && (
+                    <DiffView controller={controller} task={task} execution={execution} commit={c.hash} repo={view.repo} />
                   )}
                 </div>
               ))}
-              {commitTotal > 10 && <div className="dsh-atb-iso-more">… 共 {commitTotal} 个提交</div>}
+              {view.commitTotal > 10 && <div className="dsh-atb-iso-more">{t('iso.commits.more', { n: view.commitTotal })}</div>}
             </div>
           )
-        : <div className="dsh-atb-iso-nocommit">该次执行没有产生提交（改动可能未提交，见下方警告）</div>}
+        : <div className="dsh-atb-iso-nocommit">{t('iso.nocommit')}</div>}
 
-      {dirtyTotal > 0 && (
+      {view.dirtyTotal > 0 && (
         <div className="dsh-atb-iso-dirty">
           <button type="button" className="dsh-atb-iso-dirty-toggle" onClick={() => setDirtyOpen(!dirtyOpen)}>
-            ⚠ 有 {dirtyTotal} 处未提交修改（合并前请让 agent 提交，或手动处理）{dirtyOpen ? ' ▲' : ' ▼ 查看文件'}
+            {t('iso.dirty.toggle', { n: view.dirtyTotal })}{dirtyOpen ? t('iso.dirty.collapse') : t('iso.dirty.expand')}
           </button>
           {dirtyOpen && (
             <div className="dsh-atb-iso-dirty-files">
-              {dirty.slice(0, 30).map((line, index) => {
+              {view.dirty.slice(0, 30).map((line, index) => {
                 const filePath = porcelainPath(line)
                 const target = resolveTaskFilePath(filePath, task, workspaces, execution, scope)
                 return (
@@ -491,8 +557,8 @@ function IsolationBlock({
                     <button
                       type="button"
                       className="dsh-atb-iso-dirty-file"
-                      title="点击查看该文件的未提交 diff"
-                      onClick={() => setOpenDiff(openDiff?.path === filePath ? null : { path: filePath })}
+                      title={t('iso.dirty.openTitle')}
+                      onClick={() => setOpenDiff(openDiff?.path === filePath && openDiff?.repo === view.repo ? null : { path: filePath, ...(view.repo !== undefined ? { repo: view.repo } : {}) })}
                     >
                       <code>{line.slice(0, 2)}</code> {filePath}
                     </button>
@@ -500,24 +566,31 @@ function IsolationBlock({
                   </div>
                 )
               })}
-              {dirtyTotal > 30 && <div className="dsh-atb-iso-more">… 共 {dirtyTotal} 处（完整列表见任务台账）</div>}
+              {view.dirtyTotal > 30 && <div className="dsh-atb-iso-more">{t('iso.dirty.more', { n: view.dirtyTotal })}</div>}
             </div>
           )}
-          {openDiff?.path !== undefined && dirtyOpen && (
-            <DiffView controller={controller} task={task} execution={execution} path={openDiff.path} />
+          {openDiff?.path !== undefined && openDiff?.repo === view.repo && dirtyOpen && (
+            <DiffView controller={controller} task={task} execution={execution} path={openDiff.path} repo={view.repo} />
           )}
         </div>
       )}
+    </section>
+  )
+
+  return (
+    <div className="dsh-atb-fieldcard" data-kind="isolation">
+      <div className="dsh-atb-fieldcard-label">{t('iso.worktreeTitle')}</div>
+      {views.map(renderRepo)}
 
       <div className="dsh-atb-iso-actions">
         {running
-          ? <span className="dsh-atb-iso-hint">执行中 — 结束后可合并或清理</span>
+          ? <span className="dsh-atb-iso-hint">{t('iso.hint.running')}</span>
           : confirmMerge
             ? (
                 <span className="dsh-atb-confirm">
-                  <span className="dsh-atb-confirm-label">将分支以 --no-ff 合并到主工作区？</span>
-                  <button type="button" className="dsh-atb-btn" data-primary="true" disabled={busy} onClick={doMerge}>确认合并</button>
-                  <button type="button" className="dsh-atb-btn" onClick={() => setConfirmMerge(false)}>取消</button>
+                  <span className="dsh-atb-confirm-label">{t('iso.merge.confirm')}</span>
+                  <button type="button" className="dsh-atb-btn" data-primary="true" disabled={busy} onClick={doMerge}>{t('iso.merge.go')}</button>
+                  <button type="button" className="dsh-atb-btn" onClick={() => setConfirmMerge(false)}>{t('shared.cancel')}</button>
                 </span>
               )
             : (
@@ -525,10 +598,10 @@ function IsolationBlock({
                   type="button"
                   className="dsh-atb-btn"
                   disabled={busy}
-                  title="在主工作区 git merge --no-ff 该任务分支（要求主区干净；冲突会原样报告）"
+                  title={t('iso.merge.title')}
                   onClick={() => setConfirmMerge(true)}
                 >
-                  ⇥ 合并到主工作区
+                  {t('iso.merge.button')}
                 </button>
               )}
         {!running && (confirmRemove === null
@@ -539,10 +612,10 @@ function IsolationBlock({
                   className="dsh-atb-btn"
                   data-danger="true"
                   disabled={busy}
-                  title="git worktree remove（有未提交修改时拒绝）"
+                  title={t('iso.remove.wtTitle')}
                   onClick={() => setConfirmRemove('wt')}
                 >
-                  🗑 删除 worktree
+                  {t('iso.remove.wt')}
                 </button>
                 {task.branch !== undefined && (
                   <button
@@ -550,22 +623,22 @@ function IsolationBlock({
                     className="dsh-atb-btn"
                     data-danger="true"
                     disabled={busy}
-                    title="删除 worktree 并删除任务分支（有未提交修改时拒绝）"
+                    title={t('iso.remove.wtbTitle')}
                     onClick={() => setConfirmRemove('wtb')}
                   >
-                    🗑 删 worktree + 分支
+                    {t('iso.remove.wtb')}
                   </button>
                 )}
               </>
             )
           : (
               <span className="dsh-atb-confirm">
-                <span className="dsh-atb-confirm-label">{confirmRemove === 'wtb' ? '删除 worktree 并删除分支？' : '删除 worktree 目录？'}</span>
-                <button type="button" className="dsh-atb-btn" data-danger="true" disabled={busy} onClick={() => doRemove(confirmRemove === 'wtb')}>确认删除</button>
-                <button type="button" className="dsh-atb-btn" onClick={() => setConfirmRemove(null)}>取消</button>
+                <span className="dsh-atb-confirm-label">{confirmRemove === 'wtb' ? t('iso.remove.confirmWtb') : t('iso.remove.confirmWt')}</span>
+                <button type="button" className="dsh-atb-btn" data-danger="true" disabled={busy} onClick={() => doRemove(confirmRemove === 'wtb')}>{t('shared.confirmDelete')}</button>
+                <button type="button" className="dsh-atb-btn" onClick={() => setConfirmRemove(null)}>{t('shared.cancel')}</button>
               </span>
             ))}
-        {!running && confirmRemove === null && !confirmMerge && <span className="dsh-atb-iso-hint">分支与 worktree 保留中 — 可退回继续修改</span>}
+        {!running && confirmRemove === null && !confirmMerge && <span className="dsh-atb-iso-hint">{t('iso.hint.keep')}</span>}
       </div>
       {alertEl}
     </div>
@@ -595,6 +668,7 @@ export function TaskDetail({
   scope?: SessionScope
   onOpenFile?: (path: string) => void
 }) {
+  const t = useT()
   const [comment, setComment] = useState('')
   const [showRawMarkdown, setShowRawMarkdown] = useState(false)
   const [confirmDone, setConfirmDone] = useState(false)
@@ -626,9 +700,9 @@ export function TaskDetail({
   /** Jump to an execution's session; prompt precisely when it cannot open. */
   const jumpToSession = (sessionId: string): void => {
     void controller.openSession(sessionId).then(result => {
-      if (result === 'missing') showAlert(`该会话已被删除（${shortId(sessionId)}），无法打开`)
-      else if (result === 'archived') showAlert(`该会话已归档（${shortId(sessionId)}），已从会话列表隐藏`)
-      else if (result === 'unavailable') showAlert(`会话导航不可用，会话 ID：${sessionId}`)
+      if (result === 'missing') showAlert(t('card.session.missing', { id: shortId(sessionId) }))
+      else if (result === 'archived') showAlert(t('card.session.archived', { id: shortId(sessionId) }))
+      else if (result === 'unavailable') showAlert(t('card.session.unavailable', { id: sessionId }))
     })
   }
 
@@ -638,19 +712,68 @@ export function TaskDetail({
         <div className="dsh-atb-detail-topbar">
           <div className="dsh-atb-detail-titlebar">
             <h3>{task.title}</h3>
-            <span className="dsh-atb-statuspill" data-status={task.status}>{STATUS_LABEL[task.status] ?? task.status}</span>
+            <span className="dsh-atb-statuspill" data-status={task.status}>{t(STATUS_KEYS[task.status] ?? task.status)}</span>
           </div>
-          <button type="button" className="dsh-atb-detail-close" aria-label="关闭" onClick={() => controller.select(undefined)}>✕</button>
+          <button type="button" className="dsh-atb-detail-close" aria-label={t('shared.close')} onClick={() => controller.select(undefined)}>✕</button>
+        </div>
+        <div className="dsh-atb-detail-chips">
+          <Chip tone={task.urgency}>● {t(URGENCY_KEYS[task.urgency] ?? task.urgency)}</Chip>
+          <Chip icon="📁">{ws?.title ?? shortId(task.workspaceId)}</Chip>
+          {task.model !== undefined && (
+            <Chip
+              icon="✦"
+              title={t('card.badge.modelTitle', { model: task.model.provider + '/' + task.model.model }) + (task.model.reasoningEffort !== undefined ? t('card.badge.modelEffort', { effort: task.model.reasoningEffort }) : '')}
+            >
+              {task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}
+            </Chip>
+          )}
+          {task.speed === 'fast' && <Chip icon="⚡">{t('detail.chip.speedFast')}</Chip>}
+          {task.permission === 'read-only' && <Chip icon="🔒" tone="urgent">{t('detail.chip.permReadOnly')}</Chip>}
+          {task.permission === 'danger-full-access' && <Chip icon="⚡" tone="urgent">{t('detail.chip.permFull')}</Chip>}
+          {task.presetId !== undefined && <Chip icon="🎛">{task.presetId}</Chip>}
+          {task.requiredCapabilities !== undefined && task.requiredCapabilities.length > 0 && (
+            <Chip icon="🔐">{t('detail.chip.capabilities', { names: task.requiredCapabilities.join(', ') })}</Chip>
+          )}
+          {task.execution.mode === 'scheduled' && (
+            <Chip icon="⏰">{t('detail.chip.nextRun', { cron: task.execution.cron ?? '', time: fmtTime(task.execution.nextRunAt) })}</Chip>
+          )}
+          {task.blocked && <Chip icon="⛔" tone="urgent">{t('shared.blocked')}</Chip>}
+          {task.checklist !== undefined && task.checklist.length > 0 && (
+            <Chip icon="☑" tone={task.status === 'in_review' && task.checklist.some(i => !i.checked) ? 'urgent' : undefined}>
+              {t('detail.chip.checklist', { done: checklistProgress(task).done, total: task.checklist.length })}
+            </Chip>
+          )}
+          {task.branch !== undefined && (
+            <Chip icon="🌿" tone={undefined}>Worktree · {task.branch.length > 28 ? `${task.branch.slice(0, 28)}…` : task.branch}</Chip>
+          )}
+          {(task.isolation === undefined || task.isolation === 'worktree') && task.branch === undefined && <Chip icon="🌿">{t('detail.chip.isolated')}</Chip>}
+          {holder !== undefined && (
+            <button
+              type="button"
+              className="dsh-atb-chip2 dsh-atb-chip-btn"
+              data-tone={stale ? 'urgent' : undefined}
+              title={t('detail.chip.holderTitle', { id: holder })}
+              onClick={() => jumpToSession(holder)}
+            >
+              <span className="dsh-atb-chip2-icon">{stale ? '⏱' : '🤖'}</span>
+              {stale ? t('detail.chip.holderStale') : t('detail.chip.holderBy')}{shortId(holder)}{t('detail.chip.holderSuffix')}
+            </button>
+          )}
+          {task.trashedAt !== undefined && <Chip icon="🗑" tone="urgent">{t('detail.chip.trashed')}</Chip>}
+          <Chip>v{task.version}</Chip>
+        </div>
+        <div className="dsh-atb-detail-sub">
+          {t('detail.sub.line', { time: fmtTime(task.updatedAt), who: task.updatedBy.kind === 'agent' ? `🤖 ${shortId(task.updatedBy.sessionId)}` : task.updatedBy.kind === 'system' ? t('detail.updatedBy.system') : t('detail.updatedBy.user') })}
         </div>
         <div className="dsh-atb-detail-topbtns">
           {targetSessionId !== undefined && (
             <button
               type="button"
               className="dsh-atb-detail-session"
-              title={`一键跳转到对应会话：${targetSessionId}`}
+              title={t('detail.session.jumpTitle', { id: targetSessionId })}
               onClick={() => jumpToSession(targetSessionId)}
             >
-              🤖 跳转会话 ({shortId(targetSessionId)}) ↗
+              {t('detail.session.jump')}
             </button>
           )}
           <button
@@ -658,33 +781,33 @@ export function TaskDetail({
             className="dsh-atb-detail-edit"
             data-active={showRawMarkdown ? 'true' : undefined}
             aria-pressed={showRawMarkdown}
-            aria-label={showRawMarkdown ? '切换为 Markdown 渲染预览' : '切换为原文，查看 Markdown 标记'}
-            title={showRawMarkdown ? '切换为 Markdown 渲染预览' : '切换为原文，查看 Markdown 标记'}
+            aria-label={t('detail.action.sourceToggle')}
+            title={showRawMarkdown ? t('detail.action.renderTitle') : t('detail.action.rawTitle')}
             onClick={() => setShowRawMarkdown(value => !value)}
           >
-            {showRawMarkdown ? '渲染' : '原文'}
+            {showRawMarkdown ? t('detail.action.render') : t('detail.action.raw')}
           </button>
-          <button type="button" className="dsh-atb-detail-edit" onClick={() => controller.openEditor(task.id)}>✎ 编辑</button>
+          <button type="button" className="dsh-atb-detail-edit" onClick={() => controller.openEditor(task.id)}>{t('detail.action.edit')}</button>
           <button
             type="button"
             className="dsh-atb-detail-edit"
-            title="复制此任务的全部配置为一张新卡（待办列）"
+            title={t('detail.action.duplicateTitle')}
             disabled={actionBusy}
             onClick={() => runAction(() => controller.duplicate(task))}
           >
-            ⧉ 复制
+            {t('detail.action.duplicate')}
           </button>
           <button
             type="button"
             className="dsh-atb-detail-edit"
-            title="把此任务的配置（含清单）保存为模板，新建任务时可用"
+            title={t('detail.action.saveTplTitle')}
             disabled={actionBusy}
             onClick={() => runAction(async () => {
               const ok = await controller.saveAsTemplate(task)
-              if (ok) showAlert('已存为模板（新建任务 ▼ 下拉可用，可在模板管理中改名）')
+              if (ok) showAlert(t('detail.action.saveTplDone'))
             })}
           >
-            ⌗ 存为模板
+            {t('detail.action.saveTpl')}
           </button>
           {onToggleFullScreen !== undefined && (
             <button
@@ -701,30 +824,30 @@ export function TaskDetail({
             <button
               type="button"
               className="dsh-atb-detail-run"
-              title="续跑：保留现有 worktree 与分支（上次的改动和提交都在原处），在其上继续执行；默认「立即执行」会重置为全新基线"
+              title={t('detail.action.reuseTitle')}
               disabled={actionBusy}
               onClick={() => runAction(() => controller.run(task.id, true))}
             >
-              ↻ 续跑
+              {t('detail.action.reuse')}
             </button>
           )}
           {canRun && (
             <button
               type="button"
               className="dsh-atb-detail-run"
-              title={task.model !== undefined ? `新会话执行（${task.model.model}）` : '新会话执行（默认模型）'}
+              title={task.model !== undefined ? t('detail.action.runTitleModel', { model: task.model.model }) : t('detail.action.runTitleDefault')}
               disabled={actionBusy}
               onClick={() => runAction(() => controller.run(task.id))}
             >
-              ▶ 立即执行
+              {t('detail.action.run')}
             </button>
           )}
           {runningExecution !== undefined && (confirmCancel
             ? (
               <span className="dsh-atb-confirm">
-                <span className="dsh-atb-confirm-label">停止该执行会话？</span>
-                <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => { void controller.cancel(task.id); setConfirmCancel(false) }}>停止</button>
-                <button type="button" className="dsh-atb-btn" onClick={() => setConfirmCancel(false)}>取消</button>
+                <span className="dsh-atb-confirm-label">{t('detail.action.stopConfirm')}</span>
+                <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => { void controller.cancel(task.id); setConfirmCancel(false) }}>{t('detail.action.stop')}</button>
+                <button type="button" className="dsh-atb-btn" onClick={() => setConfirmCancel(false)}>{t('shared.cancel')}</button>
               </span>
             )
             : (
@@ -732,57 +855,18 @@ export function TaskDetail({
                 type="button"
                 className="dsh-atb-detail-run"
                 data-danger="true"
-                title={`停止执行会话 ${runningExecution.sessionId ?? ''}（任务回到待办）`}
+                title={t('detail.action.stopTitle', { id: runningExecution.sessionId ?? '' })}
                 onClick={() => setConfirmCancel(true)}
               >
-                ■ 停止执行
+                {t('detail.action.stopExec')}
               </button>
             ))}
-        </div>
-        <div className="dsh-atb-detail-chips">
-          <Chip tone={task.urgency}>● {URGENCY_LABEL[task.urgency] ?? task.urgency}</Chip>
-          <Chip icon="📁">{ws?.title ?? shortId(task.workspaceId)}</Chip>
-          {task.model !== undefined && (
-            <Chip
-              icon="✦"
-              title={`固定模型: ${task.model.provider}/${task.model.model}${task.model.reasoningEffort !== undefined ? ` · 思考强度: ${task.model.reasoningEffort}` : ''}`}
-            >
-              {task.model.model}{task.model.reasoningEffort !== undefined ? ` · ${task.model.reasoningEffort}` : ''}
-            </Chip>
-          )}
-          {task.speed === 'fast' && <Chip icon="⚡">快速</Chip>}
-          {task.permissionMode !== undefined && <Chip icon="🛡">{task.permissionMode === 'danger-full-access' ? 'Full access' : task.permissionMode === 'workspace-write' ? 'Workspace Write' : 'Read Only'}</Chip>}
-          {task.presetId !== undefined && <Chip icon="🎛" >{task.presetId}</Chip>}
-          {task.requiredCapabilities !== undefined && <Chip icon="🔐">能力 · {task.requiredCapabilities.join(', ')}</Chip>}
-          {task.execution.mode === 'scheduled' && (
-            <Chip icon="⏰">{task.execution.cron} · 下次 {fmtTime(task.execution.nextRunAt)}</Chip>
-          )}
-          {task.blocked && <Chip icon="⛔" tone="urgent">受阻</Chip>}
-          {task.checklist !== undefined && task.checklist.length > 0 && (
-            <Chip icon="☑" tone={task.status === 'in_review' && task.checklist.some(i => !i.checked) ? 'urgent' : undefined}>
-              清单 {checklistProgress(task).done}/{task.checklist.length}
-            </Chip>
-          )}
-          {task.branch !== undefined && (
-            <Chip icon="🌿" tone={undefined}>Worktree · {task.branch.length > 28 ? `${task.branch.slice(0, 28)}…` : task.branch}</Chip>
-          )}
-          {(task.isolation === undefined || task.isolation === 'worktree') && task.branch === undefined && <Chip icon="🌿">Worktree 隔离</Chip>}
-          {holder !== undefined && (
-            <Chip icon={stale ? '⏱' : '🤖'} tone={stale ? 'urgent' : undefined}>
-              {stale ? '认领超时 · ' : '由 '}{shortId(holder)} 持有
-            </Chip>
-          )}
-          {task.trashedAt !== undefined && <Chip icon="🗑" tone="urgent">已删除待清除</Chip>}
-          <Chip>v{task.version}</Chip>
-        </div>
-        <div className="dsh-atb-detail-sub">
-          更新 {fmtTime(task.updatedAt)} · 最近操作 {task.updatedBy.kind === 'agent' ? `🤖 ${shortId(task.updatedBy.sessionId)}` : task.updatedBy.kind === 'system' ? '⚙️ 系统' : '👤 用户'}
         </div>
       </div>
 
       {task.description.length > 0 && (
         <div className="dsh-atb-fieldcard">
-          <div className="dsh-atb-fieldcard-label">描述</div>
+          <div className="dsh-atb-fieldcard-label">{t('detail.field.description')}</div>
           <PreviewText
             className="dsh-atb-desc"
             text={task.description}
@@ -795,7 +879,7 @@ export function TaskDetail({
 
       {task.prompt.length > 0 && (
         <div className="dsh-atb-fieldcard" data-kind="prompt">
-          <div className="dsh-atb-fieldcard-label">执行 Prompt</div>
+          <div className="dsh-atb-fieldcard-label">{t('detail.field.prompt')}</div>
           <PreviewText
             className="dsh-atb-promptbox"
             text={task.prompt}
@@ -831,39 +915,39 @@ export function TaskDetail({
                 ? (
                     <span key={to} className="dsh-atb-confirm">
                       <span className="dsh-atb-confirm-label" data-tone={unchecked > 0 ? 'bad' : undefined}>
-                        {unchecked > 0 ? `仍有 ${unchecked} 项清单未勾选，确认完成？` : '确认完成？'}
+                        {unchecked > 0 ? t('detail.move.confirmDoneUnchecked', { n: unchecked }) : t('detail.move.confirmDone')}
                       </span>
-                      <button type="button" className="dsh-atb-btn" data-primary="true" onClick={() => { void controller.move(task.id, task.version, 'done'); setConfirmDone(false) }}>确认</button>
-                      <button type="button" className="dsh-atb-btn" onClick={() => setConfirmDone(false)}>取消</button>
+                      <button type="button" className="dsh-atb-btn" data-primary="true" onClick={() => { void controller.move(task.id, task.version, 'done'); setConfirmDone(false) }}>{t('detail.move.confirm')}</button>
+                      <button type="button" className="dsh-atb-btn" onClick={() => setConfirmDone(false)}>{t('shared.cancel')}</button>
                     </span>
                   )
-                : <button key={to} type="button" className="dsh-atb-movebtn" data-to={to} onClick={() => setConfirmDone(true)}>移至→{MOVE_LABEL[to]}</button>)
+                : <button key={to} type="button" className="dsh-atb-movebtn" data-to={to} onClick={() => setConfirmDone(true)}>{t('detail.move.to', { status: t(MOVE_KEYS[to]) })}</button>)
             : (
                 <button key={to} type="button" className="dsh-atb-movebtn" data-to={to} onClick={() => void controller.move(task.id, task.version, to)}>
-                  移至→{MOVE_LABEL[to]}
+                  {t('detail.move.to', { status: t(MOVE_KEYS[to]) })}
                 </button>
               ))}
           <button type="button" className="dsh-atb-movebtn" data-to="blocked" onClick={() => void controller.toggleBlocked(task)}>
-            {task.blocked ? '✓ 解除受阻' : '⛔ 标记受阻'}
+            {task.blocked ? t('detail.blocked.unmark') : t('detail.blocked.mark')}
           </button>
           {holder !== undefined && (
             <button
               type="button"
               className="dsh-atb-movebtn"
               data-to="release"
-              title={`释放 ${holder} 的认领：任务回到待办（持有会话可能仍在工作，确认它已停止后再释放）`}
+              title={t('detail.release.title', { id: holder })}
               onClick={() => void controller.move(task.id, task.version, 'todo')}
             >
-              🔓 释放认领
+              {t('detail.release.button')}
             </button>
           )}
         </div>
       </div>
 
       <div className="dsh-atb-section">
-        <h4>评论{task.comments.length > 0 && <span className="dsh-atb-count2">{task.comments.length}</span>}</h4>
+        <h4>{t('detail.comments.title')}{task.comments.length > 0 && <span className="dsh-atb-count2">{task.comments.length}</span>}</h4>
         {task.comments.length === 0
-          ? <div className="dsh-atb-empty2">暂无评论 — agent 交接时会在这里汇报改动与验证结果</div>
+          ? <div className="dsh-atb-empty2">{t('detail.comments.empty')}</div>
           : (
               <div className="dsh-atb-commentlist">
                 {task.comments.map(c => {
@@ -876,7 +960,7 @@ export function TaskDetail({
                       </div>
                       <div className="dsh-atb-bubble-main">
                         <div className="dsh-atb-bubble-meta">
-                          <b>{isAgent ? `agent ${shortId(c.threadId)}` : '用户'}</b>
+                          <b>{isAgent ? `agent ${shortId(c.threadId)}` : t('detail.comments.user')}</b>
                           <span>{fmtTime(c.createdAt)}</span>
                         </div>
                         <PreviewText
@@ -896,7 +980,7 @@ export function TaskDetail({
           <textarea
             className="dsh-atb-composer-input"
             value={comment}
-            placeholder="以用户身份留言（agent 开工前会读）…"
+            placeholder={t('detail.composer.placeholder')}
             onChange={e => setComment(e.target.value)}
             onKeyDown={e => {
               if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && comment.trim().length > 0) {
@@ -913,30 +997,30 @@ export function TaskDetail({
               void controller.comment(task.id, comment).then(ok => { if (ok) setComment('') })
             }}
           >
-            发表
+            {t('detail.composer.send')}
           </button>
         </div>
       </div>
 
       {task.executions.length > 0 && (
         <div className="dsh-atb-section">
-          <h4>执行记录<span className="dsh-atb-count2">{task.executions.length}</span>
+          <h4>{t('detail.exec.title')}<span className="dsh-atb-count2">{task.executions.length}</span>
             {task.executionsPruned !== undefined && task.executionsPruned > 0 && (
-              <span className="dsh-atb-count2" title={`更早的 ${task.executionsPruned} 条执行记录已按保留上限清理`}>+{task.executionsPruned} 已清理</span>
+              <span className="dsh-atb-count2" title={t('detail.exec.prunedTitle', { n: task.executionsPruned })}>{t('detail.exec.pruned', { n: task.executionsPruned })}</span>
             )}
           </h4>
           <div className="dsh-atb-execlist">
             {[...task.executions].reverse().map(e => (
               <div key={e.id} className="dsh-atb-exec-row">
                 <span className="dsh-atb-exec-dot" data-outcome={e.outcome} />
-                <span className="dsh-atb-exec-trigger">{e.trigger === 'manual' ? '手动' : '定时'}</span>
-                <span className="dsh-atb-exec-outcome" data-outcome={e.outcome}>{OUTCOME_LABEL[e.outcome] ?? e.outcome}</span>
+                <span className="dsh-atb-exec-trigger">{e.trigger === 'manual' ? t('detail.exec.trigger.manual') : t('detail.exec.trigger.scheduled')}</span>
+                <span className="dsh-atb-exec-outcome" data-outcome={e.outcome}>{t(OUTCOME_KEYS[e.outcome] ?? e.outcome)}</span>
                 <span className="dsh-atb-exec-time">{fmtTime(e.startedAt)}{e.endedAt !== undefined && ` · ${duration(e.startedAt, e.endedAt)}`}</span>
                 {e.sessionId !== undefined && (
                   <button
                     type="button"
                     className="dsh-atb-exec-session"
-                    title={`点击打开该执行会话：${e.sessionId}`}
+                    title={t('detail.exec.openTitle', { id: e.sessionId })}
                     onClick={() => jumpToSession(e.sessionId!)}
                   >
                     🤖 {shortId(e.sessionId)} ↗
@@ -951,16 +1035,16 @@ export function TaskDetail({
 
       <div className="dsh-atb-dangerzone">
         {task.trashedAt === undefined
-          ? <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => void controller.remove(task.id, task.version, false)}>🗑 删除（标记待清除）</button>
+          ? <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => void controller.remove(task.id, task.version, false)}>{t('detail.danger.delete')}</button>
           : (confirmPurge
               ? (
                   <span className="dsh-atb-confirm">
-                    <span className="dsh-atb-confirm-label">物理清除不可恢复</span>
-                    <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => { void controller.remove(task.id, task.version, true); setConfirmPurge(false) }}>确认清除</button>
-                    <button type="button" className="dsh-atb-btn" onClick={() => setConfirmPurge(false)}>取消</button>
+                    <span className="dsh-atb-confirm-label">{t('detail.danger.purgeConfirm')}</span>
+                    <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => { void controller.remove(task.id, task.version, true); setConfirmPurge(false) }}>{t('detail.danger.purgeGo')}</button>
+                    <button type="button" className="dsh-atb-btn" onClick={() => setConfirmPurge(false)}>{t('shared.cancel')}</button>
                   </span>
                 )
-              : <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => setConfirmPurge(true)}>🔥 物理清除（需确认）</button>)}
+              : <button type="button" className="dsh-atb-btn" data-danger="true" onClick={() => setConfirmPurge(true)}>{t('detail.danger.purge')}</button>)}
       </div>
 
       {alertEl}

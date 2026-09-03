@@ -45,7 +45,7 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; catego
       ].join('\n'),
       urgency: 'urgent',
       speed: 'standard',
-      permissionMode: 'workspace-write',
+      permission: 'workspace-write',
       checklist: ['已复现并定位根因', '修复已提交到任务分支', '回归测试通过'],
     },
   },
@@ -58,7 +58,7 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; catego
       prompt: '执行发布流程：版本号更新、构建、测试、变更记录，完成后按序交接（不要实际推送/发布，等用户确认）。',
       urgency: 'normal',
       speed: 'standard',
-      permissionMode: 'workspace-write',
+      permission: 'workspace-write',
       checklist: ['版本号已更新（package.json 与版本常量同步）', '构建通过', '全部测试通过', '变更记录已写'],
     },
   },
@@ -75,7 +75,7 @@ export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; name: string; catego
       ].join('\n'),
       urgency: 'relaxed',
       speed: 'standard',
-      permissionMode: 'read-only',
+      permission: 'read-only',
       execution: { mode: 'scheduled', cron: '0 9 * * 1' },
     },
   },
@@ -134,10 +134,14 @@ export class TemplateStore {
       parsed = parsed.map(template => {
         const seed = template.builtin === true ? seeds.get(template.id) : undefined
         if (seed === undefined) return template
+        // Legacy fork stored permission under `permissionMode`; a template
+        // carrying it counts as having the field (no default re-seed needed).
+        const legacyPermission = (template.task as unknown as { permissionMode?: unknown }).permissionMode
         const missingCategory = template.category === undefined && seed.category !== undefined
         const missingSpeed = template.task.speed === undefined && seed.task.speed !== undefined
-        const missingPermissionMode = template.task.permissionMode === undefined && seed.task.permissionMode !== undefined
-        if (!missingCategory && !missingSpeed && !missingPermissionMode) return template
+        const missingPermission = template.task.permission === undefined
+          && seed.task.permission !== undefined && legacyPermission === undefined
+        if (!missingCategory && !missingSpeed && !missingPermission) return template
         changed = true
         return {
           ...template,
@@ -145,6 +149,14 @@ export class TemplateStore {
           task: { ...seed.task, ...template.task },
           updatedAt: Date.now(),
         }
+      }).map(template => {
+        // Canonicalize any legacy fork `permissionMode` onto `permission`.
+        const legacy = (template.task as unknown as { permissionMode?: unknown }).permissionMode
+        if (legacy !== undefined && template.task.permission === undefined) {
+          const { permissionMode: _dropped, ...rest } = template.task as unknown as { permissionMode?: unknown } & TaskTemplate['task']
+          return { ...template, task: { ...rest, permission: legacy as string } }
+        }
+        return template
       })
       if (changed) {
         try { await this.persist(parsed) } catch { /* best effort — memory still carries the migration */ }

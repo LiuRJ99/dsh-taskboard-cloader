@@ -10,6 +10,8 @@ import { mkdir, open, readFile, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
   LEDGER_SCHEMA_VERSION,
+  asBoardSettings,
+  asPermission,
   emptyLedger,
   isPlausibleTaskRecord,
   normalizeRequiredCapabilities,
@@ -78,6 +80,19 @@ export class TaskStore {
             console.warn('[dsh-taskboard] dropping ledger entry with invalid requiredCapabilities:', task.id, error)
             continue
           }
+          // Fork 0.5.x ledgers spelled the permission preset `permissionMode`;
+          // canonicalize onto `permission` (identical three values) so the
+          // post-merge host reads one field everywhere.
+          const legacy = (entry as Record<string, unknown>).permissionMode
+          if (task.permission === undefined && typeof legacy === 'string') {
+            try {
+              task.permission = asPermission(legacy)
+            } catch {
+              console.warn('[dsh-taskboard] dropping ledger entry with invalid permissionMode:', task.id)
+              continue
+            }
+          }
+          delete (task as unknown as Record<string, unknown>).permissionMode
           plausible.push(task)
         }
         const tasks = plausible
@@ -91,7 +106,20 @@ export class TaskStore {
             task.claimedAt = task.updatedAt
           }
         }
-        this.ledger = { schemaVersion: LEDGER_SCHEMA_VERSION, revision: parsed.revision, tasks }
+        let settings = undefined
+        if (parsed.settings !== undefined) {
+          try {
+            settings = asBoardSettings(parsed.settings)
+          } catch {
+            console.warn('[dsh-taskboard] dropping invalid board settings on load')
+          }
+        }
+        this.ledger = {
+          schemaVersion: LEDGER_SCHEMA_VERSION,
+          revision: parsed.revision,
+          tasks,
+          ...(settings !== undefined ? { settings } : {}),
+        }
       }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code

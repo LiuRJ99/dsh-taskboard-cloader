@@ -40,8 +40,12 @@ export type ApiResult<T> = ApiOk<T> | ApiFail
 /** Full-state response (the reconnect baseline after an SSE gap). */
 export type StateResponse = TaskLedger
 
-/** Workspace listing for the UI pickers. */
-export type WorkspaceView = { id: string; path: string; title: string; sessionCount: number; gitAvailable?: boolean }
+/**
+ * Workspace listing for the UI pickers. `repoCount` (0.6.3): how many repos a
+ * task mirror of this workspace would cover (root repo + nested) — the form's
+ * worktree option shows the mirror badge when it exceeds 1.
+ */
+export type WorkspaceView = { id: string; path: string; title: string; sessionCount: number; gitAvailable?: boolean; repoCount?: number }
 
 /** Create-task request body (actor is always the GUI user). */
 export type CreateTaskBody = {
@@ -54,12 +58,12 @@ export type CreateTaskBody = {
   model?: TaskModel
   /** Taskboard-owned speed preference ('standard' | 'fast'); omitted = standard. */
   speed?: string
-  /** Three Harness file-permission modes; omitted = deployment default. */
-  permissionMode?: string
   /** Code isolation for executions ('worktree' | 'none'); omitted = default. */
   isolation?: string
   /** Agent preset for execution sessions; omitted = deployment default. */
   presetId?: string
+  /** Execution permission preset ('workspace-write' | 'read-only' | 'danger-full-access'); omitted = default. */
+  permission?: string
   /** Acceptance checklist item texts (host mints ids, all unchecked). */
   checklist?: string[]
   /** Lazy-gate Skill names selected by the GUI; taskboard is always included. */
@@ -80,12 +84,12 @@ export type UpdateTaskBody = {
   model?: TaskModel | null
   /** Change the taskboard-owned speed preference. */
   speed?: string | null
-  /** Change the three-value Harness file-permission mode. */
-  permissionMode?: string | null
   /** Change isolation; locked once the task has execution history. */
   isolation?: string
   /** Change the execution preset (takes effect on the next run). */
   presetId?: string | null
+  /** Change the execution permission (0.5.5; 'workspace-write' | 'read-only' | 'danger-full-access'). */
+  permission?: string | null
   /** Replace the whole checklist (GUI owner surface); null clears it. */
   checklist?: unknown
   /** Replace GUI-selected lazy-gate Skill names; taskboard is always included. */
@@ -111,8 +115,28 @@ export type DeleteTaskBody = { ifVersion?: number; purge?: boolean }
 /** Run request body; `reuse: true` = 续跑 (keep a live worktree as-is). */
 export type RunTaskBody = { reuse?: boolean }
 
-/** Merge outcome: `noop: true` = the branch had no commits over HEAD (nothing merged). */
-export type MergeBranchResponse = { merged: boolean; noop?: boolean; branch: string }
+/** One repo's merge outcome in a multi-repo merge (0.6.3; `repo: ''` = the workspace root repo). */
+export type MergeRepoResult = {
+  repo: string
+  branch: string
+  outcome: 'merged' | 'noop' | 'failed'
+  /** Failure reason (verbatim git message) when outcome = 'failed'. */
+  error?: string
+}
+
+/**
+ * Merge outcome. Legacy single-repo tasks keep the flat shape; multi-repo
+ * mirror tasks (0.6.3) additionally return per-repo results — merges run
+ * sequentially and a failed repo does not block the others (plan §4.5).
+ */
+export type MergeBranchResponse = {
+  merged: boolean
+  noop?: boolean
+  /** The merged task branch (legacy single-repo shape; multi-repo responses omit it). */
+  branch?: string
+  /** Present only on multi-repo mirror merges (0.6.3). */
+  results?: MergeRepoResult[]
+}
 
 /** Remove a task's worktree; optionally delete its branch too. */
 export type WorktreeRemoveBody = { deleteBranch?: boolean }
@@ -144,9 +168,10 @@ export type TaskTemplateSpec = {
   execution?: { mode?: string; cron?: string }
   model?: TaskModel
   speed?: string
-  permissionMode?: string
   isolation?: string
   presetId?: string
+  /** Execution permission preset (0.5.5; legacy fork spelling permissionMode is canonicalized on read). */
+  permission?: string
   /** Checklist item texts (host mints ids at create time). */
   checklist?: string[]
   /** Lazy-gate Skill names selected for executions; taskboard is implicit. */
@@ -178,6 +203,49 @@ export type UpdateSettingsBody = {
   defaultIsolation?: string
   /** Category filtered into the + 新建任务 menu; omitted = all categories. */
   templateMenuCategory?: string
+  /** Automatically capture external workspace sessions into the taskboard. */
+  syncExternalSessions?: boolean
+  /** Default permission preset for NEW tasks ('workspace-write' | 'read-only' | 'danger-full-access'). */
+  defaultPermission?: string
+}
+
+/** Prompt completion item for skills and slash commands (0.5.5). */
+export type PromptCompletionItem = {
+  name: string
+  kind: 'skill' | 'command'
+  description?: string
+  hint?: string
+}
+
+/** Prompt completions response (0.5.5). */
+export type PromptCompletionsResponse = {
+  commands: PromptCompletionItem[]
+  skills: PromptCompletionItem[]
+}
+
+/** Model item in catalog (0.5.5). */
+export type CatalogModelItem = {
+  provider: string
+  model: string
+  name?: string
+  description?: string
+  reasoning?: {
+    efforts: Array<{ id: string; name: string; description?: string }>
+    defaultEffort?: string
+  }
+}
+
+/** Preset item in catalog (0.5.5). */
+export type CatalogPresetItem = {
+  id: string
+  name?: string
+}
+
+/** Model and preset catalog response (0.5.5). */
+export type ModelCatalogResponse = {
+  models: CatalogModelItem[]
+  presets: CatalogPresetItem[]
+  defaultPresetId?: string
 }
 
 /** Import dry-run response (0.4.0): every task classified, nothing written. */

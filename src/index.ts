@@ -24,11 +24,13 @@ import { PROTOCOL_SECTION_NAME, PROTOCOL_SECTION_ORDER, TASKBOARD_PROTOCOL } fro
 import { TASKBOARD_SKILL, type SkillsSurface } from './host/skill.ts'
 import { DEFAULT_MAX_CONCURRENT, ExecutionService, type EventsFace } from './host/execution.ts'
 import { createGitFace } from './host/git.ts'
+import { createRepoScanner } from './host/repos.ts'
 import { registerTaskboardRoutes } from './host/routes.ts'
 import { SchedulerService } from './host/scheduler.ts'
 import { dshHomePath } from './host/sdk.ts'
 import { TaskStore } from './host/store.ts'
 import { TemplateStore } from './host/templates.ts'
+import { ExternalSessionSyncService } from './host/session-sync.ts'
 import { registerTaskboardTools, workspaceFace } from './host/tools.ts'
 import type { PermissionMode, TaskModel, TaskSpeed } from './shared/protocol.ts'
 import { MODEL_CAPABILITY_SERVICE, PRIORITY_SERVICE_TIER, type ModelCapabilityProvider } from './shared/model-capabilities.ts'
@@ -139,13 +141,40 @@ export function apply(ctx: Context): void {
     // Settlement listener over the session event bus.
     const events: EventsFace = {
       onSessionEvent: (listener) => wsCtx.on('session/event', (session, event) => {
-        listener(session.id, event as { type: string; data?: unknown })
+        listener(session.id, event as { type: string; data?: unknown }, session as never)
       }),
     }
 
+    let agentSessions: { get?: (id: string) => unknown; list?: () => unknown[] } | undefined
+
+    // External workspace sessions sync service (0.5.4).
+    const sessionSync = new ExternalSessionSyncService({
+      store,
+      workspaces: workspaceFace(wsCtx.workspaceRegistry),
+      events,
+      sessions: {
+        get: id => {
+          try {
+            const registry = (agentSessions ?? wsCtx.get('sessions') ?? wsCtx.get('sessionRegistry') ?? wsCtx.root?.get('sessions')) as { get?: (id: string) => unknown } | undefined
+            return registry?.get?.(id)
+          } catch { return undefined }
+        },
+        list: () => {
+          try {
+            const registry = (agentSessions ?? wsCtx.get('sessions') ?? wsCtx.get('sessionRegistry') ?? wsCtx.root?.get('sessions')) as { list?: () => unknown[] } | undefined
+            return registry?.list?.() ?? []
+          } catch { return [] }
+        },
+      },
+      now,
+    })
+    disposers.push(() => sessionSync.dispose())
+
     // The narrow git face shared by execution (worktree isolation) and the
-    // routes (merge / remove / workspace detection).
+    // routes (merge / remove / workspace detection), plus the shared
+    // nested-repo scanner for multi-repo mirrors (0.6.3).
     const git = createGitFace()
+    const scanner = createRepoScanner()
 
     wsCtx.inject(['agents'], (agentCtx: Context) => {
       const modelCapabilities = (): Promise<readonly import('./shared/model-capabilities.ts').ModelCapability[]> => {
@@ -157,6 +186,7 @@ export function apply(ctx: Context): void {
         const provider = agentCtx.get(MODEL_EXECUTION_SERVICE) as ModelExecutionProvider | undefined
         return provider?.setSessionSpeed(sessionId, model.provider, model.model, speed)
       }
+      agentSessions = agentCtx.get('sessions') as { get?: (id: string) => unknown; list?: () => unknown[] } | undefined
       const execution = new ExecutionService({
         store,
         agents: {
@@ -192,6 +222,7 @@ export function apply(ctx: Context): void {
         },
         now,
         git,
+        scanner,
         // Preset composition (0.3.3): mirror apiproxy's composeAgent — resolve
         // the id BEFORE creation (the session header snapshots meta), mount
         // inside the factory's setup callback. No roster service → undefined
@@ -225,6 +256,16 @@ export function apply(ctx: Context): void {
             return read === undefined ? undefined : read.call(selection)
           } catch { return undefined }
         },
+        setPermission: (sessionId, permission) => {
+          try {
+            const permService = agentCtx.get('permissionPresets') as { set(session: unknown, name: string): void } | undefined
+            const sessions = agentCtx.get('sessions') as { get(id: string): unknown } | undefined
+            const session = sessions?.get(sessionId)
+            if (session !== undefined && permService !== undefined) {
+              permService.set(session, permission)
+            }
+          } catch { /* cosmetic */ }
+        },
         maxConcurrent,
       })
 
@@ -239,7 +280,95 @@ export function apply(ctx: Context): void {
           cancel: (taskId: string) => execution.cancel(taskId),
           modelProviders,
           git,
+          scanner,
           templates,
+          promptCompletions: async () => {
+            try {
+              const skillsService = agentCtx.get('skills') as { list?(options?: unknown): Promise<Array<{ name: string; description?: string }>> } | undefined
+              const commandsService = agentCtx.get('commands') as { list?(): Array<{ name: string; description?: string; input?: { hint?: string } }> } | undefined
+              const rawSkills = skillsService?.list ? await skillsService.list().catch(() => []) : []
+              const rawCommands = commandsService?.list ? commandsService.list() : []
+              return {
+                skills: Array.isArray(rawSkills) ? rawSkills.map(s => ({ name: s.name, description: s.description })) : [],
+                commands: Array.isArray(rawCommands) ? rawCommands.map(c => ({ name: c.name, description: c.description, hint: c.input?.hint })) : [],
+              }
+            } catch {
+              return { skills: [], commands: [] }
+            }
+          },
+          modelCatalog: async () => {
+            try {
+              type ModelItem = {
+                provider: string
+                model: string
+                name?: string
+                description?: string
+                reasoning?: {
+                  efforts: Array<{ id: string; name: string; description?: string }>
+                  defaultEffort?: string
+                }
+              }
+              const models: ModelItem[] = []
+
+              const llm = (agentCtx.get('llm') ?? wsCtx.get('llm')) as {
+                listProviders?(): Array<{ id: string; name?: string }>
+                listModels?(provider: string): Promise<Array<{ id: string; name?: string; description?: string }>>
+                resolveModelInfo?(provider: string, model: string): Promise<{ reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string } }>
+                resolveModel?(provider: string, model: string): Promise<{ reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string } }>
+              } | undefined
+
+              if (llm?.listProviders !== undefined && llm.listModels !== undefined) {
+                const providers = llm.listProviders()
+                for (const p of providers) {
+                  try {
+                    const list = await llm.listModels(p.id)
+                    for (const m of list) {
+                      let reasoning: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string } | undefined
+                      try {
+                        const meta = llm.resolveModelInfo !== undefined
+                          ? await llm.resolveModelInfo(p.id, m.id)
+                          : llm.resolveModel !== undefined ? await llm.resolveModel(p.id, m.id) : undefined
+                        if (meta?.reasoning !== undefined) {
+                          reasoning = meta.reasoning
+                        }
+                      } catch { /* ignore */ }
+
+                      models.push({
+                        provider: p.id,
+                        model: m.id,
+                        name: m.name,
+                        ...(m.description ? { description: m.description } : {}),
+                        ...(reasoning !== undefined ? { reasoning } : {}),
+                      })
+                    }
+                  } catch { /* continue */ }
+                }
+              }
+
+              const presetsService = agentCtx.get('agentPresets') as {
+                list?(): Promise<{ ok: boolean; value?: { presets: Array<{ id: string; name?: string; isDefault?: boolean }> } } | Array<{ id: string; name?: string; isDefault?: boolean }>>
+              } | undefined
+              const presets: Array<{ id: string; name?: string }> = []
+              let defaultPresetId: string | undefined
+
+              if (presetsService?.list !== undefined) {
+                try {
+                  const raw = await presetsService.list()
+                  const list = (raw as { ok?: boolean; value?: { presets?: unknown[] } }).ok === true
+                    ? (raw as { value: { presets: Array<{ id: string; name?: string; isDefault?: boolean }> } }).value.presets
+                    : Array.isArray(raw) ? raw : []
+                  for (const p of list) {
+                    presets.push({ id: p.id, name: p.name })
+                    if (p.isDefault) defaultPresetId = p.id
+                  }
+                } catch { /* continue */ }
+              }
+
+              return { models, presets, ...(defaultPresetId !== undefined ? { defaultPresetId } : {}) }
+            } catch {
+              return { models: [], presets: [] }
+            }
+          },
         })
         return () => disposeRoutes?.()
       })

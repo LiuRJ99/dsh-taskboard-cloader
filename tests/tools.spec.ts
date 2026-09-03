@@ -211,18 +211,23 @@ describe('taskboard tool outputs', () => {
         urgency: 'normal',
         model: { provider: ' deepseek ', model: ' reasoner ', reasoningEffort: ' high ' },
         speed: 'fast',
-        permissionMode: 'danger-full-access',
+        permission: 'danger-full-access',
       }, exec,
-    ) as { task: { model?: { provider: string; model: string; reasoningEffort?: string }; speed?: string; permissionMode?: string } }
+    ) as { task: { model?: { provider: string; model: string; reasoningEffort?: string }; speed?: string; permission?: string } }
     expect(ok.task.model).toEqual({ provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' })
     expect(ok.task.speed).toBe('fast')
-    expect(ok.task.permissionMode).toBe('danger-full-access')
+    expect(ok.task.permission).toBe('danger-full-access')
     await expect(tool('taskboard_create').execute(
       { title: 'M4', workspaceId: 'ws-a', urgency: 'normal', speed: 'turbo' }, exec,
     )).rejects.toThrow('speed')
     await expect(tool('taskboard_create').execute(
-      { title: 'M5', workspaceId: 'ws-a', urgency: 'normal', permissionMode: 'full-access' }, exec,
-    )).rejects.toThrow('permissionMode')
+      { title: 'M5', workspaceId: 'ws-a', urgency: 'normal', permission: 'full-access' }, exec,
+    )).rejects.toThrow('permission')
+    // Legacy fork alias `permissionMode` still accepted and canonicalized.
+    const legacy = await tool('taskboard_create').execute(
+      { title: 'M6', workspaceId: 'ws-a', urgency: 'normal', permissionMode: 'read-only' }, exec,
+    ) as { task: { permission?: string } }
+    expect(legacy.task.permission).toBe('read-only')
     for (const dispose of disposers) dispose()
   })
 })

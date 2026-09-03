@@ -1,21 +1,22 @@
 /**
  * The task form modal — create and edit in one polished dialog: header with
- * icon / subtitle / close, a sectioned field grid (title, project, model,
- * urgency tri-picker with hints, description, prompt, execution-mode
- * segmented picker, cron with presets and a live next-run preview), and a
- * footer bar carrying the validation hint and the actions. Esc closes;
- * the title input is focused on open.
+ * icon / subtitle / close, a two-column wide layout (left column: core
+ * fields + execution configuration; right column: description + execution
+ * prompt with / slash completion), and a footer bar carrying the validation
+ * hint and the actions. Esc closes; the title input is focused on open.
  *
  * @module dsh-taskboard/client/board/TaskFormModal
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { BoardController, GateCapabilityOption } from '../controller.ts'
 import type { TaskTemplateSpec } from '../../shared/api.ts'
-import type { ChecklistItem, IsolationMode, PermissionMode, TaskCapability, TaskSpeed, Urgency } from '../../shared/protocol.ts'
-import { MAX_CHECKLIST_ITEMS, TASKBOARD_CAPABILITY, defaultIsolationOf, nextCronTime, normalizeRequiredCapabilities, parseCron } from '../../shared/protocol.ts'
+import type { ChecklistItem, IsolationMode, PermissionMode, TaskCapability, TaskRecord, TaskSpeed, Urgency } from '../../shared/protocol.ts'
+import { MAX_CHECKLIST_ITEMS, TASKBOARD_CAPABILITY, asPermission, defaultIsolationOf, defaultPermissionOf, nextCronTime, normalizeRequiredCapabilities, parseCron } from '../../shared/protocol.ts'
 import { supportsTaskFastSpeed } from '../../shared/model-capabilities.ts'
 import { isTaskModelSupported } from '../model-catalog.ts'
 import { fmtTime } from './format.ts'
+import { useT, type Translate } from '../i18n/runtime.ts'
+import { SlashPromptInput } from './SlashPromptInput.tsx'
 
 /** One row of the configured model catalog (from llm.models). */
 export interface CatalogModel {
@@ -76,24 +77,32 @@ export function saveLastModel(model?: { provider: string; model: string; reasoni
   } catch { /* storage unavailable */ }
 }
 
-/** Urgency segmented options with a one-line hint each. */
-const URGENCY_OPTIONS: ReadonlyArray<{ value: Urgency; label: string; hint: string }> = [
-  { value: 'urgent', label: '紧急', hint: '优先处理' },
-  { value: 'normal', label: '一般', hint: '正常排期' },
-  { value: 'relaxed', label: '不急', hint: '有空再做' },
+/** Urgency segmented options with a one-line hint each (translated per render). */
+const urgencyOptions = (t: Translate): ReadonlyArray<{ value: Urgency; label: string; hint: string }> => [
+  { value: 'urgent', label: t('form.urgency.urgent'), hint: t('form.urgency.urgentHint') },
+  { value: 'normal', label: t('form.urgency.normal'), hint: t('form.urgency.normalHint') },
+  { value: 'relaxed', label: t('form.urgency.relaxed'), hint: t('form.urgency.relaxedHint') },
 ]
 
-/** The three Harness permission modes, matching the access selector. */
-const PERMISSION_OPTIONS: ReadonlyArray<{ value: PermissionMode; label: string; hint: string }> = [
-  { value: 'read-only', label: 'Read Only', hint: '只读，不修改文件' },
-  { value: 'workspace-write', label: 'Workspace Write', hint: '可修改当前工作区' },
-  { value: 'danger-full-access', label: 'Full access', hint: '不限制文件修改' },
+/** Cron presets offered in the scheduled mode (translated per render). */
+const cronPresets = (t: Translate): ReadonlyArray<{ label: string; cron: string }> => [
+  { label: t('form.cron.daily'), cron: '0 9 * * *' },
+  { label: t('form.cron.hourly'), cron: '0 * * * *' },
+  { label: t('form.cron.every10min'), cron: '*/10 * * * *' },
+  { label: t('form.cron.weekly'), cron: '0 9 * * 1' },
 ]
 
-/** The taskboard-owned speed preference. */
-const SPEED_OPTIONS: ReadonlyArray<{ value: TaskSpeed; label: string; hint: string }> = [
-  { value: 'standard', label: '标准', hint: '使用标准请求路径' },
-  { value: 'fast', label: '快速', hint: '向执行适配器请求更低延迟路径' },
+/** Permission presets aligned with DSH (translated per render). */
+const permissionOptions = (t: Translate): ReadonlyArray<{ value: PermissionMode; label: string; hint: string; icon: string }> => [
+  { value: 'workspace-write', label: t('form.perm.write'), hint: t('form.perm.writeHint'), icon: '📁' },
+  { value: 'read-only', label: t('form.perm.readOnly'), hint: t('form.perm.readOnlyHint'), icon: '🔒' },
+  { value: 'danger-full-access', label: t('form.perm.fullAccess'), hint: t('form.perm.fullAccessHint'), icon: '⚡' },
+]
+
+/** The taskboard-owned speed preference (translated per render). */
+const speedOptions = (t: Translate): ReadonlyArray<{ value: TaskSpeed; label: string; hint: string }> => [
+  { value: 'standard', label: t('form.speed.standard'), hint: t('form.speed.standardHint') },
+  { value: 'fast', label: t('form.speed.fast'), hint: t('form.speed.fastHint') },
 ]
 
 /** Human labels for the built-in gated skills; adapted skills fall back to their name. */
@@ -119,13 +128,14 @@ function CapabilityEditor({
   options,
   selected,
   onChange,
-  permissionMode,
+  permission,
 }: {
   options: readonly GateCapabilityOption[]
   selected: readonly TaskCapability[]
   onChange: (next: TaskCapability[]) => void
-  permissionMode: PermissionMode
+  permission: PermissionMode
 }) {
+  const t = useT()
   const selectedSet = new Set(selected)
   const toggle = (name: TaskCapability): void => {
     const next = new Set(selectedSet)
@@ -149,21 +159,13 @@ function CapabilityEditor({
           <small>{option.name}</small>
         </label>
       ))}
-      {selected.length > 0 && permissionMode === 'danger-full-access' && (
-        <span className="dsh-atb-field-note dsh-atb-field-note-warn">高权限文件访问与浏览器/电脑操作会一起授权，请确认任务来源可信。</span>
+      {selected.length > 0 && permission === 'danger-full-access' && (
+        <span className="dsh-atb-field-note dsh-atb-field-note-warn">{t('form.capabilities.fullWarn')}</span>
       )}
-      <span className="dsh-atb-field-note">勾选项只在该任务执行或被会话认领时授权，不会改变其他会话。</span>
+      <span className="dsh-atb-field-note">{t('form.capabilities.hint')}</span>
     </div>
   )
 }
-
-/** Cron presets offered in the scheduled mode. */
-const CRON_PRESETS: ReadonlyArray<{ label: string; cron: string }> = [
-  { label: '每天 09:00', cron: '0 9 * * *' },
-  { label: '每小时', cron: '0 * * * *' },
-  { label: '每 10 分钟', cron: '*/10 * * * *' },
-  { label: '每周一 09:00', cron: '0 9 * * 1' },
-]
 
 /** Field shell: label + control, optionally spanning the full grid row. */
 function Field({ label, required = false, full = false, children }: {
@@ -199,6 +201,7 @@ interface CheckRow {
  * replaces the whole list on save).
  */
 function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChange: (rows: CheckRow[]) => void; editing: boolean }) {
+  const t = useT()
   const setRow = (index: number, patch: Partial<CheckRow>): void => {
     const next = rows.map((row, i) => i === index ? { ...row, ...patch } : row)
     onChange(next)
@@ -217,7 +220,7 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
               type="checkbox"
               className="dsh-atb-cke-box"
               checked={row.checked}
-              title={`勾选状态随保存保留（当前勾选人：${row.checkedBy ?? '未勾选'}）`}
+              title={t('form.check.checkedTitle', { who: row.checkedBy ?? t('form.check.notCheckedYet') })}
               onChange={e => setRow(index, { checked: e.target.checked })}
             />
           )}
@@ -225,18 +228,18 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
             className="dsh-atb-cke-text"
             value={row.text}
             maxLength={200}
-            placeholder={`验收项 ${index + 1}（完成标准）`}
+            placeholder={t('form.check.itemPlaceholder', { n: index + 1 })}
             spellCheck={false}
             onChange={e => setRow(index, { text: e.target.value })}
           />
-          <button type="button" className="dsh-atb-cke-del" title="删除该验收项" onClick={() => onChange(rows.filter((_, i) => i !== index))}>✕</button>
+          <button type="button" className="dsh-atb-cke-del" title={t('form.check.removeTitle')} onClick={() => onChange(rows.filter((_, i) => i !== index))}>✕</button>
         </div>
       ))}
       {rows.length < MAX_CHECKLIST_ITEMS && (
-        <button type="button" className="dsh-atb-cke-add" onClick={() => onChange([...rows, { text: '', checked: false }])}>＋ 添加验收项</button>
+        <button type="button" className="dsh-atb-cke-add" onClick={() => onChange([...rows, { text: '', checked: false }])}>{t('form.check.add')}</button>
       )}
       {rows.length > 0 && (
-        <span className="dsh-atb-cke-hint">{editing ? `已勾选 ${checked}/${rows.length}（保存将整体覆盖清单，勾选状态保留）` : `共 ${rows.length} 项，执行会话按清单干活并逐项勾选，未完成项验收时高亮`}</span>
+        <span className="dsh-atb-cke-hint">{editing ? t('form.check.hintEdit', { checked, total: rows.length }) : t('form.check.hintCreate', { n: rows.length })}</span>
       )}
     </div>
   )
@@ -249,8 +252,11 @@ function ChecklistEditor({ rows, onChange, editing }: { rows: CheckRow[]; onChan
  * surface).
  * @param controller - the controller.
  * @param task - the task being edited (create mode when absent).
+ * @param sessionId - the hosting session (sidebar context); the created task
+ *   is authorized onto it when provided.
  */
-export function TaskFormModal({ controller, task, sessionId }: { controller: BoardController; task?: TaskRecordLike; sessionId?: string }) {
+export function TaskFormModal({ controller, task, sessionId }: { controller: BoardController; task?: TaskRecord; sessionId?: string }) {
+  const t = useT()
   const state = controller.getSnapshot()
   const prefill: TaskTemplateSpec | undefined = state.templatePrefill
   const editing = task !== undefined
@@ -268,9 +274,6 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
   const [speed, setSpeed] = useState<TaskSpeed>(
     task?.speed === 'fast' || prefill?.speed === 'fast' ? 'fast' : 'standard',
   )
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
-    task?.permissionMode ?? (prefill?.permissionMode === 'read-only' || prefill?.permissionMode === 'danger-full-access' ? prefill.permissionMode : 'workspace-write'),
-  )
   const [requiredCapabilities, setRequiredCapabilities] = useState<TaskCapability[]>(() => extraCapabilitiesOf(task?.requiredCapabilities ?? prefill?.requiredCapabilities))
   const [gateOptions, setGateOptions] = useState<GateCapabilityOption[]>([])
   const [gateDiscoveryReady, setGateDiscoveryReady] = useState(false)
@@ -280,6 +283,10 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
   const [presetId, setPresetId] = useState(initialPreset)
   const [presets, setPresets] = useState<Array<{ id: string; name?: string }>>([])
   const [presetDefault, setPresetDefault] = useState<string | undefined>(undefined)
+  // Permission preset (0.5.5): 'workspace-write' (default) | 'read-only' | 'danger-full-access'
+  const [permission, setPermission] = useState<PermissionMode>(
+    task?.permission ?? (prefill?.permission !== undefined ? asPermission(prefill.permission) : defaultPermissionOf(state.ledger.settings)),
+  )
   // Isolation toggle: create mode starts from the board setting (0.5.0
   // 看板设置 → 默认执行隔离) or the template's choice; edit mode starts from
   // the task and locks once execution began.
@@ -306,16 +313,19 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
     return () => document.removeEventListener('keydown', onKey)
   }, [controller])
 
-  // Model catalog: the controller exposes the installed face when the runtime is up.
+  // Model catalog: prefer the runtime face; the controller falls back to the
+  // host endpoint (0.5.5 multi-tier discovery lives in the client entry).
   useEffect(() => {
-    const face = controller.modelCatalog
-    if (face === undefined) return
-    void face().then(rows => setCatalog(rows.filter(isTaskModelSupported))).catch(() => setCatalog([]))
+    let cancelled = false
+    void controller.fetchModelCatalog().then(rows => {
+      if (cancelled) return
+      setCatalog(rows.filter(isTaskModelSupported))
+    }).catch(() => { if (!cancelled) setCatalog([]) })
+    return () => { cancelled = true }
   }, [controller])
 
-  // Lazy-gate discovery is optional. Do not expose a capability form section or
-  // keep probing fallback names when the gate is absent, disabled, or has no
-  // registered enabled execution capability.
+  // Lazy-gate discovery is optional. Do not expose a capability form section
+  // when the gate is absent, disabled, or has no registered enabled skill.
   useEffect(() => {
     const face = controller.capabilityCatalog
     if (face === undefined) {
@@ -357,13 +367,12 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
     if (!supportsTaskFastSpeed(entry)) setSpeed('standard')
   }, [catalog, model])
 
-  // Preset roster: same lazy face; pre-select the deployment default in
-  // create mode (unless a template pinned one) so executions run with a
-  // real tool set out of the box.
+  // Preset roster: query the controller (runtime face first, host endpoint
+  // fallback); pre-select the deployment default in create mode (unless a
+  // template pinned one) so executions run with a real tool set out of the
+  // box.
   useEffect(() => {
-    const face = controller.presetCatalog
-    if (face === undefined) return
-    void face().then(roster => {
+    void controller.fetchPresetCatalog().then(roster => {
       setPresets(roster.presets)
       setPresetDefault(roster.defaultId)
       // CREATE mode only (review P1): pre-selecting in edit mode would
@@ -387,6 +396,10 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
   // branch and its baseline depend on the choice — plan §3.1).
   const isolationLocked = editing && ((task.executions?.length ?? 0) > 0 || task.status === 'in_progress')
   const gitOk = controller.gitAvailable(workspaceId)
+  // 0.6.3: how many repos a task mirror of this workspace would cover — >1
+  // shows the auto-mirror note under the picker (multi-repo is automatic,
+  // there is deliberately no per-task repo selection this release).
+  const repoCount = controller.repoCount(workspaceId)
   // Non-git project: the worktree option is disabled; submitting keeps the
   // default (runtime auto-degrades with a note) instead of persisting 'none'.
   const isolationDisabled = isolationLocked || !gitOk
@@ -477,10 +490,10 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
         // '' in edit mode clears the pinned model back to the default.
         model: picked ?? null,
         speed: effectiveSpeed,
-        permissionMode,
         requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
         ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
         presetId: presetOut ?? null,
+        permission,
         // [] clears the checklist (host deletes the field on empty).
         checklist: rows.length > 0 ? rows : null,
       })
@@ -493,7 +506,7 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
         execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
         model: picked,
         speed: effectiveSpeed,
-        permissionMode,
+        permission,
         requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
         ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
         ...(presetOut !== undefined ? { presetId: presetOut } : {}),
@@ -522,10 +535,10 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked ?? null,
           speed: effectiveSpeed,
-          permissionMode,
           requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
           ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
           presetId: presetOut ?? null,
+          permission,
           checklist: rows.length > 0 ? rows : null,
         })
         if (saved) await controller.run(task.id)
@@ -539,7 +552,7 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
           execution: mode === 'scheduled' ? { mode, cron: cron.trim() } : { mode },
           model: picked,
           speed: effectiveSpeed,
-          permissionMode,
+          permission,
           requiredCapabilities: normalizeRequiredCapabilities([TASKBOARD_CAPABILITY, ...requiredCapabilities]),
           ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
           ...(presetOut !== undefined ? { presetId: presetOut } : {}),
@@ -551,240 +564,268 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
   }
 
   const hint = !valid
-    ? (title.trim().length === 0 ? '请填写标题' : workspaceId === '' ? '请选择项目' : 'Cron 表达式无效（分 时 日 月 周）')
+    ? (title.trim().length === 0 ? t('form.hint.needTitle') : workspaceId === '' ? t('form.hint.needProject') : t('form.hint.cronBad'))
     : mode === 'scheduled' && nextRun !== null
-      ? `下次运行 ${fmtTime(nextRun)}`
+      ? t('form.hint.nextRun', { time: fmtTime(nextRun) })
       : editing
-        ? `保存后版本 v${task.version} → v${task.version + 1}`
-        : '创建后项目内会话可认领执行'
+        ? t('form.hint.saveVersion', { v: task.version, next: task.version + 1 })
+        : t('form.hint.createClaim')
 
   return (
     <div className="dsh-atb-modal-backdrop" onClick={e => { if (e.target === e.currentTarget) controller.closeForm() }}>
-      <div className="dsh-atb-modal" data-mode={editing ? 'edit' : 'create'} role="dialog" aria-modal="true" aria-label={editing ? '编辑任务' : '新建任务'}>
+      <div className="dsh-atb-modal dsh-atb-taskform-modal" data-mode={editing ? 'edit' : 'create'} role="dialog" aria-modal="true" aria-label={editing ? t('form.title.edit') : t('form.title.create')}>
         <div className="dsh-atb-modal-head">
           <span className="dsh-atb-modal-headicon">{editing ? '✎' : '✚'}</span>
           <div className="dsh-atb-modal-headtext">
-            <h3>{editing ? '编辑任务' : '新建任务'}</h3>
-            <p>{editing ? '调整任务内容与执行配置' : '推入看板，项目内会话可认领执行'}</p>
+            <h3>{editing ? t('form.title.edit') : t('form.title.create')}</h3>
+            <p>{editing ? t('form.subtitle.edit') : t('form.subtitle.create')}</p>
           </div>
-          <button type="button" className="dsh-atb-modal-close" aria-label="关闭" onClick={() => controller.closeForm()}>✕</button>
+          <button type="button" className="dsh-atb-modal-close" aria-label={t('shared.close')} onClick={() => controller.closeForm()}>✕</button>
         </div>
 
-        <div className="dsh-atb-modal-body">
-          <Field label="标题" required full>
-            <input ref={titleRef} value={title} onChange={e => setTitle(e.target.value)} placeholder="一句话说清要做什么" maxLength={200} />
-          </Field>
-
-          <Field label="项目" required>
-            <select value={workspaceId} onChange={e => setWorkspaceId(e.target.value)}>
-              {state.workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.title || ws.path}</option>)}
-            </select>
-          </Field>
-
-          <Field label="模型（默认 = 会话默认模型）">
-            <select value={selectedModel === undefined ? '' : JSON.stringify({ provider: selectedModel.provider, model: selectedModel.model })} onChange={e => chooseModel(e.target.value)}>
-              <option value="">默认模型</option>
-              {catalog.map(m => (
-                <option key={`${m.provider}/${m.model}`} value={JSON.stringify({ provider: m.provider, model: m.model })}>
-                  {m.name ?? m.model}（{m.provider}）
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          {reasoning !== undefined && (
-            <Field label="推理等级">
-              <select value={effectiveEffort ?? ''} onChange={e => chooseEffort(e.target.value)}>
-                {reasoning.defaultEffort === undefined && <option value="">提供方默认</option>}
-                {reasoning.efforts.map(effort => (
-                  <option key={effort.id} value={effort.id} title={effort.description}>{effort.name}</option>
-                ))}
-              </select>
-              <span className="dsh-atb-field-note">跟随模型目录提供的可用等级，不硬编码枚举</span>
+        <div className="dsh-atb-modal-body dsh-atb-taskform-body">
+          {/* Left Column: Core Fields & Execution Configurations */}
+          <div className="dsh-atb-form-col dsh-atb-form-left">
+            <Field label={t('form.field.title')} required full>
+              <input ref={titleRef} value={title} onChange={e => setTitle(e.target.value)} placeholder={t('form.field.titlePlaceholder')} maxLength={200} />
             </Field>
-          )}
 
-          {speedAvailable && (
-            <Field label="速度模式">
-              <select value={effectiveSpeed} onChange={e => setSpeed(e.target.value === 'fast' ? 'fast' : 'standard')}>
-                {SPEED_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}（{option.hint}）</option>)}
-              </select>
-            </Field>
-          )}
+            <div className="dsh-atb-form-subgrid">
+              <Field label={t('form.field.project')} required>
+                <select value={workspaceId} onChange={e => setWorkspaceId(e.target.value)}>
+                  {state.workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.title || ws.path}</option>)}
+                </select>
+              </Field>
 
-          <Field label="权限模式">
-            <select value={permissionMode} onChange={e => setPermissionMode(e.target.value as PermissionMode)}>
-              {PERMISSION_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}（{option.hint}）</option>)}
-            </select>
-            {permissionMode === 'danger-full-access' && <span className="dsh-atb-field-note dsh-atb-field-note-warn">Full access 将关闭审批并允许不受限制的文件修改，请确认任务可信。</span>}
-          </Field>
-
-          {presets.length > 0 && (
-            <Field label="执行模式（preset）">
-              <select value={presetId} onChange={e => setPresetId(e.target.value)} title="执行会话按该 preset 组合（决定工具集与人设）；默认 = 部署默认 preset">
-                <option value="">跟随部署默认{presetDefault !== undefined ? `（当前：${presets.find(p => p.id === presetDefault)?.name ?? presetDefault}）` : ''}</option>
-                {presets.map(p => (
-                  <option key={p.id} value={p.id}>
-                    {p.name ?? p.id}{p.id === presetDefault ? '（部署默认）' : ''}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          )}
-
-          {gateDiscoveryReady && gateOptions.length > 0 && (
-            <Field label="执行能力" full>
-              <CapabilityEditor
-                options={gateOptions}
-                selected={requiredCapabilities}
-                onChange={setRequiredCapabilities}
-                permissionMode={permissionMode}
-              />
-            </Field>
-          )}
-
-          <Field label="紧急度" full>
-            <div className="dsh-atb-urgency-picker">
-              {URGENCY_OPTIONS.map(o => (
-                <button
-                  key={o.value}
-                  type="button"
-                  className="dsh-atb-urgency-opt"
-                  data-urgency={o.value}
-                  data-on={urgency === o.value}
-                  onClick={() => setUrgency(o.value)}
+              <Field label={t('form.field.model')}>
+                <select
+                  value={selectedModel === undefined ? '' : JSON.stringify({ provider: selectedModel.provider, model: selectedModel.model })}
+                  onChange={e => chooseModel(e.target.value)}
                 >
-                  <span className="dsh-atb-urgency-name"><span className="dsh-atb-dot" data-urgency={o.value} />{o.label}</span>
-                  <span className="dsh-atb-urgency-hint">{o.hint}</span>
-                </button>
-              ))}
+                  <option value="">{t('form.field.modelDefault')}</option>
+                  {catalog.map(m => (
+                    <option key={`${m.provider}/${m.model}`} value={JSON.stringify({ provider: m.provider, model: m.model })}>
+                      {t('form.model.option', { name: m.name ?? m.model, provider: m.provider })}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              {reasoning !== undefined && (
+                <Field label={t('form.field.effort')}>
+                  <select value={effectiveEffort ?? ''} onChange={e => chooseEffort(e.target.value)} title={t('form.field.effortTitle')}>
+                    <option value="">{t('form.effort.follow')}{reasoning?.defaultEffort !== undefined ? t('shared.current', { name: reasoning.efforts.find(ef => ef.id === reasoning.defaultEffort)?.name ?? reasoning.defaultEffort }) : ''}</option>
+                    {reasoning.efforts.length > 0 ? (
+                      reasoning.efforts.map(eff => (
+                        <option key={eff.id} value={eff.id}>
+                          {eff.name}{eff.description ? ` (${eff.description})` : ''}
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="low">{t('form.effort.low')}</option>
+                        <option value="medium">{t('form.effort.medium')}</option>
+                        <option value="high">{t('form.effort.high')}</option>
+                        <option value="none">{t('form.effort.none')}</option>
+                      </>
+                    )}
+                  </select>
+                </Field>
+              )}
+
+              {presets.length > 0 && (
+                <Field label={t('form.field.preset')}>
+                  <select value={presetId} onChange={e => setPresetId(e.target.value)} title={t('form.field.presetTitle')}>
+                    <option value="">{t('form.preset.follow')}{presetDefault !== undefined ? t('shared.current', { name: presets.find(p => p.id === presetDefault)?.name ?? presetDefault }) : ''}</option>
+                    {presets.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name ?? p.id}{p.id === presetDefault ? t('form.preset.defaultTag') : ''}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+
+              {speedAvailable && (
+                <Field label={t('form.field.speed')}>
+                  <select value={effectiveSpeed} onChange={e => setSpeed(e.target.value === 'fast' ? 'fast' : 'standard')} title={t('form.field.speedTitle')}>
+                    {speedOptions(t).map(option => <option key={option.value} value={option.value}>{option.label}（{option.hint}）</option>)}
+                  </select>
+                </Field>
+              )}
             </div>
-          </Field>
 
-          <Field label={editing ? '描述' : '描述（可选）'} full>
-            <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="需求细节、验收标准…" />
-          </Field>
-
-          <Field label={editing ? '执行 Prompt（实际 Prompt = 标题+任务描述+Prompt）' : '执行 Prompt（可选；实际 Prompt = 标题+任务描述+Prompt）'} full>
-            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder={'追加在「标题+任务描述」之后发给执行会话的补充指令。支持模板变量：{{lastExecution}}（上次执行结果）、{{lastComments}}（最近 3 条评论）'} />
-          </Field>
-
-          <Field label="执行方式" full>
-            <div className="dsh-atb-mode-picker">
-              <button type="button" className="dsh-atb-mode-opt" data-on={mode === 'claim'} onClick={() => setMode('claim')}>
-                <span className="dsh-atb-mode-name">🤝 认领制</span>
-                <span className="dsh-atb-mode-hint">项目内会话认领</span>
-              </button>
-              <button type="button" className="dsh-atb-mode-opt" data-on={mode === 'scheduled'} onClick={() => setMode('scheduled')}>
-                <span className="dsh-atb-mode-name">⏰ 定时执行</span>
-                <span className="dsh-atb-mode-hint">到点自动开跑</span>
-              </button>
-            </div>
-          </Field>
-
-          {mode === 'scheduled' && (
-            <Field label="Cron 表达式" required full>
-              <input
-                className={cronBad ? 'dsh-atb-input-bad' : undefined}
-                value={cron}
-                onChange={e => setCron(e.target.value)}
-                placeholder="分 时 日 月 周"
-                spellCheck={false}
-              />
-              <span className="dsh-atb-cron-presets">
-                {CRON_PRESETS.map(p => (
+            <Field label={t('form.field.urgency')} full>
+              <div className="dsh-atb-urgency-picker">
+                {urgencyOptions(t).map(o => (
                   <button
-                    key={p.cron}
+                    key={o.value}
                     type="button"
-                    className="dsh-atb-cron-preset"
-                    data-on={cron.trim() === p.cron}
-                    onClick={() => setCron(p.cron)}
+                    className="dsh-atb-urgency-opt"
+                    data-urgency={o.value}
+                    data-on={urgency === o.value}
+                    onClick={() => setUrgency(o.value)}
                   >
-                    {p.label}
+                    <span className="dsh-atb-urgency-name"><span className="dsh-atb-dot" data-urgency={o.value} />{o.label}</span>
+                    <span className="dsh-atb-urgency-hint">{o.hint}</span>
                   </button>
                 ))}
-                {!cronBad && nextRun !== null && <span className="dsh-atb-cron-next">下次 {fmtTime(nextRun)}</span>}
-              </span>
+              </div>
             </Field>
-          )}
 
-          <Field label="执行隔离" full>
-            <div className="dsh-atb-mode-picker" data-disabled={isolationDisabled ? 'true' : undefined}>
-              <button
-                type="button"
-                className="dsh-atb-mode-opt"
-                data-on={isolation === 'worktree'}
-                disabled={isolationDisabled}
-                title={isolationLocked ? '任务已有执行记录，隔离方式已锁定' : !gitOk ? '当前项目非 git 仓库' : '每次执行在独立 worktree 分支上进行'}
-                onClick={() => setIsolation('worktree')}
-              >
-                <span className="dsh-atb-mode-name">🌿 Worktree 隔离</span>
-                <span className="dsh-atb-mode-hint">
-                  {isolationLocked ? '已锁定（执行开始后不可更改）' : !gitOk ? '当前项目非 git 仓库' : '独立分支 task/标题+ID，互不污染'}
-                </span>
-              </button>
-              <button
-                type="button"
-                className="dsh-atb-mode-opt"
-                data-on={isolation === 'none'}
-                disabled={isolationDisabled}
-                title={isolationLocked ? '任务已有执行记录，隔离方式已锁定' : '直接在项目目录执行（不使用 git）'}
-                onClick={() => setIsolation('none')}
-              >
-                <span className="dsh-atb-mode-name">📁 原目录执行</span>
-                <span className="dsh-atb-mode-hint">{isolationLocked ? '已锁定（执行开始后不可更改）' : !gitOk ? '当前项目非 git 仓库，将在原目录执行' : '不使用 git，直接在项目目录工作'}</span>
-              </button>
-            </div>
-            {!gitOk && !isolationLocked && (
-              <span className="dsh-atb-isolation-note">当前项目非 git 仓库，将在原目录执行（任务仍按默认配置创建，运行时自动降级）</span>
+            <Field label={t('form.field.permission')} full>
+              <div className="dsh-atb-perm-picker">
+                {permissionOptions(t).map(opt => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className="dsh-atb-perm-opt"
+                    data-on={permission === opt.value}
+                    onClick={() => setPermission(opt.value)}
+                  >
+                    <span className="dsh-atb-perm-name">{opt.icon} {opt.label}{opt.value === 'workspace-write' ? t('form.perm.defaultTag') : ''}</span>
+                    <span className="dsh-atb-perm-hint">{opt.hint}</span>
+                  </button>
+                ))}
+              </div>
+              {permission === 'danger-full-access' && (
+                <span className="dsh-atb-field-note dsh-atb-field-note-warn">{t('form.perm.fullWarn')}</span>
+              )}
+            </Field>
+
+            {gateDiscoveryReady && gateOptions.length > 0 && (
+              <Field label={t('form.field.capabilities')} full>
+                <CapabilityEditor
+                  options={gateOptions}
+                  selected={requiredCapabilities}
+                  onChange={setRequiredCapabilities}
+                  permission={permission}
+                />
+              </Field>
             )}
-          </Field>
 
-          <Field label={editing ? '验收清单（DoD）' : '验收清单（DoD，可选）'} full>
-            <ChecklistEditor rows={checkRows} onChange={setCheckRows} editing={editing} />
-          </Field>
+            <Field label={t('form.field.mode')} full>
+              <div className="dsh-atb-mode-picker">
+                <button type="button" className="dsh-atb-mode-opt" data-on={mode === 'claim'} onClick={() => setMode('claim')}>
+                  <span className="dsh-atb-mode-name">{t('form.mode.claim')}</span>
+                  <span className="dsh-atb-mode-hint">{t('form.mode.claimHint')}</span>
+                </button>
+                <button type="button" className="dsh-atb-mode-opt" data-on={mode === 'scheduled'} onClick={() => setMode('scheduled')}>
+                  <span className="dsh-atb-mode-name">{t('form.mode.scheduled')}</span>
+                  <span className="dsh-atb-mode-hint">{t('form.mode.scheduledHint')}</span>
+                </button>
+              </div>
+            </Field>
+
+            {mode === 'scheduled' && (
+              <Field label={t('form.field.cron')} required full>
+                <input
+                  className={cronBad ? 'dsh-atb-input-bad' : undefined}
+                  value={cron}
+                  onChange={e => setCron(e.target.value)}
+                  placeholder={t('form.cron.placeholder')}
+                  spellCheck={false}
+                />
+                <span className="dsh-atb-cron-presets">
+                  {cronPresets(t).map(p => (
+                    <button
+                      key={p.cron}
+                      type="button"
+                      className="dsh-atb-cron-preset"
+                      data-on={cron.trim() === p.cron}
+                      onClick={() => setCron(p.cron)}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                  {!cronBad && nextRun !== null && <span className="dsh-atb-cron-next">{t('form.cron.next', { time: fmtTime(nextRun) })}</span>}
+                </span>
+              </Field>
+            )}
+
+            <Field label={t('form.field.isolation')} full>
+              <div className="dsh-atb-mode-picker" data-disabled={isolationDisabled ? 'true' : undefined}>
+                <button
+                  type="button"
+                  className="dsh-atb-mode-opt"
+                  data-on={isolation === 'worktree'}
+                  disabled={isolationDisabled}
+                  title={isolationLocked ? t('form.iso.locked') : !gitOk ? t('form.iso.nonGit') : t('form.iso.worktreeTitle')}
+                  onClick={() => setIsolation('worktree')}
+                >
+                  <span className="dsh-atb-mode-name">{t('form.iso.worktree')}</span>
+                  <span className="dsh-atb-mode-hint">
+                    {isolationLocked ? t('form.iso.lockedShort') : !gitOk ? t('form.iso.nonGit') : t('form.iso.worktreeHint')}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="dsh-atb-mode-opt"
+                  data-on={isolation === 'none'}
+                  disabled={isolationDisabled}
+                  title={isolationLocked ? t('form.iso.locked') : t('form.iso.noneTitle')}
+                  onClick={() => setIsolation('none')}
+                >
+                  <span className="dsh-atb-mode-name">{t('form.iso.none')}</span>
+                  <span className="dsh-atb-mode-hint">{isolationLocked ? t('form.iso.lockedShort') : !gitOk ? t('form.iso.noneHintNonGit') : t('form.iso.noneHint')}</span>
+                </button>
+              </div>
+              {!gitOk && !isolationLocked && (
+                <span className="dsh-atb-isolation-note">{t('form.iso.nonGitNote')}</span>
+              )}
+              {gitOk && !isolationLocked && repoCount > 1 && (
+                <span className="dsh-atb-isolation-note" data-mirror="true">{t('form.iso.mirrorNote', { n: repoCount })}</span>
+              )}
+            </Field>
+
+            <Field label={editing ? t('form.field.checklist') : t('form.field.checklistOptional')} full>
+              <ChecklistEditor rows={checkRows} onChange={setCheckRows} editing={editing} />
+            </Field>
+          </div>
+
+          {/* Right Column: Description & Execution Prompt */}
+          <div className="dsh-atb-form-col dsh-atb-form-right">
+            <Field label={editing ? t('form.field.description') : t('form.field.descriptionOptional')} full>
+              <SlashPromptInput
+                value={description}
+                onChange={setDescription}
+                controller={controller}
+                rows={7}
+                placeholder={t('form.desc.placeholder')}
+              />
+            </Field>
+
+            <Field label={editing ? t('form.field.prompt') : t('form.field.promptOptional')} full>
+              <SlashPromptInput
+                value={prompt}
+                onChange={setPrompt}
+                controller={controller}
+                rows={7}
+                placeholder={t('form.prompt.placeholder')}
+              />
+            </Field>
+          </div>
         </div>
 
         <div className="dsh-atb-modal-foot">
           <span className="dsh-atb-modal-hint" data-tone={valid ? undefined : 'bad'}>{hint}</span>
           <span className="dsh-atb-modal-footbtns">
-            <button type="button" className="dsh-atb-btn" onClick={() => controller.closeForm()}>取消</button>
+            <button type="button" className="dsh-atb-btn" onClick={() => controller.closeForm()}>{t('shared.cancel')}</button>
             <button
               type="button"
               className="dsh-atb-btn"
               disabled={!valid || runBlocked || busy}
-              title={runBlocked ? '任务正在执行中，不能重复发起' : busy ? '正在提交…' : '保存后立即发起执行（新会话）'}
+              title={runBlocked ? t('form.action.runBlockedTitle') : busy ? t('form.action.runBusyTitle') : t('form.action.runTitle')}
               onClick={submitAndRun}
             >
-              ⚡ 立即执行
+              {t('form.action.run')}
             </button>
             <button type="button" className="dsh-atb-btn" data-primary="true" disabled={!valid || busy} onClick={submit}>
-              {editing ? '保存修改' : '创建任务'}
+              {editing ? t('form.action.save') : t('form.action.create')}
             </button>
           </span>
         </div>
       </div>
     </div>
   )
-}
-
-/** The record shape this form edits (narrow structural type to avoid a value import). */
-interface TaskRecordLike {
-  id: string
-  version: number
-  status?: string
-  title: string
-  description: string
-  prompt: string
-  workspaceId: string
-  urgency: Urgency
-  execution: { mode: 'claim' | 'scheduled'; cron?: string }
-  model?: { provider: string; model: string; reasoningEffort?: string }
-  requiredCapabilities?: TaskCapability[]
-  speed?: TaskSpeed
-  permissionMode?: PermissionMode
-  isolation?: IsolationMode
-  presetId?: string
-  checklist?: ChecklistItem[]
-  executions?: unknown[]
 }

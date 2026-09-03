@@ -18,13 +18,15 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
   asBoardSettings,
   asIsolation,
-  asPermissionMode,
+  asPermission,
   asStatus,
   asTaskSpeed,
   asUrgency,
   canTransition,
   checklistFromTexts,
   defaultIsolationOf,
+  defaultPermissionOf,
+  isValidRelRepoPath,
   newCommentId,
   newTaskId,
   normalizeBody,
@@ -43,7 +45,9 @@ import {
   type TaskRecord,
 } from '../shared/protocol.ts'
 import { WORKTREE_DIR, worktreePathOf, type GitFace } from './git.ts'
-import type { TaskTemplate } from '../shared/api.ts'
+import { removeMirror, repoMainPath } from './isolation.ts'
+import { createRepoScanner, type RepoScanner } from './repos.ts'
+import type { CatalogModelItem, CatalogPresetItem, MergeRepoResult, TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
 import { registerMermaidBundleRoute } from './mermaid-route.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
@@ -84,8 +88,21 @@ export interface TaskboardRoutesOptions {
   modelProviders?: () => string[] | undefined
   /** Git face for worktree actions + workspace git detection; absent → 501 on git actions. */
   git?: GitFace
+  /** Nested-repo scanner for mirror removal; absent → a default one is built on first use. */
+  scanner?: RepoScanner
   /** Task-template store (0.4.0); absent → 501 on template actions. */
   templates?: TemplateStore
+  /** Prompt completions face (0.5.5; dynamically discovers skills & commands). */
+  promptCompletions?: () => Promise<{
+    skills?: Array<{ name: string; description?: string }>
+    commands?: Array<{ name: string; description?: string; hint?: string }>
+  }>
+  /** Model and preset catalog face (0.5.5; dynamically discovers models & presets). */
+  modelCatalog?: () => Promise<{
+    models?: CatalogModelItem[]
+    presets?: CatalogPresetItem[]
+    defaultPresetId?: string
+  }>
 }
 
 /** Validate a template's task spec (routes-side, unknown → invalid_input). */
@@ -104,17 +121,20 @@ function normalizeTemplateSpec(raw: unknown, now: number): TaskTemplate['task'] 
   const prompt = str('prompt')
   const urgency = str('urgency')
   const speed = str('speed')
-  const permissionMode = str('permissionMode')
   const isolation = str('isolation')
   const presetId = str('presetId')
+  const permission = str('permission')
+  const permissionMode = str('permissionMode')
   if (title !== undefined) spec.title = normalizeTitle(title)
   if (description !== undefined) spec.description = description
   if (prompt !== undefined) spec.prompt = normalizePrompt(prompt)
   if (urgency !== undefined) spec.urgency = asUrgency(urgency)
   if (speed !== undefined) spec.speed = asTaskSpeed(speed)
-  if (permissionMode !== undefined) spec.permissionMode = asPermissionMode(permissionMode)
   if (isolation !== undefined) spec.isolation = asIsolation(isolation)
   if (presetId !== undefined && presetId.trim().length > 0) spec.presetId = presetId.trim()
+  // Fork 0.5.x templates stored the mode under `permissionMode`; canonicalize.
+  if (permission !== undefined && permission.trim().length > 0) spec.permission = asPermission(permission)
+  else if (permissionMode !== undefined && permissionMode.trim().length > 0) spec.permission = asPermission(permissionMode)
   if (e.execution !== undefined) {
     spec.execution = normalizeExecution(e.execution as { mode?: string; cron?: string }, now)
   }
@@ -254,7 +274,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
 
   // Workspace git detection, TTL-cached and fail-soft (false on any error):
   // feeds the create-form isolation toggle and the diagnostics panel.
-  const gitCache = new Map<string, { value: boolean; at: number }>()
+  const gitCache = new Map<string, { value: boolean; at: number; repoCount?: number }>()
   const gitHinted = new Set<string>()
 
   /** Whether <root>/.gitignore (missing file counts as missing) ignores our worktree dir. */
@@ -271,24 +291,60 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
     }
   }
 
-  const gitAvailable = async (path: string): Promise<boolean> => {
-    if (options.git === undefined) return false
-    const hit = gitCache.get(path)
-    if (hit !== undefined && options.now() - hit.at < GIT_DETECT_TTL_MS) return hit.value
-    let value = false
+  // One scanner for every route-side discovery (the injected one or a
+  // shared real-IO fallback whose TTL cache actually helps — 0.6.3).
+  const sharedScanner: RepoScanner = options.scanner ?? createRepoScanner()
+
+  /**
+   * Whether the workspace root itself is a git repo (the .gitignore-suggestion
+   * gate — a plain container has no repo that could ignore anything).
+   */
+  const rootIsRepo = async (path: string): Promise<boolean> => {
     try {
-      value = await options.git.detect(path)
+      return (await options.git?.detect(path)) === true
+    } catch {
+      return false // fail-soft
+    }
+  }
+
+  /**
+   * Workspace repo facts for the form (0.6.3): `gitAvailable` gates the
+   * worktree option, `repoCount` feeds the mirror badge. Availability now
+   * covers PARALLEL MULTI-REPO workspaces too: a root repo qualifies as
+   * before, and a workspace whose root is NOT a repo still qualifies when
+   * the scanner finds nested repos — prepareMirror isolates exactly that
+   * container shape (mirror root = plain dir, one worktree per nested repo),
+   * so the form must not lock the capability away.
+   */
+  const workspaceRepos = async (path: string): Promise<{ gitAvailable: boolean; repoCount: number }> => {
+    if (options.git === undefined) return { gitAvailable: false, repoCount: 0 }
+    const hit = gitCache.get(path)
+    if (hit !== undefined && options.now() - hit.at < GIT_DETECT_TTL_MS) {
+      return { gitAvailable: hit.value, repoCount: hit.repoCount ?? (hit.value ? 1 : 0) }
+    }
+    let rootRepo = false
+    try {
+      rootRepo = await options.git.detect(path)
     } catch { /* fail-soft → false */ }
-    gitCache.set(path, { value, at: options.now() })
     // gitignore 建议 (plan §3.2): suggest (never write) ignoring our
-    // worktree directory, once per workspace per host run.
-    if (value && !gitHinted.has(path)) {
+    // worktree directory, once per workspace per host run. Root repos only.
+    if (rootRepo && !gitHinted.has(path)) {
       gitHinted.add(path)
       if (await gitignoreMissing(path)) {
         console.info(`[dsh-taskboard] 建议在 ${path}/.gitignore 加入一行 ${WORKTREE_DIR}/ 以隐藏任务 worktree 目录（不会自动修改）`)
       }
     }
-    return value
+    // The nested scan always runs: repoCount needs it even when the root
+    // is a repo (root repo + nested repos = the mirror shape). The scanner's
+    // own TTL cache keeps repeated workspace polls cheap.
+    let nestedCount = 0
+    try {
+      nestedCount = (await sharedScanner.findNestedRepos(path)).length
+    } catch { /* fail-soft → 0 */ }
+    const value = rootRepo || nestedCount > 0
+    const repoCount = (rootRepo ? 1 : 0) + nestedCount
+    gitCache.set(path, { value, at: options.now(), repoCount })
+    return { gitAvailable: value, repoCount }
   }
 
   /** List orphan worktree dirs: entries under <ws>/.dsh-worktrees owned by no ledger task. */
@@ -312,7 +368,8 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
   const listGitignoreSuggestions = async (): Promise<Array<{ workspaceId: string; workspacePath: string }>> => {
     const suggestions: Array<{ workspaceId: string; workspacePath: string }> = []
     for (const ws of workspaces.list()) {
-      if (!(await gitAvailable(ws.path))) continue
+      // Root repos only: a plain container has no .gitignore any repo reads.
+      if (!(await rootIsRepo(ws.path))) continue
       if (await gitignoreMissing(ws.path)) suggestions.push({ workspaceId: ws.id, workspacePath: ws.path })
     }
     return suggestions
@@ -332,10 +389,10 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         }
         if (pathname === `${ROUTE_PREFIX}/workspaces`) {
           const list = workspaces.list()
-          const flags = await Promise.all(list.map(ws => gitAvailable(ws.path)))
+          const info = await Promise.all(list.map(ws => workspaceRepos(ws.path)))
           json(res, {
             ok: true,
-            value: list.map((ws, i) => ({ ...ws, sessionCount: 0, gitAvailable: flags[i] })),
+            value: list.map((ws, i) => ({ ...ws, sessionCount: 0, gitAvailable: info[i]!.gitAvailable, repoCount: info[i]!.repoCount })),
           })
           return
         }
@@ -376,17 +433,29 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             const filePath = url.searchParams.get('path')
             const ws = workspaces.get(task.workspaceId)
             if (ws === undefined) throw new Error('Error: not_found: unknown workspace')
-            const cwd = execution.worktreePath ?? ws.path
+            // 0.6.3: `?repo=` picks one repo of a multi-repo mirror ('' = the
+            // root); without it the legacy flat fields decide, byte-identical.
+            const repoParam = url.searchParams.get('repo')
+            let cwd = execution.worktreePath ?? ws.path
+            let mainRepo = ws.path
+            let baseCommit = execution.baseCommit
+            if (repoParam !== null) {
+              const entry = execution.repos?.find(r => r.repo === repoParam)
+              if (entry === undefined) throw new Error('Error: invalid_input: 该执行没有此仓库的镜像记录')
+              cwd = entry.worktreePath
+              mainRepo = repoMainPath(ws.path, entry.repo)
+              baseCommit = entry.baseCommit
+            }
             let result = commit !== null
               ? await options.git.showCommit(cwd, commit)
-              : filePath !== null ? await options.git.showPathDiff(cwd, filePath, execution.baseCommit) : undefined
+              : filePath !== null ? await options.git.showPathDiff(cwd, filePath, baseCommit) : undefined
             // Fallback: the worktree may be gone — commits and committed
             // ranges still resolve in the main repo.
-            if (result === undefined && execution.worktreePath !== undefined && cwd !== ws.path) {
+            if (result === undefined && cwd !== mainRepo) {
               result = commit !== null
-                ? await options.git.showCommit(ws.path, commit)
-                : filePath !== null && execution.baseCommit !== undefined
-                  ? await options.git.showPathDiff(ws.path, filePath, execution.baseCommit)
+                ? await options.git.showCommit(mainRepo, commit)
+                : filePath !== null && baseCommit !== undefined
+                  ? await options.git.showPathDiff(mainRepo, filePath, baseCommit)
                   : undefined
             }
             if (result === undefined) {
@@ -415,6 +484,33 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         if (pathname === `${ROUTE_PREFIX}/settings`) {
           await store.load()
           json(res, { ok: true, value: store.snapshot().settings ?? {} })
+          return
+        }
+
+        // Prompt completions (0.5.5; dynamically discovers skills & commands).
+        if (pathname === `${ROUTE_PREFIX}/prompt-completions`) {
+          const completions = await options.promptCompletions?.().catch(() => undefined)
+          json(res, {
+            ok: true,
+            value: {
+              commands: completions?.commands ?? [],
+              skills: completions?.skills ?? [],
+            },
+          })
+          return
+        }
+
+        // Model catalog (0.5.5; dynamically discovers models & presets from runtime).
+        if (pathname === `${ROUTE_PREFIX}/model-catalog`) {
+          const catalog = await options.modelCatalog?.().catch(() => undefined)
+          json(res, {
+            ok: true,
+            value: {
+              models: catalog?.models ?? [],
+              presets: catalog?.presets ?? [],
+              ...(catalog?.defaultPresetId !== undefined ? { defaultPresetId: catalog.defaultPresetId } : {}),
+            },
+          })
           return
         }
 
@@ -470,7 +566,6 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const execution = normalizeExecution((body.execution as { mode?: string; cron?: string } | undefined) ?? {}, options.now())
           const model = body.model === undefined ? undefined : checkModel(body.model, options.modelProviders)
           const speed = body.speed === undefined ? undefined : asTaskSpeed(str(body, 'speed') ?? '')
-          const permissionMode = body.permissionMode === undefined ? undefined : asPermissionMode(str(body, 'permissionMode') ?? '')
           const isolationRaw = str(body, 'isolation')
           // 0.5.0: an omitted isolation is MATERIALIZED from the board
           // setting (看板设置) at creation, so later setting changes never
@@ -478,6 +573,12 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const isolation = isolationRaw === null ? defaultIsolationOf(store.snapshot().settings) : asIsolation(isolationRaw)
           const presetId = normalizePresetId(str(body, 'presetId'))
           const requiredCapabilities = normalizeRequiredCapabilities(body.requiredCapabilities)
+          // 0.5.5/0.6.0: permission presets. An omitted value is MATERIALIZED
+          // from the board default (看板设置 → 默认权限). Legacy fork bodies
+          // that still spell the field `permissionMode` are accepted and
+          // canonicalized onto `permission` (identical three values).
+          const permissionRaw = str(body, 'permission') ?? str(body, 'permissionMode')
+          const permission = permissionRaw === null ? defaultPermissionOf(store.snapshot().settings) : asPermission(permissionRaw)
           let checklist: TaskRecord['checklist'] = undefined
           if (body.checklist !== undefined) {
             if (!Array.isArray(body.checklist) || body.checklist.some(c => typeof c !== 'string')) {
@@ -500,9 +601,9 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             model,
             requiredCapabilities,
             ...(speed !== undefined ? { speed } : {}),
-            ...(permissionMode !== undefined ? { permissionMode } : {}),
             isolation,
             ...(presetId !== undefined ? { presetId } : {}),
+            permission,
             ...(checklist !== undefined ? { checklist } : {}),
             version: 1,
             createdAt: now,
@@ -568,8 +669,6 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               else if (body.model !== undefined) next.model = checkModel(body.model, options.modelProviders)
               if (body.speed === null) delete next.speed
               else if (body.speed !== undefined) next.speed = asTaskSpeed(str(body, 'speed') ?? '')
-              if (body.permissionMode === null) delete next.permissionMode
-              else if (body.permissionMode !== undefined) next.permissionMode = asPermissionMode(str(body, 'permissionMode') ?? '')
               // Isolation may change only before the first execution (分支与基线
               // 取决于该选择 — plan §3.1: 执行开始后锁定).
               const isolationRaw = str(body, 'isolation')
@@ -582,6 +681,11 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               // Preset may change any time: each run composes fresh.
               if (body.presetId === null) delete next.presetId
               else if (body.presetId !== undefined) next.presetId = normalizePresetId(str(body, 'presetId'))!
+              // Permission (0.5.5/0.6.0): 'workspace-write' | 'read-only' | 'danger-full-access'.
+              // Legacy fork `permissionMode` bodies canonicalize onto `permission`.
+              if (body.permission === null || body.permissionMode === null) delete next.permission
+              else if (body.permission !== undefined) next.permission = asPermission(body.permission)
+              else if (body.permissionMode !== undefined) next.permission = asPermission(body.permissionMode)
               // Checklist (0.4.0): the GUI replaces the whole list; null clears.
               if (body.checklist === null) delete next.checklist
               else if (body.checklist !== undefined) {
@@ -679,25 +783,37 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
                     throw new Error('Error: invalid_input: 非法的清除路径（不在任务工作目录范围内）')
                   }
                   try {
-                    // S3: 'unregistered' (an orphaned dir git forgot) is a
-                    // structured outcome, not a parsed stderr message.
-                    if (await options.git.removeWorktree(ws.path, path) === 'unregistered') {
-                      // An unregistered leftover dir: plain fs removal.
-                      await rm(path, { recursive: true, force: true })
-                    }
+                    // 0.6.3: the whole mirror (every repo worktree) goes
+                    // through the aggregated children-first removal — one
+                    // dirty repo refuses BEFORE anything is deleted.
+                    await removeMirror(
+                      { git: options.git, scanner: options.scanner ?? createRepoScanner() },
+                      { workspacePath: ws.path, taskId: id },
+                    )
+                    // Leftovers unknown to git ('unregistered' worktrees, or a
+                    // plain mirror dir when the workspace root is no repo).
+                    await rm(path, { recursive: true, force: true })
                   } catch (error) {
                     const message = error instanceof Error ? error.message : String(error)
                     // Structured classification (review P2): git tags its dirty
                     // rejections with a code; the keyword stays as a fallback.
-                    const dirty = (error as { code?: string }).code === 'dirty-worktree' || message.includes('未提交修改')
+                    const dirty = (error as { code?: string }).code === 'dirty-worktree'
+                      || (error as { code?: string }).code === 'dirty-mirror'
+                      || message.includes('未提交修改')
                     if (dirty) {
                       throw new Error(`Error: invalid_input: ${message}；请先处理这些改动（提交、续跑或手动保存）再物理清除任务`)
                     }
                     throw new Error(`Error: invalid_input: ${message}`)
                   }
-                  if (task.branch !== undefined) {
+                  // Branches die with the task (best effort, per repo).
+                  const branchTargets: Array<{ repo: string; branch: string }> = []
+                  if (task.branches !== undefined) {
+                    for (const [repo, branch] of Object.entries(task.branches)) branchTargets.push({ repo, branch })
+                  }
+                  if (task.branch !== undefined && !branchTargets.some(t => t.repo === '')) branchTargets.push({ repo: '', branch: task.branch })
+                  for (const target of branchTargets) {
                     try {
-                      await options.git.deleteBranch(ws.path, task.branch)
+                      await options.git.deleteBranch(repoMainPath(ws.path, target.repo), target.branch)
                     } catch { /* best effort: the branch may outlive the task */ }
                   }
                 }
@@ -763,47 +879,105 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             return
           }
           if (action === 'merge') {
-            // ⇥ 合并 (detail page, user-only): merge the task branch into the
-            // main worktree with --no-ff; conflicts are reported verbatim.
+            // ⇥ 合并 (detail page, user-only): merge the task branch(es) into
+            // the main worktree(s) with --no-ff; conflicts are reported
+            // verbatim. 0.6.3: multi-repo mirror tasks merge PER REPO —
+            // sequentially, a failed repo never blocking the others.
             if (options.git === undefined) {
               const f = fail('invalid_input', 'git integration unavailable')
               json(res, f.res, 501)
               return
             }
-            if (task.branch === undefined) throw new Error('Error: invalid_input: 该任务还没有 worktree 分支（未隔离执行过）')
             if (task.status === 'in_progress') throw new Error('Error: invalid_input: 任务执行中，不能合并')
             if (task.executions.some(e => e.outcome === 'running')) throw new Error('Error: invalid_input: 任务执行中，不能合并')
             const ws = workspaces.get(task.workspaceId)
             if (ws === undefined) throw new Error('Error: not_found: unknown workspace')
-            // No-op detection (0.3.1): a branch with no commits over HEAD
-            // merges as "already up to date" — report that instead of landing
-            // a bogus 已合并 comment.
-            let noop = false
-            try {
-              noop = await options.git.isAncestor(ws.path, task.branch)
-            } catch { /* fail-soft: proceed to the real merge */ }
-            if (noop) {
-              json(res, { ok: true, value: { merged: false, noop: true, branch: task.branch } })
+            const targets: Array<{ repo: string; branch: string }> = []
+            if (task.branches !== undefined) {
+              for (const [repo, branch] of Object.entries(task.branches)) targets.push({ repo, branch })
+            }
+            if (task.branch !== undefined && !targets.some(t => t.repo === '')) targets.unshift({ repo: '', branch: task.branch })
+            if (targets.length === 0) throw new Error('Error: invalid_input: 该任务还没有 worktree 分支（未隔离执行过）')
+            const multi = task.branches !== undefined
+            const results: MergeRepoResult[] = []
+            for (const target of targets) {
+              if (!isValidRelRepoPath(target.repo)) throw new Error('Error: invalid_input: 非法的仓库路径')
+              const repoRoot = repoMainPath(ws.path, target.repo)
+              // No-op detection (0.3.1): a branch with no commits over HEAD
+              // merges as "already up to date" — report that instead of landing
+              // a bogus 已合并 comment.
+              let noop = false
+              try {
+                noop = await options.git.isAncestor(repoRoot, target.branch)
+              } catch { /* fail-soft: proceed to the real merge */ }
+              if (noop) {
+                results.push({ repo: target.repo, branch: target.branch, outcome: 'noop' })
+                continue
+              }
+              try {
+                // 0.6.3 review fix: parallel repos are self-governing — their
+                // content AND their gitlink entries in the ROOT main checkout
+                // (e.g. a container repo tracking `dsh-taskboard` as an embedded
+                // repo) don't gate the root repo's merge. Child repos merge with
+                // no extra exemption (their own .dsh-worktrees rule suffices).
+                const exempt = target.repo === ''
+                  ? await (options.scanner ?? createRepoScanner()).findNestedRepos(ws.path).then(rs => rs.map(r => r.relPath))
+                  : undefined
+                await options.git.merge(repoRoot, target.branch, exempt)
+                results.push({ repo: target.repo, branch: target.branch, outcome: 'merged' })
+              } catch (error) {
+                results.push({
+                  repo: target.repo,
+                  branch: target.branch,
+                  outcome: 'failed',
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              }
+            }
+            // R1: the git merges above are slow — re-find the FRESH task inside
+            // the mutation so a concurrent comment is never overwritten.
+            const pushComment = (body: string): Promise<void> =>
+              store.mutate('comment-added', ledger => {
+                const { index, task: fresh } = liveTaskAt(ledger, id)
+                const next = structuredClone(fresh)
+                next.comments.push({ id: newCommentId(), body: normalizeBody(body), version: 1, createdAt: options.now() })
+                next.version = fresh.version + 1
+                next.updatedAt = options.now()
+                ledger.tasks[index] = next
+                return [next]
+              }).then(() => undefined)
+            if (!multi) {
+              // Legacy single-repo shape, byte-identical to 0.3.x–0.6.x.
+              const root = results.find(r => r.repo === '')
+              if (root === undefined) throw new Error('Error: invalid_input: 该任务还没有 worktree 分支（未隔离执行过）')
+              if (root.outcome === 'noop') {
+                json(res, { ok: true, value: { merged: false, noop: true, branch: root.branch } })
+                return
+              }
+              if (root.outcome === 'failed') {
+                throw new Error(`Error: invalid_input: ${root.error ?? '合并失败'}`)
+              }
+              await pushComment(`[系统] 分支 ${root.branch} 已合并到主工作区（--no-ff）。`)
+              json(res, { ok: true, value: { merged: true, branch: root.branch } })
               return
             }
-            try {
-              await options.git.merge(ws.path, task.branch)
-            } catch (error) {
-              throw new Error(`Error: invalid_input: ${error instanceof Error ? error.message : String(error)}`)
-            }
-            const mergedComment = { id: newCommentId(), body: normalizeBody(`[系统] 分支 ${task.branch} 已合并到主工作区（--no-ff）。`), version: 1, createdAt: options.now() }
-            // R1: the git merge above is slow — re-find the FRESH task inside
-            // the mutation so a concurrent comment is never overwritten.
-            await store.mutate('comment-added', ledger => {
-              const { index, task: fresh } = liveTaskAt(ledger, id)
-              const next = structuredClone(fresh)
-              next.comments.push(mergedComment)
-              next.version = fresh.version + 1
-              next.updatedAt = options.now()
-              ledger.tasks[index] = next
-              return [next]
+            const labelOf = (repo: string): string => repo === '' ? '根仓库' : repo
+            const mergedCount = results.filter(r => r.outcome === 'merged').length
+            const failedCount = results.filter(r => r.outcome === 'failed').length
+            const summary = results
+              .map(r => r.outcome === 'merged'
+                ? `${labelOf(r.repo)} ✓ 已合并`
+                : r.outcome === 'noop' ? `${labelOf(r.repo)} ⟲ 无新提交` : `${labelOf(r.repo)} ✗ ${(r.error ?? '合并失败').slice(0, 150)}`)
+              .join('；')
+            await pushComment(`[系统] 分支已按仓库合并（--no-ff）：${summary}`)
+            json(res, {
+              ok: true,
+              value: {
+                merged: mergedCount > 0,
+                ...(mergedCount === 0 && failedCount === 0 ? { noop: true } : {}),
+                results,
+              },
             })
-            json(res, { ok: true, value: { merged: true, branch: task.branch } })
             return
           }
           if (action === 'worktree-remove') {
@@ -822,23 +996,34 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               throw new Error('Error: invalid_input: 非法的清除路径（不在任务工作目录范围内）')
             }
             try {
-              // S3: an unregistered leftover at the task's own path is
-              // removed from the filesystem directly.
-              if (await options.git.removeWorktree(ws.path, path) === 'unregistered') {
-                await rm(path, { recursive: true, force: true })
-              }
+              // 0.6.3: aggregated children-first mirror removal (see purge).
+              await removeMirror(
+                { git: options.git, scanner: options.scanner ?? createRepoScanner() },
+                { workspacePath: ws.path, taskId: id },
+              )
+              await rm(path, { recursive: true, force: true })
             } catch (error) {
               throw new Error(`Error: invalid_input: ${error instanceof Error ? error.message : String(error)}`)
             }
             let branchDeleted = false
             let branchError: string | undefined
-            if (body.deleteBranch === true && task.branch !== undefined) {
-              try {
-                await options.git.deleteBranch(ws.path, task.branch)
-                branchDeleted = true
-              } catch (error) {
-                branchError = error instanceof Error ? error.message : String(error)
+            if (body.deleteBranch === true) {
+              const branchTargets: Array<{ repo: string; branch: string }> = []
+              if (task.branches !== undefined) {
+                for (const [repo, branch] of Object.entries(task.branches)) branchTargets.push({ repo, branch })
               }
+              if (task.branch !== undefined && !branchTargets.some(t => t.repo === '')) branchTargets.push({ repo: '', branch: task.branch })
+              let failures = 0
+              for (const target of branchTargets) {
+                try {
+                  await options.git.deleteBranch(repoMainPath(ws.path, target.repo), target.branch)
+                } catch (error) {
+                  failures += 1
+                  const label = target.repo === '' ? '根仓库' : target.repo
+                  branchError = `${label}：${error instanceof Error ? error.message : String(error)}`
+                }
+              }
+              branchDeleted = failures === 0
             }
             json(res, { ok: true, value: { removed: true, branchDeleted, ...(branchError !== undefined ? { branchError } : {}) } })
             return
@@ -875,11 +1060,14 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             throw new Error('Error: invalid_input: 非法的清除路径（不在任务工作目录范围内）')
           }
           try {
-            // S3: 'unregistered' = git no longer knows this worktree; remove
-            // the leftover dir directly (scope-verified above).
-            if (await options.git.removeWorktree(ws.path, path) === 'unregistered') {
-              await rm(path, { recursive: true, force: true })
-            }
+            // 0.6.3: an orphan mirror may hold several repo worktrees —
+            // aggregated children-first removal, then the leftover fs rm
+            // (scope-verified above).
+            await removeMirror(
+              { git: options.git, scanner: options.scanner ?? createRepoScanner() },
+              { workspacePath: ws.path, taskId },
+            )
+            await rm(path, { recursive: true, force: true })
           } catch (error) {
             throw new Error(`Error: invalid_input: ${error instanceof Error ? error.message : String(error)}`)
           }
