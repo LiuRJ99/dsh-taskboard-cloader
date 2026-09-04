@@ -164,6 +164,58 @@ describe('client half', () => {
     for (const disposer of effectDisposers) disposer()
   })
 
+  it('Cordis slots proxy 每次变化时不会重复注册会话头部看板 action', async () => {
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { apply } = await import('../src/client/index.ts')
+    let isRegistered = false
+    const register = vi.fn((descriptor: { id: string }, _component: unknown) => {
+      if (isRegistered) throw new Error(`[dsh-client-ui-slots] duplicate registration: ${descriptor.id}`)
+      isRegistered = true
+      return () => { isRegistered = false }
+    })
+    const baseSlots = {
+      inject: vi.fn((_name: string, factory: () => unknown) => factory() as () => void),
+      register,
+    }
+    const statusListeners: Array<(...args: unknown[]) => unknown> = []
+    const effectDisposers: Array<() => void> = []
+    const ctx = {
+      // Cordis wraps each service lookup in a fresh traceable Proxy. The
+      // underlying service is unchanged, so registration must remain stable.
+      get: (name: string) => name === 'slots'
+        ? new Proxy(baseSlots, {
+          get: (target, property, receiver) => property === Symbol.for('cordis.original')
+            ? target
+            : Reflect.get(target, property, receiver),
+        })
+        : undefined,
+      get slots(): never {
+        throw new Error('service "slots" is not declared')
+      },
+      effect: (fn: () => unknown) => {
+        const disposer = fn()
+        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
+      },
+      on: (event: string, listener: (...args: unknown[]) => unknown) => {
+        if (event === 'internal/status') statusListeners.push(listener)
+        return () => undefined
+      },
+    }
+    apply(ctx as never)
+    await new Promise(r => setTimeout(r, 20))
+
+    for (let i = 0; i < 5; i++) {
+      for (const listener of [...statusListeners]) listener()
+    }
+
+    expect(baseSlots.inject).toHaveBeenCalledTimes(1)
+    expect(register).toHaveBeenCalledTimes(1)
+
+    for (const disposer of effectDisposers) disposer()
+    expect(isRegistered).toBe(false)
+  })
+
   it('会话头部看板 action 触发时调用 openTab 且附带 path: board 以自动展开侧边栏', async () => {
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)

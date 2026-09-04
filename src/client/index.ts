@@ -67,8 +67,22 @@ interface ConnectionFace {
 
 /** Minimal slot service face; the DSH slot package stays an optional runtime peer. */
 interface ClientSlotsFace {
-  inject(name: string, factory: () => unknown): unknown
+  inject(name: string, factory: () => unknown): () => void
   register(descriptor: { name: string; id: string; order?: number }, component: unknown): unknown
+}
+
+interface HeaderRegistration {
+  key: object
+  dispose: () => void
+}
+
+/** Cordis returns a fresh traceable Proxy for every dynamic service lookup. */
+function stableSlotsIdentity(slots: ClientSlotsFace): object {
+  const original = Reflect.get(slots as object, Symbol.for('cordis.original'))
+  if ((typeof original === 'object' && original !== null) || typeof original === 'function') {
+    return original as object
+  }
+  return slots as object
 }
 
 /** Effect-hook face the runner provides on the client context. */
@@ -400,8 +414,14 @@ export function apply(ctx: ClientContextFace): void {
     let sidebarTabActive = false
     let registeredSidebarService: unknown
     let registeredSidebarDisposer: (() => void) | undefined
-    let registeredHeaderSlots: ClientSlotsFace | undefined
+    let headerRegistration: HeaderRegistration | undefined
     let legacyDisposers: Array<() => void> = []
+
+    const disposeHeaderRegistration = (): void => {
+      const registration = headerRegistration
+      headerRegistration = undefined
+      registration?.dispose()
+    }
 
     const disposeLegacyMounts = (): void => {
       for (const disposer of legacyDisposers.splice(0)) disposer()
@@ -485,18 +505,21 @@ export function apply(ctx: ClientContextFace): void {
     /** Register the optional DSH session-header action when the slot service exists. */
     const registerHeaderAction = (): void => {
       const slots = slotsFromContext(ctx)
-      if (slots === undefined || registeredHeaderSlots === slots) return
+      if (slots === undefined) return
+      const key = stableSlotsIdentity(slots)
+      if (headerRegistration?.key === key) return
+      disposeHeaderRegistration()
       try {
         const component = createTaskboardSessionHeaderAction(controller, (task, sessionId) => {
           openTaskFromHeader(task.id, sessionId)
         })
-        slots.inject('conversation.session.header.actions', () => slots.register({
+        const dispose = slots.inject('conversation.session.header.actions', () => slots.register({
           name: 'conversation.session.header.actions',
           id: 'dsh-taskboard:session-link',
           // Order after session-internal metrics (preset: -10, subagents: 10, jobs: 20)
           order: 100,
         }, component))
-        registeredHeaderSlots = slots
+        headerRegistration = { key, dispose }
       } catch (error) {
         // The header is additive polish; a missing/partial slot service must
         // never disable the board itself.
@@ -583,7 +606,7 @@ export function apply(ctx: ClientContextFace): void {
       }
       registeredSidebarService = undefined
       for (const d of disposers.splice(0)) d()
-      registeredHeaderSlots = undefined
+      disposeHeaderRegistration()
       controller.dispose()
       disposeI18n()
     }, 'dsh-taskboard: client mount')
