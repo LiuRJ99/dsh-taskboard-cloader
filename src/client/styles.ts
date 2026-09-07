@@ -1038,6 +1038,28 @@ color: var(--dsw-alias-state-business-primary, #3e63dd);
 .dsh-atb-cl-text { flex: 1; min-width: 0; font-size: 12.5px; word-break: break-word; }
 .dsh-atb-cl-meta { flex-shrink: 0; font-size: 10.5px; color: var(--dsw-alias-label-tertiary, gray); display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
 .dsh-atb-cl-note { max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dsw-alias-label-secondary, inherit); }
+/* Keep checklist copy readable on phones: move evidence metadata below the
+   item text instead of letting its fixed-width note squeeze the text column. */
+@media (max-width: 768px) {
+  .dsh-atb-cl-item {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .dsh-atb-cl-text { flex: 1 1 0; }
+  .dsh-atb-cl-meta {
+    flex: 1 1 calc(100% - 24px);
+    min-width: 0;
+    margin-left: 24px;
+    align-items: flex-start;
+  }
+  .dsh-atb-cl-note {
+    max-width: 100%;
+    white-space: normal;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+  }
+}
 
 /* ---------- 0.4.0 report ---------- */
 .dsh-atb-rpt-summary { font-size: 12.5px; line-height: 1.6; word-break: break-word; margin-bottom: 8px; }
