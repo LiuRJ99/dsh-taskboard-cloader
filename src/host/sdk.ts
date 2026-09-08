@@ -1,7 +1,7 @@
 /**
- * Self-contained replacements for the three @deepseek-ai runtime imports the
- * host half used to take from npm-mirror SDK packages (dsh-home-paths,
- * dsh-llm/brand, dsh-tools' defineTool).
+ * Self-contained replacements for the @deepseek-ai runtime imports the host
+ * half used to take from npm-mirror SDK packages (dsh-home-paths,
+ * dsh-llm/brand, dsh-tools' defineTool, dsh-agent's installModelSelection).
  *
  * Why: a published copy must never resolve `@deepseek-ai/dsh-tools` from the
  * profile's node_modules — an npm-mirror dsh-tools there shadows the
@@ -12,6 +12,8 @@
  *
  * - `dshHomePath` mirrors `join(resolve(env.DSH_HOME ?? ~/.dsh), ...segments)`;
  * - `MessageId` is the identity brand the SDK applies at runtime;
+ * - `installModelSelection` mirrors dsh-agent's two-hook model pin
+ *   (`system-prompt/assemble` + `agent/request`);
  * - `defineTool` compiles our author-facing parameter specs into the same
  *   raw JSON-Schema subset the registry expects (object/properties/required/
  *   additionalProperties/scalars; the `json` node compiles to an
@@ -153,6 +155,81 @@ function validateValue(schema: RawSchema, value: unknown, path: string): string[
     return [`${path} must be ${String(constValue)}`]
   }
   return []
+}
+
+/**
+ * A provider/model pair plus optional reasoning effort — the structural shape
+ * of `@deepseek-ai/dsh-agent`'s `ModelSelection`.
+ */
+export interface ModelSelectionLike {
+  readonly provider: string
+  readonly model: string
+  readonly reasoningEffort?: string
+}
+
+/** Mutable selection carrier threaded between the two hooks below. */
+export interface ModelSelectionState {
+  current: ModelSelectionLike | undefined
+  assembled: ModelSelectionLike | undefined
+}
+
+/** Minimal cordis-context surface the model-selection hooks need. */
+export interface ModelSelectionContext {
+  on(event: string, listener: (...args: never[]) => unknown): () => void
+}
+
+/** Assembled system prompt: only the `variables` bag is rewritten. */
+interface AssembledPrompt {
+  readonly variables?: Readonly<Record<string, unknown>>
+}
+
+/**
+ * Self-contained replacement for `@deepseek-ai/dsh-agent`'s
+ * `installModelSelection`: pin one agent context to a provider/model pair.
+ *
+ * Vendored for the same reason as the rest of this module, plus a second one:
+ * the host build externalizes `/^@deepseek-ai\//`, so an import that survives
+ * to runtime is resolved from the profile's node_modules — where dsh-agent is
+ * only a devDependency and never installed. The plugin tree then dies at boot
+ * with `ERR_MODULE_NOT_FOUND`. The helper is pure (two `ctx.on` hooks plus a
+ * payload spread — no private symbols, no module state), so a
+ * structure-compatible copy is exact.
+ */
+export function installModelSelection(agentCtx: ModelSelectionContext, selection: ModelSelectionState): () => void {
+  const disposeAssembly = agentCtx.on(
+    'system-prompt/assemble' as never,
+    (async (_assembly: unknown, _context: unknown, next: () => Promise<AssembledPrompt>): Promise<AssembledPrompt> => {
+      const selected = selection.current
+      const assembled = await next()
+      // The request hook consumes what was actually assembled, not the latest.
+      selection.assembled = selected
+      if (selected === undefined) return assembled
+      return {
+        ...assembled,
+        variables: { ...assembled.variables, provider: selected.provider, model: selected.model },
+      }
+    }) as never,
+  ) as unknown as () => void
+  const disposeRequest = agentCtx.on(
+    'agent/request' as never,
+    (async (_payload: unknown, next: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> => {
+      const resolved = await next()
+      const selected = selection.assembled
+      if (selected === undefined) return resolved
+      // The inherited reasoning effort is dropped: the pinned selection owns it.
+      const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = resolved
+      return {
+        ...withoutInheritedEffort,
+        provider: selected.provider,
+        model: selected.model,
+        ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),
+      }
+    }) as never,
+  ) as unknown as () => void
+  return () => {
+    disposeAssembly()
+    disposeRequest()
+  }
 }
 
 /** Options shape we consume (a structural subset of the SDK's defineTool). */

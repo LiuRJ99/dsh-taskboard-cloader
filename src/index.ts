@@ -14,12 +14,11 @@
  * @module dsh-taskboard
  */
 import type { Context } from '@deepseek-ai/cordis'
-// Type-only module imports load the cordis Context augmentations. The one
-// runtime helper below is the DSH-owned model-selection waterfall; it keeps
-// task execution aligned with the built-in session selector.
+// Type-only module imports load the cordis Context augmentations. The host
+// half takes NO runtime @deepseek-ai import: every helper it needs is either
+// type-only or vendored in ./host/sdk.ts (see that module's header).
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
-import { installModelSelection, type ModelSelection } from '@deepseek-ai/dsh-agent'
 import { PROTOCOL_SECTION_NAME, PROTOCOL_SECTION_ORDER, TASKBOARD_PROTOCOL } from './host/protocol-text.ts'
 import { TASKBOARD_SKILL, type SkillsSurface } from './host/skill.ts'
 import { listSkillsForView, type PresetRosterFace, type SkillsCatalogFace } from './host/skill-view.ts'
@@ -28,7 +27,7 @@ import { createGitFace } from './host/git.ts'
 import { createRepoScanner } from './host/repos.ts'
 import { registerTaskboardRoutes } from './host/routes.ts'
 import { SchedulerService } from './host/scheduler.ts'
-import { dshHomePath } from './host/sdk.ts'
+import { dshHomePath, installModelSelection, type ModelSelectionContext } from './host/sdk.ts'
 import { TaskStore } from './host/store.ts'
 import { TemplateStore } from './host/templates.ts'
 import { ExternalSessionSyncService } from './host/session-sync.ts'
@@ -62,7 +61,7 @@ function lazyGateService(ctx: { get(name: string): unknown }): ToolLazyGateServi
 /** Install the DSH model selector plus the provider-neutral service-tier hint. */
 function installTaskModelOptions(agentCtx: unknown, selection: TaskModel | undefined, speed?: TaskSpeed, serviceTier?: string): void {
   if (selection !== undefined) {
-    installModelSelection(agentCtx as Context, { current: selection as ModelSelection, assembled: undefined })
+    installModelSelection(agentCtx as unknown as ModelSelectionContext, { current: selection, assembled: undefined })
   }
   if (speed !== 'fast' || serviceTier !== PRIORITY_SERVICE_TIER) return
   const scoped = agentCtx as Context
