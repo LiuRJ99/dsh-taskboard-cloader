@@ -98,8 +98,11 @@ export interface TaskboardClient {
   settings(): Promise<SettingsResponse>
   /** Replace board settings (whole-object semantics; affects new tasks only). */
   updateSettings(body: UpdateSettingsBody): Promise<SettingsResponse>
-  /** Prompt completions for skills and slash commands (0.5.5). */
-  promptCompletions(): Promise<PromptCompletionsResponse>
+  /**
+   * Prompt completions for skills and slash commands (0.5.5). `workspaceId`
+   * (0.6.5) selects the project cwd of the host's layered skill view.
+   */
+  promptCompletions(workspaceId?: string): Promise<PromptCompletionsResponse>
   /** Model catalog and agent preset roster (0.5.5). */
   modelCatalog(): Promise<ModelCatalogResponse>
   /** Subscribe to change frames; the disposer stops the stream. */
@@ -138,7 +141,11 @@ export function createClient(): TaskboardClient {
     templateDelete: id => post('/dsh-taskboard/templates/delete', { id }),
     settings: () => get<SettingsResponse>('/dsh-taskboard/settings'),
     updateSettings: body => post('/dsh-taskboard/settings/update', body),
-    promptCompletions: () => get<PromptCompletionsResponse>('/dsh-taskboard/prompt-completions'),
+    promptCompletions: workspaceId => get<PromptCompletionsResponse>(
+      workspaceId === undefined || workspaceId === ''
+        ? '/dsh-taskboard/prompt-completions'
+        : `/dsh-taskboard/prompt-completions?${new URLSearchParams({ workspaceId }).toString()}`,
+    ),
     modelCatalog: () => get<ModelCatalogResponse>('/dsh-taskboard/model-catalog'),
     stream(onChange, onGap) {
       const es = new EventSource('/dsh-taskboard/events')

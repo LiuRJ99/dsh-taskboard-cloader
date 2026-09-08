@@ -1336,6 +1336,10 @@ color: var(--dsw-alias-state-business-primary, #3e63dd);
  * longer clip its top (0.6.0 field report). Only the visual shell lives here. */
 .dsh-atb-slash-popup {
   display: flex; flex-direction: column; overflow: hidden; border-radius: 10px;
+  /* border-box: the JS placement writes maxHeight in the SAME box model it
+     measures, so a clamped popup reports the height it was given instead of
+     content+border (that mismatch grew the popup 2px per render → React #185). */
+  box-sizing: border-box;
   background: var(--dsw-alias-bg-overlay, #fff); color: var(--dsw-alias-label-primary, inherit);
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
   box-shadow: var(--dsw-shadow-lv3, 0 10px 28px rgba(0,0,0,.22));

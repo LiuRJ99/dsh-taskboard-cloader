@@ -790,6 +790,7 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
                 value={description}
                 onChange={setDescription}
                 controller={controller}
+                workspaceId={workspaceId}
                 rows={7}
                 placeholder={t('form.desc.placeholder')}
               />
@@ -800,6 +801,7 @@ export function TaskFormModal({ controller, task, sessionId }: { controller: Boa
                 value={prompt}
                 onChange={setPrompt}
                 controller={controller}
+                workspaceId={workspaceId}
                 rows={7}
                 placeholder={t('form.prompt.placeholder')}
               />

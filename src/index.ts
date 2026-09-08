@@ -22,6 +22,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import { installModelSelection, type ModelSelection } from '@deepseek-ai/dsh-agent'
 import { PROTOCOL_SECTION_NAME, PROTOCOL_SECTION_ORDER, TASKBOARD_PROTOCOL } from './host/protocol-text.ts'
 import { TASKBOARD_SKILL, type SkillsSurface } from './host/skill.ts'
+import { listSkillsForView, type PresetRosterFace, type SkillsCatalogFace } from './host/skill-view.ts'
 import { DEFAULT_MAX_CONCURRENT, ExecutionService, type EventsFace } from './host/execution.ts'
 import { createGitFace } from './host/git.ts'
 import { createRepoScanner } from './host/repos.ts'
@@ -282,11 +283,17 @@ export function apply(ctx: Context): void {
           git,
           scanner,
           templates,
-          promptCompletions: async () => {
+          promptCompletions: async (view) => {
             try {
-              const skillsService = agentCtx.get('skills') as { list?(options?: unknown): Promise<Array<{ name: string; description?: string }>> } | undefined
+              const skillsService = agentCtx.get('skills') as SkillsCatalogFace | undefined
               const commandsService = agentCtx.get('commands') as { list?(): Array<{ name: string; description?: string; input?: { hint?: string } }> } | undefined
-              const rawSkills = skillsService?.list ? await skillsService.list().catch(() => []) : []
+              const rawSkills = skillsService?.list !== undefined
+                ? await listSkillsForView(skillsService, {
+                    presets: agentCtx.get('agentPresets') as PresetRosterFace | undefined,
+                    workspaces: workspaceFace(wsCtx.workspaceRegistry),
+                    workspaceId: view?.workspaceId,
+                  })
+                : []
               const rawCommands = commandsService?.list ? commandsService.list() : []
               return {
                 skills: Array.isArray(rawSkills) ? rawSkills.map(s => ({ name: s.name, description: s.description })) : [],

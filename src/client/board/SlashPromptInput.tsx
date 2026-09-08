@@ -53,6 +53,79 @@ export const defaultSkills = (t: Translate): PromptCompletionItem[] => [
   { name: 'using-agent-skills', kind: 'skill', description: t('slash.skill.using-agent-skills') },
 ]
 
+/** Box model the popup height is expressed in (must match the CSS). */
+export const POPUP_BOX_SIZING: CSSProperties['boxSizing'] = 'border-box'
+
+/** Gap between the textarea and the popup, and the viewport margin. */
+const POPUP_GAP = 6
+const POPUP_MARGIN = 8
+/** Smallest popup height that still shows a couple of rows. */
+const POPUP_MIN_HEIGHT = 120
+/** Height assumed before the popup has ever rendered. */
+const POPUP_FALLBACK_HEIGHT = 240
+
+/**
+ * The popup's UNCLAMPED height: the head plus the list's own capped height
+ * plus the border. Our own `maxHeight` is cleared for the measurement so the
+ * box reports what the CONTENT wants rather than what the previous pass
+ * allowed — reading the clamped `offsetHeight` back as the next `maxHeight`
+ * fed the border in on every render and grew the popup 2px per pass until
+ * React threw #185 ("Maximum update depth exceeded"); a short list (few
+ * matches) hit it as soon as the query changed to a longer one.
+ * @param node - the portaled popup element, or null before its first render.
+ * @returns the natural border-box height in px.
+ */
+export function measurePopupNaturalHeight(node: HTMLElement | null): number {
+  if (node === null) return POPUP_FALLBACK_HEIGHT
+  const applied = node.style.maxHeight
+  node.style.maxHeight = 'none'
+  const natural = node.offsetHeight
+  node.style.maxHeight = applied
+  return natural > 0 ? natural : POPUP_FALLBACK_HEIGHT
+}
+
+/** Viewport rect of the anchoring textarea. */
+export interface PopupAnchorRect {
+  readonly top: number
+  readonly bottom: number
+  readonly left: number
+  readonly width: number
+}
+
+/** Where the popup goes for one measurement pass. */
+export interface PopupPlacement {
+  readonly left: number
+  readonly top: number
+  readonly width: number
+  /** Max height to apply; the popup renders at exactly this height. */
+  readonly height: number
+  readonly openBelow: boolean
+}
+
+/**
+ * Place the popup above the anchor by preference, flipping below when the top
+ * is tight, and clamp the height to the room on the chosen side.
+ *
+ * The result is a fixed point: applying `height` as `maxHeight` renders the
+ * popup at `height`, so the next pass measures the same content and returns
+ * the same placement — no render loop.
+ * @param input - anchor rect, viewport height and the popup's natural height.
+ * @returns the placement in viewport coordinates.
+ */
+export function placeSlashPopup(input: {
+  rect: PopupAnchorRect
+  viewportHeight: number
+  naturalHeight: number
+}): PopupPlacement {
+  const { rect, viewportHeight, naturalHeight } = input
+  const roomAbove = rect.top - POPUP_GAP - POPUP_MARGIN
+  const roomBelow = viewportHeight - POPUP_MARGIN - (rect.bottom + POPUP_GAP)
+  const openBelow = roomBelow > roomAbove
+  const height = Math.min(naturalHeight, Math.max(openBelow ? roomBelow : roomAbove, POPUP_MIN_HEIGHT))
+  const top = openBelow ? rect.bottom + POPUP_GAP : rect.top - POPUP_GAP - height
+  return { left: rect.left, top, width: rect.width, height, openBelow }
+}
+
 /** Props for SlashPromptInput. */
 export interface SlashPromptInputProps {
   value: string
@@ -65,6 +138,12 @@ export interface SlashPromptInputProps {
   autoFocus?: boolean
   className?: string
   ariaLabel?: string
+  /**
+   * Project the composer targets (0.6.5): the host reads the skill catalog with
+   * this workspace's cwd so project skill roots contribute. Changing it
+   * refetches the host list.
+   */
+  workspaceId?: string
 }
 
 /**
@@ -81,6 +160,7 @@ export function SlashPromptInput({
   autoFocus = false,
   className,
   ariaLabel,
+  workspaceId,
 }: SlashPromptInputProps) {
   const t = useT()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -88,6 +168,8 @@ export function SlashPromptInput({
   const listRef = useRef<HTMLDivElement>(null)
   // Inline fixed-position style for the portaled popup (set by positionPopup).
   const [popupStyle, setPopupStyle] = useState<CSSProperties>({})
+  /** The placement already written to `popupStyle` (loop guard). */
+  const appliedPlacementRef = useRef<PopupPlacement | undefined>(undefined)
 
   // Autocomplete state: only HOST-provided items are stateful; the built-in
   // defaults are re-derived per render so their descriptions follow the
@@ -107,11 +189,12 @@ export function SlashPromptInput({
   const [slashStart, setSlashStart] = useState(-1)
   const [selectedIndex, setSelectedIndex] = useState(0)
 
-  // Fetch host completions if controller provided
+  // Fetch host completions if controller provided (refetched when the target
+  // workspace changes — project skill roots are cwd-sensitive).
   useEffect(() => {
     if (controller === undefined) return
     let alive = true
-    void controller.fetchPromptCompletions().then(res => {
+    void controller.fetchPromptCompletions(workspaceId).then(res => {
       if (!alive || res === undefined) return
       setHostCompletions({
         commands: res.commands.map(c => ({ ...c, kind: 'command' })),
@@ -119,7 +202,7 @@ export function SlashPromptInput({
       })
     })
     return () => { alive = false }
-  }, [controller])
+  }, [controller, workspaceId])
 
   // Filter items based on query
   const filteredItems = useMemo<PromptCompletionItem[]>(() => {
@@ -237,25 +320,37 @@ export function SlashPromptInput({
     const anchor = textareaRef.current
     if (anchor === null) return
     const rect = anchor.getBoundingClientRect()
-    const gap = 6
-    const margin = 8
-    const vh = window.innerHeight
-    const measured = popupRef.current?.offsetHeight ?? 0
-    const natural = measured > 0 ? measured : 240
-    const roomAbove = rect.top - gap - margin
-    const roomBelow = vh - margin - (rect.bottom + gap)
-    const openBelow = roomBelow > roomAbove
-    const height = Math.min(natural, Math.max(openBelow ? roomBelow : roomAbove, 120))
-    const top = openBelow ? rect.bottom + gap : rect.top - gap - height
-    // Bail out (return prev) when unchanged: the layout effect below runs on
-    // every open render, and a fresh object here would re-render forever.
-    setPopupStyle(prev => (prev.left === rect.left && prev.top === top && prev.width === rect.width && prev.maxHeight === height
-      ? prev
-      : { position: 'fixed', left: rect.left, top, width: rect.width, maxHeight: height, zIndex: 100 }))
+    const placement = placeSlashPopup({
+      rect,
+      viewportHeight: window.innerHeight,
+      naturalHeight: measurePopupNaturalHeight(popupRef.current),
+    })
+    // Compare against the placement ALREADY applied, not against React state:
+    // this runs from a layout effect on every render, and a state update per
+    // run re-enters the commit phase with the previous base state (React's
+    // eager-state pass), which is how an "unchanged" placement still managed
+    // to drive an unbounded update loop (#185). The ref is updated
+    // synchronously, so a repeat placement never schedules an update at all.
+    const applied = appliedPlacementRef.current
+    if (applied !== undefined && applied.left === placement.left && applied.top === placement.top
+      && applied.width === placement.width && applied.height === placement.height) return
+    appliedPlacementRef.current = placement
+    setPopupStyle({
+      position: 'fixed',
+      left: placement.left,
+      top: placement.top,
+      width: placement.width,
+      maxHeight: placement.height,
+      // border-box keeps maxHeight and the measured height in one box model
+      // (see measurePopupNaturalHeight).
+      boxSizing: POPUP_BOX_SIZING,
+      zIndex: 100,
+    })
   }, [])
 
-  // Reposition on every open render: the popup height follows the filtered
-  // item count, so typing changes the geometry too.
+  // Reposition after every render while open: the popup's height follows the
+  // filtered item count, so typing changes the geometry too. positionPopup
+  // no-ops unless the placement actually changed (see appliedPlacementRef).
   useLayoutEffect(() => {
     if (!popupOpen) return
     positionPopup()

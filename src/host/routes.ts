@@ -92,8 +92,13 @@ export interface TaskboardRoutesOptions {
   scanner?: RepoScanner
   /** Task-template store (0.4.0); absent → 501 on template actions. */
   templates?: TemplateStore
-  /** Prompt completions face (0.5.5; dynamically discovers skills & commands). */
-  promptCompletions?: () => Promise<{
+  /**
+   * Prompt completions face (0.5.5; dynamically discovers skills & commands).
+   * `workspaceId` (0.6.5) is the project the composer targets, so the host can
+   * read the skill catalog with that cwd (project skill roots) and the default
+   * preset's standing scope (local discovery lives in the preset's layer).
+   */
+  promptCompletions?: (view?: { workspaceId?: string }) => Promise<{
     skills?: Array<{ name: string; description?: string }>
     commands?: Array<{ name: string; description?: string; hint?: string }>
   }>
@@ -488,8 +493,10 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         }
 
         // Prompt completions (0.5.5; dynamically discovers skills & commands).
+        // `workspaceId` (0.6.5) selects the project cwd of the skill view.
         if (pathname === `${ROUTE_PREFIX}/prompt-completions`) {
-          const completions = await options.promptCompletions?.().catch(() => undefined)
+          const workspaceId = url.searchParams.get('workspaceId') ?? undefined
+          const completions = await options.promptCompletions?.({ workspaceId }).catch(() => undefined)
           json(res, {
             ok: true,
             value: {

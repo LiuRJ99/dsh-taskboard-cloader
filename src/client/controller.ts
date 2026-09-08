@@ -756,10 +756,16 @@ export class BoardController {
     })
   }
 
-  /** Load prompt completions (skills + slash commands) from host (0.5.5). */
-  async fetchPromptCompletions(): Promise<PromptCompletionsResponse | undefined> {
+  /**
+   * Load prompt completions (skills + slash commands) from host (0.5.5).
+   * `workspaceId` (0.6.5) scopes the host's skill view to a project so its
+   * local skill roots (`<project>/.dsh/skills`, `<project>/.agents/skills`)
+   * contribute; the host always reads the default preset's scope chain, where
+   * local discovery lives.
+   */
+  async fetchPromptCompletions(workspaceId?: string): Promise<PromptCompletionsResponse | undefined> {
     try {
-      return await this.client.promptCompletions()
+      return await this.client.promptCompletions(workspaceId)
     } catch {
       return undefined
     }

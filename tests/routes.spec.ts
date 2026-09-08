@@ -32,6 +32,8 @@ let store: InstanceType<typeof TaskStore>
 let templates: InstanceType<typeof TemplateStore>
 let cancelCalls: string[]
 let runCalls: Array<{ id: string; runOptions?: { reuseWorktree?: boolean } }>
+/** Prompt-completion views the route forwarded (0.6.5 workspaceId). */
+let completionViews: Array<{ workspaceId?: string } | undefined> = []
 let dir: string
 /** Per-test store file counter (unique names keep a fresh store from ever
  *  reading a previous test's ledger file). */
@@ -192,6 +194,10 @@ beforeAll(async () => {
       presets: [{ id: 'standard', name: '标准模式' }],
       defaultPresetId: 'standard',
     }),
+    promptCompletions: async view => {
+      completionViews.push(view)
+      return { skills: [{ name: 'comet', description: 'Comet 工作流入口' }], commands: [] }
+    },
   })
   server.on('request', (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
@@ -213,6 +219,7 @@ beforeEach(async () => {
     new TemplateStore(join(dir, `templates-${storeSeq}.json`)),
   )
   cancelCalls.length = 0
+  completionViews.length = 0
   runCalls.length = 0
   Object.assign(gitBehavior, freshGitBehavior())
   wsList.length = 0
@@ -1096,6 +1103,17 @@ describe('taskboard routes 0.5.0 (board settings → default isolation)', () => 
     const badFile = { ...ledgerFile, settings: { defaultIsolation: 'docker' } }
     const refused = await post('/dsh-taskboard/import/preview', badFile)
     expect(refused.status).toBe(400)
+  })
+
+  it('GET /prompt-completions: forwards the target workspace to the skill view (0.6.5)', async () => {
+    const plain = await (await fetch(`${base}/dsh-taskboard/prompt-completions`)).json()
+    expect(plain.ok).toBe(true)
+    expect(plain.value.skills).toEqual([{ name: 'comet', description: 'Comet 工作流入口' }])
+    expect(completionViews).toEqual([{ workspaceId: undefined }])
+
+    const scoped = await (await fetch(`${base}/dsh-taskboard/prompt-completions?workspaceId=ws-a`)).json()
+    expect(scoped.ok).toBe(true)
+    expect(completionViews).toEqual([{ workspaceId: undefined }, { workspaceId: 'ws-a' }])
   })
 
   it('GET /model-catalog: returns models, presets, and default preset id (0.5.5)', async () => {
