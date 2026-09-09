@@ -26,6 +26,7 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 
 ## 目录
 
+- [Fork 增强特性（v0.6.5）](#fork-增强特性v065)
 - [环境要求](#环境要求)
 - [安装](#安装)
 - [快速开始](#快速开始)
@@ -36,6 +37,47 @@ DeepSeek Harness 的**任务看板插件**：人建卡、agent 认领执行、�
 - [常见问题](#常见问题)
 - [开发](#开发)
 - [升级日志](#升级日志)
+
+## Fork 增强特性（v0.6.5）
+
+> 本项目为 [`cloader/dsh-taskboard`](https://github.com/cloader/dsh-taskboard) 的维护与增强分支（维护者：`LiuRJ99/dsh-taskboard-cloader`），在完整保留上游能力的基础上，针对 DeepSeek Harness `0.1.2-rc.1` 进行了深度加固、交互升级与生态协同扩展。
+
+### 1. 本 Fork 安装方式
+
+生产推荐使用精确发布的 Git Release Tag：
+
+```bash
+# 推荐：使用经过完整验证的 v0.6.5 Release
+dsh plugin --profile web add "github:LiuRJ99/dsh-taskboard-cloader#v0.6.5"
+```
+
+### 2. 核心增强能力
+
+* **任务执行选项与速度模式（Task Execution Options & Speed Tier）**：
+  * 新建与编辑任务时，支持选择**执行速度模式（标准 / 快速）**；
+  * 具备动态模型能力识别：仅向支持 `priority` 服务等级的模型呈现快速选项，并自动适配 Harness 宿主调用协议，避免无效调用；
+  * 支持任务级执行权限（工作区写入 / 仅查看 / 完全权限）精细化配置。
+* **交互式 Mermaid 图表全套增强（按需懒加载）**：
+  * **按需分包懒加载**：Mermaid 庞大的解析渲染逻辑被拆分至独立 chunk（`client-mermaid.js`），只有在任务详情首次包含 Mermaid 时才按需拉取，零首屏体积开销；
+  * **交互式放大弹窗（Zoom Modal）**：复杂架构图支持点击弹窗放大查看与全屏平移；
+  * **源码一键复制**：图表顶部提供复制 Mermaid 源码按钮，便于二次修改与流转；
+  * **主题自适应**：跟随 DSH 明暗主题无缝切换背景与线条样式。
+* **会话双向联动与 Better Sidebar 深度适配**：
+  * **会话顶部直达看板**：在关联的执行会话顶部常驻任务跳转 Action，点击即可直接切回看板定位对应任务；
+  * 完美适配 `dsh-better-sidebar`，支持作为原生 Tab 挂载，并可在面板模式与自由窗口模式间平滑切换；
+  * 增加 Cordis slots 代理与服务替换下的防重复挂载保护。
+* **Markdown 与详情交互细节提升**：
+  * **文件路径点击直达**：任务详情中的文件路径（如 `@src/index.ts`）自动高亮为可点击链接，受会话 Workspace 边界安全保护；
+  * **模型专属 SVG 头像**：评论区头像升级为根据模型名称自动生成的专属首字母彩色 SVG Avatar；
+  * **模板分类管理**：任务模板支持按业务场景分类折叠与筛选；
+  * **移动端与窄屏适配**：彻底修复表单弹窗在窄容器/侧边栏下的双列挤压问题，优化 Checklist 移动端排版。
+* **Lazy Gate 协同与能力门控**：
+  * 深度联动 `dsh-tool-lazy-gate`，通过 Skill 元数据契约发布工具能力映射，支持用户显式输入 `/taskboard` 后按需解锁 `taskboard_*` 工具与协议段。
+* **底层稳定性与依赖解耦**：
+  * **自包含 vendor**：内置 `installModelSelection` 实现，彻底消除对运行时私有包 `@deepseek-ai/dsh-agent` 内部未导出符号的依赖，杜绝 DSH 宿主版本升级时的加载崩溃；
+  * **修复 Slash 补全死循环**：修复 Slash 提示词补全弹窗在边界情况下的死循环计算（#185）。
+
+---
 
 ## 环境要求
 

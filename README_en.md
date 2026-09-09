@@ -26,6 +26,7 @@ A **task board plugin for DeepSeek Harness**: humans create cards, agents claim 
 
 ## Table of Contents
 
+- [Fork Enhancements (v0.6.5)](#fork-enhancements-v065)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -36,6 +37,47 @@ A **task board plugin for DeepSeek Harness**: humans create cards, agents claim 
 - [FAQ](#faq)
 - [Development](#development)
 - [Changelog](#changelog)
+
+## Fork Enhancements (v0.6.5)
+
+> This repository is a maintained and enhanced fork of [`cloader/dsh-taskboard`](https://github.com/cloader/dsh-taskboard) (maintained at `LiuRJ99/dsh-taskboard-cloader`). While fully preserving upstream functionality, it introduces architectural stabilization for DeepSeek Harness `0.1.2-rc.1`, rich Mermaid interactions, speed tier controls, and deeper ecosystem integrations.
+
+### 1. Installation from this Fork
+
+We recommend installing from our verified Git release tag:
+
+```bash
+# Recommended: install the verified v0.6.5 release tag
+dsh plugin --profile web add "github:LiuRJ99/dsh-taskboard-cloader#v0.6.5"
+```
+
+### 2. Key Enhancements
+
+* **Task Execution Options & Speed Tier**:
+  * Added **Speed Mode selection (Standard / Fast)** when creating or editing tasks.
+  * Dynamic model capability discovery: fast execution options are only presented for models supporting the `priority` service tier, and are dispatched according to DSH host execution protocols without errors.
+  * Granular per-task permission authorization (Workspace-Write / Read-Only / Full Access).
+* **Interactive Mermaid Diagram Suite (Lazy-Loaded)**:
+  * **Lazy-loaded separate chunk**: Mermaid rendering logic is split into an on-demand bundle (`client-mermaid.js`), avoiding any impact on initial board load time.
+  * **Interactive Zoom Modal**: complex architecture and flow charts can be inspected in an interactive full-view zoom modal with smooth panning.
+  * **One-Click Source Copy**: copy Mermaid source definition directly from the diagram header.
+  * **Theme Reactivity**: automatically adapts styling to DSH light and dark themes.
+* **Bi-Directional Session & Better Sidebar Integration**:
+  * **Session Header Board Navigation**: adds a header action in task execution sessions to return directly to the corresponding task card on the board.
+  * Seamless integration with `dsh-better-sidebar` as a native tab supporting both docked panel and floating window modes.
+  * Guarded against duplicate registration during Cordis slots proxying and service replacement.
+* **Markdown & Detail UX Refinements**:
+  * **Clickable File Links**: workspace file paths in task details (e.g. `@src/index.ts`) are rendered as clickable links with workspace boundary protection.
+  * **Model Initial SVG Avatars**: comment avatars are replaced with dynamic, colorful SVG avatars based on model initials.
+  * **Categorized Task Templates**: organize task templates into collapsible category groups.
+  * **Responsive Layouts**: fixed column squeezing in task form modals under narrow widths and mobile sidebars; resolved mobile checklist text compression.
+* **Lazy Gate Collaboration**:
+  * Integrates with `dsh-tool-lazy-gate` via published Skill metadata, allowing on-demand unlocking of `taskboard_*` tools and protocol sections via explicit `/taskboard`.
+* **Architectural Decoupling & Stability**:
+  * **Vendored Model Selection Helper**: internalizes `installModelSelection` to eliminate runtime import dependency on private `@deepseek-ai/dsh-agent` internals, preventing missing export crashes across DSH host minor versions.
+  * **Slash Popup Loop Fix**: eliminated infinite loops during slash command completion in boundary conditions (#185).
+
+---
 
 ## Prerequisites
 
