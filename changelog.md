@@ -1,5 +1,11 @@
 # 更新日志 / Changelog
 
+### 0.6.5
+
+- 发布当前 `main` 的 DSH `0.1.2-rc.1` 兼容性、模型选择、客户端/Host 集成和运行时修复。
+
+### 0.6.4
+
 ### 0.6.4
 
 - **修复：client 激活早于 locale 服务时界面语言被永久定型为英文（[#16](https://github.com/cloader/dsh-taskboard/issues/16)，@imroc 报告并验证方案）**：taskboard client 零依赖、先于 `dsh-client-locale` 激活，`initI18n` 拿不到服务时的一次性回退检测撞上服务端渲染的静态 `<html lang="en">`，此后无重试。修复：无服务分支增加「迟挂载」——MutationObserver 监听 `<html lang>` 变化即时重新检测发布（locale 运行时激活同步 lang 后立即跟随），并以 250ms×8 轮询重试 `ctx.get('locale')`、服务出现即正常订阅接管；dispose 全量拆除
