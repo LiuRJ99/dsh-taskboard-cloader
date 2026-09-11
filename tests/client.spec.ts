@@ -307,6 +307,232 @@ describe('client half', () => {
     for (const disposer of effectDisposers) disposer()
   })
 
+  /**
+   * Apply the client half with the Slot registry, the optional Better Sidebar
+   * service, an optional native right Sidebar (`ctx.sidebarRight`) and one
+   * task owned by the session, then render the registered session-header
+   * action. Returns the rendered host plus the collaborating stubs, so a test
+   * can click the header 看板 button and observe the navigation it drives.
+   */
+  async function mountHeaderAction(options: {
+    sidebarRight?: unknown
+    extraDom?: () => () => void
+  } = {}) {
+    const testSessionId = `session-header-${Math.random().toString(36).slice(2)}`
+    const task = {
+      id: 'task-test-header',
+      title: '测试任务',
+      workspaceId: 'ws-a',
+      urgency: 'normal',
+      status: 'in_progress',
+      claimedBy: testSessionId,
+      execution: { mode: 'claim' },
+      version: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: { kind: 'user' },
+      updatedBy: { kind: 'user' },
+      comments: [],
+      executions: [],
+    }
+    const customFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/dsh-taskboard/state') {
+        return new Response(JSON.stringify({ ok: true, value: { schemaVersion: 1, revision: 3, tasks: [task] } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (path === '/dsh-taskboard/workspaces') {
+        return new Response(JSON.stringify({ ok: true, value: [{ id: 'ws-a', path: '/proj/a', title: 'A', sessionCount: 0 }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      throw new Error(`unexpected fetch ${path}`)
+    })
+    vi.stubGlobal('fetch', customFetch)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { apply } = await import('../src/client/index.ts')
+    const { createRoot } = await import('react-dom/client')
+    let registeredComponent: ((props: { sessionId: string }) => unknown) | undefined
+    const slots = {
+      inject: vi.fn((_name: string, factory: () => unknown) => factory()),
+      register: vi.fn((_descriptor: { id: string }, component: (props: { sessionId: string }) => unknown) => {
+        registeredComponent = component
+        return () => undefined
+      }),
+    }
+    const service = {
+      registerTab: vi.fn(() => () => undefined),
+      openTab: vi.fn(),
+      features: ['openFile'] as const,
+      openFile: vi.fn(),
+    }
+    const effectDisposers: Array<() => void> = []
+    const ctx = {
+      get: (name: string) => name === 'slots'
+        ? slots
+        : name === 'betterSidebar'
+          ? service
+          : name === 'sidebarRight'
+            ? options.sidebarRight
+            : undefined,
+      get slots(): never {
+        throw new Error('service "slots" is not declared')
+      },
+      effect: (fn: () => unknown) => {
+        const disposer = fn()
+        if (typeof disposer === 'function') effectDisposers.push(disposer as () => void)
+      },
+    }
+    apply(ctx as never)
+    await new Promise(r => setTimeout(r, 40))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(registeredComponent!({ sessionId: testSessionId }) as never)
+    await new Promise(r => setTimeout(r, 40))
+    const disposeExtraDom = options.extraDom?.()
+    disposers.push(() => {
+      disposeExtraDom?.()
+      root.unmount()
+      host.remove()
+      for (const disposer of effectDisposers.splice(0)) disposer()
+    })
+    return { host, service, testSessionId }
+  }
+
+  /** Click the rendered header 看板 button and let React settle. */
+  async function clickHeaderKanban(host: HTMLElement): Promise<void> {
+    const link = host.querySelector<HTMLButtonElement>('[data-dsh-atb-session-link]')
+    expect(link).not.toBeNull()
+    link!.click()
+    await new Promise(r => setTimeout(r, 20))
+  }
+
+  it('0.6.9 回归：右栏已显示看板时头部点击隐藏右栏（开→收→开，不再翻动下侧栏）', async () => {
+    // The native right Sidebar (DSH 0.1.5+): one column, one active tab.
+    let expanded = false
+    let activeKind: string | undefined
+    const toggleExpanded = vi.fn(() => { expanded = !expanded })
+    const sidebarRight = {
+      isExpanded: () => expanded,
+      toggleExpanded,
+      active: () => (activeKind === undefined ? undefined : { kind: activeKind }),
+    }
+    const { host, service } = await mountHeaderAction({ sidebarRight })
+    // A companion open expands the column and lands our page tab there.
+    service.openTab.mockImplementation(() => { expanded = true; activeKind = 'dsh-taskboard:board' })
+
+    // Click 1: collapsed → reveal the board tab (which expands the column).
+    await clickHeaderKanban(host)
+    expect(service.openTab).toHaveBeenCalledTimes(1)
+    expect(expanded).toBe(true)
+    expect(toggleExpanded).not.toHaveBeenCalled()
+
+    // Click 2: board is on screen → collapse the column, nothing else.
+    await clickHeaderKanban(host)
+    expect(toggleExpanded).toHaveBeenCalledTimes(1)
+    expect(expanded).toBe(false)
+    expect(service.openTab).toHaveBeenCalledTimes(1)
+
+    // Click 3: collapsed again → reveal.
+    await clickHeaderKanban(host)
+    expect(service.openTab).toHaveBeenCalledTimes(2)
+    expect(expanded).toBe(true)
+    expect(toggleExpanded).toHaveBeenCalledTimes(1)
+  })
+
+  it('0.6.9 回归：右栏展开但显示别的 Tab 时头部点击只揭示看板，不收起右栏', async () => {
+    const toggleExpanded = vi.fn()
+    const sidebarRight = {
+      isExpanded: () => true,
+      toggleExpanded,
+      active: () => ({ kind: 'editor' }),
+    }
+    const { host, service } = await mountHeaderAction({ sidebarRight })
+
+    await clickHeaderKanban(host)
+
+    expect(service.openTab).toHaveBeenCalledWith(
+      { type: 'dsh-taskboard:board' },
+      expect.objectContaining({ sessionId: expect.any(String) }),
+    )
+    expect(toggleExpanded).not.toHaveBeenCalled()
+  })
+
+  it('0.6.9 回归：better-sidebar 0.19 的下侧栏（复用 data-dsh-panel）不会被头部点击误触', async () => {
+    const onBottomToggle = vi.fn()
+    const { host, service } = await mountHeaderAction({
+      // No native controller: the legacy probe must find nothing to click.
+      extraDom: () => {
+        const panelHost = document.createElement('div')
+        panelHost.setAttribute('data-dsh-panel-host', '')
+        const bottom = document.createElement('div')
+        bottom.className = 'nArs4W_bottomPanel nArs4W_bottomPanelHidden'
+        bottom.setAttribute('data-dsh-panel', '')
+        bottom.setAttribute('data-dsh-bottom-panel', '')
+        const close = document.createElement('button')
+        close.type = 'button'
+        close.setAttribute('aria-label', '折叠底部面板')
+        close.addEventListener('click', onBottomToggle)
+        bottom.append(close)
+        panelHost.append(bottom)
+        // The legacy "board is the shown tab" signal is on screen too.
+        const tabBody = document.createElement('div')
+        tabBody.setAttribute('data-dsh-atb-sidebar-tab', '')
+        tabBody.setAttribute('data-visible', 'true')
+        document.body.append(panelHost, tabBody)
+        return () => { panelHost.remove(); tabBody.remove() }
+      },
+    })
+
+    await clickHeaderKanban(host)
+
+    expect(onBottomToggle).not.toHaveBeenCalled()
+    expect(service.openTab).toHaveBeenCalledTimes(1)
+  })
+
+  it('0.6.9：旧版 companion 自绘右栏时仍用它的折叠控件收起右栏（点最后一个按钮，不点下侧栏开关）', async () => {
+    const onBottomToggle = vi.fn()
+    const onRightToggle = vi.fn()
+    const { host, service } = await mountHeaderAction({
+      extraDom: () => {
+        const panelHost = document.createElement('div')
+        panelHost.setAttribute('data-dsh-panel-host', '')
+        const cluster = document.createElement('div')
+        cluster.className = 'x_toggleCluster'
+        cluster.setAttribute('data-dsh-toggle-cluster', '')
+        const bottomToggle = document.createElement('button')
+        bottomToggle.type = 'button'
+        bottomToggle.setAttribute('aria-label', '折叠底部面板')
+        bottomToggle.addEventListener('click', onBottomToggle)
+        const rightToggle = document.createElement('button')
+        rightToggle.type = 'button'
+        rightToggle.setAttribute('aria-label', '折叠')
+        rightToggle.addEventListener('click', onRightToggle)
+        cluster.append(bottomToggle, rightToggle)
+        const panel = document.createElement('div')
+        panel.className = 'x_panel'
+        panel.setAttribute('data-dsh-panel', '')
+        const tabBody = document.createElement('div')
+        tabBody.setAttribute('data-dsh-atb-sidebar-tab', '')
+        tabBody.setAttribute('data-visible', 'true')
+        panelHost.append(cluster, panel)
+        document.body.append(panelHost, tabBody)
+        return () => { panelHost.remove(); tabBody.remove() }
+      },
+    })
+
+    await clickHeaderKanban(host)
+
+    expect(onRightToggle).toHaveBeenCalledTimes(1)
+    expect(onBottomToggle).not.toHaveBeenCalled()
+    expect(service.openTab).not.toHaveBeenCalled()
+  })
+
   it('Better Sidebar 后激活时也会把旧挂载升级为原生 Tab', async () => {
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)

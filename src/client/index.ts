@@ -18,6 +18,12 @@ import { injectStyles } from './styles.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
 import { getBetterSidebarService, registerBetterSidebarTab, TASKBOARD_TAB_ID } from './sidebar-tab.tsx'
+import {
+  boardShownInRightSidebar,
+  boardTabBodyVisible,
+  getNativeRightSidebar,
+  legacyRightPanelCollapseButton,
+} from './right-sidebar.ts'
 import { createTaskboardSessionHeaderAction } from './session-header-action.tsx'
 import { createSessionJumper, type SessionsServiceFace, type WorkspacesServiceFace } from './session-jump.ts'
 import { isTaskModelSupported } from './model-catalog.ts'
@@ -449,33 +455,30 @@ export function apply(ctx: ClientContextFace): void {
         // successful navigation when the side-card setting explicitly disables it.
         if (currentService.isTabEnabled?.(TASKBOARD_TAB_ID) === false) return
 
-        // Check if the right sidebar is currently open AND displaying the taskboard tab
-        const tabEl = typeof document !== 'undefined'
-          ? document.querySelector<HTMLElement>('[data-dsh-atb-sidebar-tab]')
-          : null
-        const isTabActiveAndVisible = tabEl?.getAttribute('data-visible') === 'true'
-        const rightPanel = typeof document !== 'undefined'
-          ? document.querySelector('[data-dsh-panel]')
-          : null
-        const isPanelCollapsed = typeof document !== 'undefined'
-          && (document.body.hasAttribute('data-dsh-sidebar-collapsed')
-            || rightPanel?.className.includes('panelHidden') === true)
-        const isRightPanelOpen = rightPanel !== null && !isPanelCollapsed
+        // Toggle semantics: with the board already on screen in the right
+        // column, this click HIDES that column; otherwise it reveals the tab.
+        const rightSidebar = getNativeRightSidebar(ctx)
+        const boardShown = boardShownInRightSidebar(rightSidebar, TASKBOARD_TAB_ID)
 
-        if (isTabActiveAndVisible && isRightPanelOpen) {
-          // If the right sidebar is already open and showing taskboard, clicking again collapses the right sidebar.
-          // IMPORTANT: Must scope strictly inside [data-dsh-panel-host] so we never accidentally match/collapse the left sidebar!
-          const rightSidebarCollapseBtn = typeof document !== 'undefined'
-            ? document.querySelector<HTMLButtonElement>(
-              '[data-dsh-panel-host] [class*="toggleCluster"] button:last-child, [data-dsh-panel-host] button[aria-label*="侧边栏"], [data-dsh-panel-host] button[aria-label*="側邊欄"], [data-dsh-panel-host] button[aria-label*="sidebar" i], [data-dsh-panel-host] button[aria-label*="折叠"]',
-            )
-            : null
-          if (rightSidebarCollapseBtn !== null) {
-            rightSidebarCollapseBtn.click()
+        if (boardShown) {
+          // The right column already shows the board: this click HIDES it —
+          // never the bottom workbench (see right-sidebar.ts for the reused
+          // data-dsh-panel marker that made that mistake possible).
+          try {
+            rightSidebar?.toggleExpanded?.()
             return
+          } catch (error) {
+            console.error('[dsh-taskboard] hiding the right sidebar failed:', error)
           }
-          if (typeof currentService.closeTab === 'function') {
-            currentService.closeTab(TASKBOARD_TAB_ID, { sessionId })
+        }
+
+        // Legacy companion (< 0.19) draws the right column itself: the same
+        // toggle through its own collapse control, matched only inside the
+        // legacy right panel / its toggle cluster.
+        if (rightSidebar === undefined && boardTabBodyVisible()) {
+          const legacyCollapse = legacyRightPanelCollapseButton()
+          if (legacyCollapse !== null) {
+            legacyCollapse.click()
             return
           }
         }
