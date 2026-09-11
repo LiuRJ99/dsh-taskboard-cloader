@@ -1,8 +1,28 @@
 # 更新日志 / Changelog
 
-### 0.6.5
+### 0.6.8
 
-- 发布当前 `main` 的 DSH `0.1.2-rc.1` 兼容性、模型选择、客户端/Host 集成和运行时修复。
+- **修复：会话头部看板 action 触发 Better Sidebar 时误传文件路径导致 ENOENT 报错**：修复 `openTaskFromHeader` 调用 `betterSidebar.openTab` 时误传入 `path: 'board'` 的问题。Better Sidebar 将带有 `path` 的 seed 判定为工作区文件资源（`openResource`），导致在会话 workspace 寻找名为 `board` 的文件并触发 `cannot resolve target ...: ENOENT` 报错。移除多余的 `path` 参数，改为纯 Tab 打开模式（`{ type: TASKBOARD_TAB_ID }`），使得 Better Sidebar 能够正确激活右侧栏看板 Tab 并自动展开。
+
+**English:**
+
+- **Fix: session-header board action caused ENOENT error by passing invalid file path to Better Sidebar**: fixed `openTaskFromHeader` passing `path: 'board'` to `betterSidebar.openTab`. Better Sidebar treats any seed with a `path` property as a workspace file resource (`openResource`), attempting to resolve a file named `board` in the session's workspace and throwing `cannot resolve target ...: ENOENT`. Removed the bogus `path` parameter so `openTab` cleanly activates and reveals the native `dsh-taskboard:board` sidebar tab.
+
+### 0.6.7
+
+- 吸收上游 0.6.7 特性：内置模板双语本地化支持与任务卡片可选联动归档执行会话。
+
+**English:**
+
+- Absorb upstream 0.6.7 features: localized built-in templates and optional execution-session archiving.
+
+### 0.6.6
+
+- 吸收上游 0.6.6 特性：DoD 验收清单项地址化渲染（携带 item id）与 Windows 标题栏排版适配。
+
+**English:**
+
+- Absorb upstream 0.6.6 features: addressable DoD checklist item ids in taskboard_get and Windows caption layout adjustments.
 
 ### 0.6.4
 

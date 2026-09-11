@@ -485,7 +485,7 @@ export function apply(ctx: ClientContextFace): void {
         // detail pane immediately instead of briefly showing the column overview.
         controller.select(taskId)
         try {
-          currentService.openTab?.({ type: TASKBOARD_TAB_ID, path: 'board' }, { sessionId })
+          currentService.openTab?.({ type: TASKBOARD_TAB_ID }, { sessionId })
         } catch (error) {
           console.error('[dsh-taskboard] native taskboard navigation failed:', error)
         }

@@ -216,10 +216,44 @@ describe('client half', () => {
     expect(isRegistered).toBe(false)
   })
 
-  it('会话头部看板 action 触发时调用 openTab 且附带 path: board 以自动展开侧边栏', async () => {
-    vi.stubGlobal('fetch', fetchMock)
+  it('会话头部看板 action 触发时调用 openTab 激活原生 Tab（不附带 path 避免误判为文件）', async () => {
+    const testSessionId = 'session-task-test-123'
+    const task = {
+      id: 'task-test-header',
+      title: '测试任务',
+      workspaceId: 'ws-a',
+      urgency: 'normal',
+      status: 'in_progress',
+      claimedBy: testSessionId,
+      execution: { mode: 'claim' },
+      version: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: { kind: 'user' },
+      updatedBy: { kind: 'user' },
+      comments: [],
+      executions: [],
+    }
+    const customFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/dsh-taskboard/state') {
+        return new Response(JSON.stringify({ ok: true, value: { schemaVersion: 1, revision: 3, tasks: [task] } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (path === '/dsh-taskboard/workspaces') {
+        return new Response(JSON.stringify({ ok: true, value: [{ id: 'ws-a', path: '/proj/a', title: 'A', sessionCount: 0 }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      throw new Error(`unexpected fetch ${path}`)
+    })
+    vi.stubGlobal('fetch', customFetch)
     vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
     const { apply } = await import('../src/client/index.ts')
+    const { createRoot } = await import('react-dom/client')
     let registeredComponent: ((props: { sessionId: string }) => unknown) | undefined
     const slots = {
       inject: vi.fn((_name: string, factory: () => unknown) => factory()),
@@ -246,10 +280,30 @@ describe('client half', () => {
       },
     }
     apply(ctx as never)
-    await new Promise(r => setTimeout(r, 20))
+    await new Promise(r => setTimeout(r, 40))
 
     expect(registeredComponent).toBeDefined()
 
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const Component = registeredComponent!
+    root.render(Component({ sessionId: testSessionId }) as never)
+    await new Promise(r => setTimeout(r, 40))
+
+    const link = host.querySelector<HTMLButtonElement>('[data-dsh-atb-session-link]')
+    expect(link).not.toBeNull()
+    link?.click()
+
+    expect(service.openTab).toHaveBeenCalledWith(
+      { type: 'dsh-taskboard:board' },
+      { sessionId: testSessionId },
+    )
+    const firstCallArg = service.openTab.mock.calls[0]?.[0] as { path?: unknown } | undefined
+    expect(firstCallArg?.path).toBeUndefined()
+
+    root.unmount()
+    host.remove()
     for (const disposer of effectDisposers) disposer()
   })
 
