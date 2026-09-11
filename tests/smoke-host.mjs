@@ -1,6 +1,6 @@
 // Smoke: load the built host half in Node and run apply() against a fake
 // cordis-like context — proves the full wiring (prompt section → nested
-// dynamic injects [workspaceRegistry → agents → webServer] → tool register →
+// eager tool register → dynamic injects [workspaceRegistry → agents → webServer]
 // routes → execution service → scheduler) executes against the REAL built
 // artifacts. DSH_HOME is pointed at a temp dir so the smoke never touches the
 // user's real ledger.
@@ -19,6 +19,7 @@ const registeredTools = []
 const registeredRoutes = []
 const eventSubscriptions = []
 const disposers = []
+const pendingInjects = []
 
 /** Per-level service faces, keyed by the injected names. */
 function servicesFor(names) {
@@ -50,23 +51,30 @@ function makeCtx(services) {
     on: (name) => { eventSubscriptions.push(name); return () => {} },
     inject: (names, cb) => {
       console.log('dynamic inject requested:', names)
-      const dispose = cb(makeCtx(servicesFor(names)))
-      console.log('dynamic inject callback returned:', typeof dispose)
-      disposers.push(() => dispose?.())
+      pendingInjects.push(() => {
+        const dispose = cb(makeCtx(servicesFor(names)))
+        console.log('dynamic inject callback returned:', typeof dispose)
+        disposers.push(() => dispose?.())
+      })
     },
   }
 }
 
 plugin.apply(makeCtx({
+  tools: { register: tool => { registeredTools.push(tool.name); return () => {} } },
   systemPrompt: { section: spec => { sectionCalls.push(spec); return () => {} } },
 }))
+
+// The cache-critical contract: all schemas exist before workspaceRegistry (or
+// any nested runtime service) becomes available.
+if (registeredTools.length !== 10) throw new Error(`expected 10 eager tools, got ${registeredTools.length}`)
+while (pendingInjects.length > 0) pendingInjects.shift()()
 
 console.log('sections registered:', sectionCalls.map(s => `${s.name}@${s.order} (${s.text.length} chars)`))
 console.log('tools registered:', registeredTools.join(', '))
 console.log('routes registered:', registeredRoutes.join(' | '))
 console.log('event subscriptions:', eventSubscriptions.join(', '))
 if (sectionCalls.length !== 1) throw new Error('expected exactly one section')
-if (registeredTools.length !== 10) throw new Error(`expected 10 tools, got ${registeredTools.length}`)
 for (const expected of ['taskboard_checklist', 'taskboard_execution_report']) {
   if (!registeredTools.includes(expected)) throw new Error(`expected tool ${expected}`)
 }

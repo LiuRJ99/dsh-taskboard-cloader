@@ -31,7 +31,7 @@ import { dshHomePath, installModelSelection, type ModelSelectionContext } from '
 import { TaskStore } from './host/store.ts'
 import { TemplateStore } from './host/templates.ts'
 import { ExternalSessionSyncService } from './host/session-sync.ts'
-import { registerTaskboardTools, workspaceFace } from './host/tools.ts'
+import { ERR, ToolError, registerTaskboardTools, workspaceFace, type WorkspaceFace } from './host/tools.ts'
 import type { PermissionMode, TaskModel, TaskSpeed } from './shared/protocol.ts'
 import { MODEL_CAPABILITY_SERVICE, PRIORITY_SERVICE_TIER, type ModelCapabilityProvider } from './shared/model-capabilities.ts'
 import { MODEL_EXECUTION_SERVICE, type ModelExecutionProvider } from './shared/model-execution.ts'
@@ -90,7 +90,7 @@ export function apply(ctx: Context): void {
   // taskboard_list/get until the scheduler catchup tick or the first
   // GET /state happened to load the file (review P0). load() never throws —
   // a corrupt ledger is quarantined instead.
-  void store.load()
+  const storeReady = store.load()
   const now = () => Date.now()
   // Global execution concurrency cap (DSH_TASKBOARD_MAX_CONCURRENT overrides).
   const maxConcurrent = Math.max(1, Number.parseInt(process.env.DSH_TASKBOARD_MAX_CONCURRENT ?? '', 10) || DEFAULT_MAX_CONCURRENT)
@@ -111,32 +111,66 @@ export function apply(ctx: Context): void {
     ctx.effect(() => skills.register(TASKBOARD_SKILL), 'dsh-taskboard: taskboard skill')
   }
 
-  // Tools, routes, execution, and the scheduler all come up with the
-  // workspace registry (claim boundary + project execution need it).
-  ctx.inject(['workspaceRegistry'], (wsCtx: Context) => {
-    const disposers: Array<() => void> = []
-
-    // Registered model provider routes (from the host llm runtime), read
-    // lazily at call time so late availability still applies; undefined when
-    // the runtime is absent → only structural model validation runs.
-    const modelProviders = (): string[] | undefined => {
-      try {
-        const llm = wsCtx.get('llm') as { listProviders?: () => Array<{ id: string }> } | undefined
-        return llm === undefined || typeof llm.listProviders !== 'function'
-          ? undefined
-          : llm.listProviders().map(p => p.id)
-      } catch { return undefined }
+  // Register the complete tool schema in the same synchronous mount as the
+  // protocol. Keeping schemas stable from the first request preserves the
+  // provider's prefix cache; calls use the live workspace service below.
+  let activeWorkspaces: WorkspaceFace | undefined
+  let activeWorkspaceContext: Context | undefined
+  const requireWorkspaces = (): WorkspaceFace => {
+    if (activeWorkspaces === undefined) {
+      throw new ToolError(ERR.notReady, 'workspace service is not ready; retry after host startup completes')
     }
+    return activeWorkspaces
+  }
+  const workspaces: WorkspaceFace = {
+    resolveByPath: path => requireWorkspaces().resolveByPath(path),
+    get: id => requireWorkspaces().get(id),
+    list: () => requireWorkspaces().list(),
+  }
+  // Preserve the optional archive capability without replacing the stable
+  // facade captured by the tool definitions.
+  Object.defineProperty(workspaces, 'archiveSession', {
+    enumerable: true,
+    get: () => activeWorkspaces?.archiveSession === undefined
+      ? undefined
+      : (sessionId: string) => requireWorkspaces().archiveSession!(sessionId),
+  })
+  // Registered model provider routes (from the host llm runtime), read
+  // lazily at call time so late availability still applies; undefined when
+  // the runtime is absent → only structural model validation runs.
+  const modelProviders = (): string[] | undefined => {
+    try {
+      const llm = activeWorkspaceContext?.get('llm') as { listProviders?: () => Array<{ id: string }> } | undefined
+      return llm === undefined || typeof llm.listProviders !== 'function'
+        ? undefined
+        : llm.listProviders().map(p => p.id)
+    } catch { return undefined }
+  }
+  const disposeTools = registerTaskboardTools(ctx, {
+    store,
+    workspaces,
+    now,
+    modelProviders,
+    authorizeSession: (agent, skillNames, provenance) => {
+      return lazyGateService(activeWorkspaceContext ?? ctx)?.grant(agent, skillNames, provenance)
+    },
+    ready: async () => {
+      if (activeWorkspaces === undefined) {
+        throw new ToolError(ERR.notReady, 'workspace service is not ready; retry after host startup completes')
+      }
+      await storeReady
+    },
+  })
+  ctx.effect(() => () => {
+    for (const dispose of disposeTools.splice(0)) dispose()
+  }, 'dsh-taskboard: tools')
 
-    disposers.push(...registerTaskboardTools(wsCtx, {
-      store,
-      workspaces: workspaceFace(wsCtx.workspaceRegistry),
-      now,
-      modelProviders,
-      authorizeSession: (agent, skillNames, provenance) => {
-        return lazyGateService(wsCtx)?.grant(agent, skillNames, provenance)
-      },
-    }))
+  // Runtime services come and go with the workspace registry. Tool schemas
+  // remain mounted and resolve this current service only when called.
+  ctx.inject(['workspaceRegistry'], (wsCtx: Context) => {
+    const workspaceDisposers: Array<() => void> = []
+    activeWorkspaces = workspaceFace(wsCtx.workspaceRegistry)
+    activeWorkspaceContext = wsCtx
 
     // Settlement listener over the session event bus.
     const events: EventsFace = {
@@ -168,7 +202,7 @@ export function apply(ctx: Context): void {
       },
       now,
     })
-    disposers.push(() => sessionSync.dispose())
+    workspaceDisposers.push(() => sessionSync.dispose())
 
     // The narrow git face shared by execution (worktree isolation) and the
     // routes (merge / remove / workspace detection), plus the shared
@@ -177,6 +211,7 @@ export function apply(ctx: Context): void {
     const scanner = createRepoScanner()
 
     wsCtx.inject(['agents'], (agentCtx: Context) => {
+      const agentDisposers: Array<() => void> = []
       const modelCapabilities = (): Promise<readonly import('./shared/model-capabilities.ts').ModelCapability[]> => {
         const provider = agentCtx.get(MODEL_CAPABILITY_SERVICE) as ModelCapabilityProvider | undefined
         return provider?.listModelCapabilities() ?? Promise.resolve([])
@@ -388,19 +423,24 @@ export function apply(ctx: Context): void {
       // browser open. Shares the execution concurrency cap.
       const scheduler = new SchedulerService({ store, execution, now, maxConcurrent })
       scheduler.start()
-      disposers.push(() => scheduler.dispose())
+      agentDisposers.push(() => scheduler.dispose())
       // Detach the settlement listener with the plugin — a hot reload must
       // not leave stale services reacting to turn/end errors (review P1).
-      disposers.push(() => execution.dispose())
+      agentDisposers.push(() => execution.dispose())
 
       return () => {
         disposeRoutes?.()
-        for (const dispose of disposers.splice(0)) dispose()
+        agentSessions = undefined
+        for (const dispose of agentDisposers.splice(0)) dispose()
       }
     })
 
     return () => {
-      for (const dispose of disposers.splice(0)) dispose()
+      if (activeWorkspaceContext === wsCtx) {
+        activeWorkspaceContext = undefined
+        activeWorkspaces = undefined
+      }
+      for (const dispose of workspaceDisposers.splice(0)) dispose()
     }
   })
 }
