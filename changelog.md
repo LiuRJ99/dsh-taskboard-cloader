@@ -1,5 +1,17 @@
 # 更新日志 / Changelog
 
+### 0.7.1
+
+**修复：**
+
+- 修复数据目录迁移成功后没有明确反馈的问题：迁移完成后在看板设置的存储区显示绿色成功提示（含新路径）；旧数据清理失败改为以警示样式显示在成功提示下方，不再占用全局错误横幅；关闭设置或修改路径后提示消失。
+
+**English:**
+
+**Fixes:**
+
+- Fix the missing feedback after a successful data-directory migration: the storage section now shows a green success notice with the new path; old-data cleanup warnings render beneath it as warnings instead of occupying the global error banner. The notice clears on closing settings or editing the path.
+
 ### 0.7.0
 
 **新特性：**

@@ -235,6 +235,12 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 
 ## Changelog
 
+### 0.7.1
+
+**Fixes:**
+
+- **Migration success feedback**: a successful data-directory migration now shows a green success notice (with the new path) in the storage section; old-data cleanup warnings render beneath it as warnings instead of occupying the global error banner.
+
 ### 0.7.0
 
 **New features:**
