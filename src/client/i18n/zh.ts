@@ -399,6 +399,8 @@ export const zh = {
   'set.storage.migrate': '迁移数据',
   'set.storage.migrating': '迁移中…',
   'set.storage.confirm': '确认迁移全部任务台账、模板和图片附件？\n\n原路径：{from}\n新路径：{to}\n\n迁移期间写操作会短暂排队。',
+  'set.storage.migrated': '迁移成功，数据已迁移到 {path}',
+  'set.storage.warnings': '迁移完成，但部分旧数据未能清理：{warnings}',
 
   // ── execution permission (PR #14) ─────────────────────────────────
   'form.field.permission': '执行权限',

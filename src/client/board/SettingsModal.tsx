@@ -162,8 +162,16 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
               value={storagePath}
               disabled={state.storage === undefined || storageBusy}
               placeholder={state.storage?.defaultDirectory ?? t('set.storage.loading')}
-              onChange={e => { setStoragePath(e.target.value); setStorageTouched(true) }}
+              onChange={e => { setStoragePath(e.target.value); setStorageTouched(true); controller.dismissStorageNotice() }}
             />
+            {state.storageNotice !== undefined && (
+              <div className="dsh-atb-storage-notice" role="status">
+                <span className="dsh-atb-storage-notice-ok">✓ {t('set.storage.migrated', { path: state.storageNotice.path })}</span>
+                {state.storageNotice.warnings.length > 0 && (
+                  <span className="dsh-atb-storage-notice-warn">{t('set.storage.warnings', { warnings: state.storageNotice.warnings.join('; ') })}</span>
+                )}
+              </div>
+            )}
             {state.storage !== undefined && (
               <div className="dsh-atb-storage-meta">
                 <span>{t('set.storage.current', { path: state.storage.currentDirectory })}</span>

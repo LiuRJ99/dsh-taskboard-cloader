@@ -397,6 +397,8 @@ export const en: TaskboardDict = {
   'set.storage.migrate': 'Migrate data',
   'set.storage.migrating': 'Migrating…',
   'set.storage.confirm': 'Migrate the complete task ledger, templates, and image attachments?\n\nFrom: {from}\nTo: {to}\n\nWrites queue briefly during migration.',
+  'set.storage.migrated': 'Migration succeeded — data now lives in {path}',
+  'set.storage.warnings': 'Migration finished, but some old files could not be removed: {warnings}',
 
   // ── execution permission (PR #14) ─────────────────────────────────
   'form.field.permission': 'Execution permission',

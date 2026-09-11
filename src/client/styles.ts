@@ -890,6 +890,9 @@ color: var(--dsw-alias-state-business-primary, #3e63dd);
 .dsh-atb-storage-meta { display: grid; gap: 4px; margin-top: 8px; color: var(--dsh-atb-muted); font-size: 12px; overflow-wrap: anywhere; }
 .dsh-atb-storage-error { color: var(--dsh-atb-danger); }
 .dsh-atb-storage-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.dsh-atb-storage-notice { display: grid; gap: 4px; margin-top: 8px; font-size: 12px; }
+.dsh-atb-storage-notice-ok { color: var(--dsw-alias-state-success-primary, #2e7d32); padding: 4px 8px; border-radius: 6px; background: rgba(46,125,50,.1); }
+.dsh-atb-storage-notice-warn { color: var(--dsw-alias-state-warning-primary, #b8860b); padding: 4px 8px; border-radius: 6px; background: rgba(184,134,11,.1); word-break: break-word; }
 
 /* ---------- 0.5.5 SlashPromptInput & Permission Picker ---------- */
 .dsh-atb-perm-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-top: 4px; }

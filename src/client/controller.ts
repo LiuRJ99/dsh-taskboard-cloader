@@ -80,6 +80,8 @@ export interface ControllerState {
   settingsOpen: boolean
   /** Current durable-data directory, loaded when settings opens. */
   storage?: StorageStatus
+  /** Settled migration outcome (0.7.0): success path plus non-fatal warnings. */
+  storageNotice?: { path: string; warnings: string[] }
   /** Fields a chosen template prefills into the create form (consumed on open). */
   templatePrefill?: TaskTemplateSpec
   /** Transient error surface (action failures); cleared on next success. */
@@ -607,7 +609,7 @@ export class BoardController {
   }
 
   /** Close the board-settings modal. */
-  closeSettings(): void { this.setState({ settingsOpen: false }) }
+  closeSettings(): void { this.setState({ settingsOpen: false, storageNotice: undefined }) }
 
   /**
    * Replace board settings (0.5.0). The host broadcasts a settings-updated
@@ -641,13 +643,20 @@ export class BoardController {
   async migrateStorage(directory: string): Promise<boolean> {
     try {
       const storage = await this.client.migrateStorage(directory)
-      this.setState({ storage, error: storage.warnings.length === 0 ? undefined : storage.warnings.join('\n') })
+      // Success is surfaced as a dedicated notice (not the error banner);
+      // cleanup warnings render beneath it as warnings, never as errors.
+      this.setState({ storage, storageNotice: { path: storage.currentDirectory, warnings: storage.warnings }, error: undefined })
       await this.refresh()
       return true
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) })
       return false
     }
+  }
+
+  /** Clear the settled migration notice (next user edit in the storage section). */
+  dismissStorageNotice(): void {
+    if (this.state.storageNotice !== undefined) this.setState({ storageNotice: undefined })
   }
 
   /** Clean one orphan worktree (⚙ panel); refreshes the diagnostics payload. */
