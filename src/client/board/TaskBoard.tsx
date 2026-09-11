@@ -12,6 +12,7 @@ import { MAIN_STATUSES, canTransition } from '../../shared/protocol.ts'
 import { PLUGIN_VERSION } from '../../shared/version.ts'
 import { COLUMN_KEYS, URGENCY_KEYS } from './labels.ts'
 import { useT } from '../i18n/runtime.ts'
+import { localizeBuiltinName, localizeBuiltinTask } from '../i18n/templates.ts'
 import { fmtTime, isStaleClaim } from './format.ts'
 import { DRAG_TYPE, TaskCard } from './TaskCard.tsx'
 import { TaskDetail } from './TaskDetail.tsx'
@@ -149,10 +150,10 @@ export function TaskBoard({ controller, scope, visible, onOpenFile }: TaskBoardP
                       key={t.id}
                       type="button"
                       className="dsh-atb-newmenu-opt"
-                      title={t.task.description !== undefined && t.task.description.length > 0 ? t.task.description.slice(0, 120) : t.name}
-                      onClick={() => { closeMenu(); controller.newFromTemplate(t.task) }}
+                      title={localizeBuiltinTask(t).description?.slice(0, 120) || localizeBuiltinName(t)}
+                      onClick={() => { closeMenu(); controller.newFromTemplate(localizeBuiltinTask(t)) }}
                     >
-                      {t.name}
+                      {localizeBuiltinName(t)}
                     </button>
                   ))}
                 <div className="dsh-atb-newmenu-sep" />

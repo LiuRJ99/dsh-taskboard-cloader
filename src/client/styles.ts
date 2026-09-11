@@ -123,6 +123,14 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
  * inside that slot and make its own width the responsive query container. */
 .dsh-atb-sidebar-tab { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
 .dsh-atb-board { position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 12px 16px; gap: 10px; box-sizing: border-box; container: dsh-atb-board / inline-size; }
+/* #20: native Windows caption controls overlay older Desktop content. Reserve
+ * their vertical band, including wrapped toolbar rows. New Desktop layouts
+ * already start below it: subtract the actual view top to avoid double insets.
+ * Electron exposes titlebar-area env values; 36px covers the Desktop frame
+ * when that API is unavailable. Ordinary Web/macOS views never match. */
+.dsh-atb-view[data-dsh-atb-windows] > .dsh-atb-board {
+  padding-top: max(12px, calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px) + 8px - var(--dsh-atb-viewport-top, 0px)));
+}
 .dsh-atb-sidebar-tab .dsh-atb-modal-backdrop,
 .dsh-atb-sidebar-tab .dsh-atb-alert-backdrop,
 .dsh-atb-sidebar-tab .dsh-atb-newmenu-backdrop { position: absolute; inset: 0; }

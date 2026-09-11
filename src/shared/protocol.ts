@@ -457,6 +457,15 @@ export type Actor =
   | { kind: 'agent'; sessionId: string }
   | { kind: 'system' }
 
+/** Structured row of a multi-repo merge system comment. */
+export type SystemCommentRow = {
+  /** Repo path relative to the workspace ('' = the workspace root repo). */
+  repo: string
+  outcome: 'merged' | 'noop' | 'failed'
+  /** Failure reason (verbatim) when outcome = 'failed'. */
+  error?: string
+}
+
 /** A progress/report comment on a task. */
 export type CommentRecord = {
   id: string
@@ -467,6 +476,15 @@ export type CommentRecord = {
   createdAt: number
   /** The session that wrote this comment; absent for user-written ones. */
   threadId?: string
+  /**
+   * i18n key of a host-generated system message. The GUI localizes it at
+   * render time; `body` remains a zh fallback for agent tools/raw JSON views.
+   */
+  systemKey?: string
+  /** Flat {name} interpolation params for the system message. */
+  systemParams?: Record<string, string>
+  /** Structured per-repo rows for a multi-repo merge summary. */
+  systemRows?: SystemCommentRow[]
 }
 
 /** One commit produced by an isolated execution (hash + subject). */
@@ -1174,12 +1192,30 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
         const ce = c as Record<string, unknown>
         const body = typeof ce.body === 'string' ? ce.body : ''
         if (body.trim().length === 0 || body.length > 4000) return fail('invalid comment body')
+        const systemKey = typeof ce.systemKey === 'string' && /^sys\.[A-Za-z0-9]+$/.test(ce.systemKey) && ce.systemKey.length <= 100
+          ? ce.systemKey
+          : undefined
+        const systemParams = systemKey !== undefined && typeof ce.systemParams === 'object' && ce.systemParams !== null && !Array.isArray(ce.systemParams)
+          ? Object.fromEntries(Object.entries(ce.systemParams).filter(([key, value]) => key.length <= 100 && typeof value === 'string' && value.length <= 4000).slice(0, 20)) as Record<string, string>
+          : undefined
+        const systemRows = systemKey !== undefined && Array.isArray(ce.systemRows)
+          ? ce.systemRows.filter((row): row is SystemCommentRow => typeof row === 'object' && row !== null
+              && typeof (row as SystemCommentRow).repo === 'string' && ((row as SystemCommentRow).repo === '' || isValidRelRepoPath((row as SystemCommentRow).repo))
+              && ['merged', 'noop', 'failed'].includes((row as SystemCommentRow).outcome)
+              && ((row as SystemCommentRow).error === undefined || typeof (row as SystemCommentRow).error === 'string'))
+            .slice(0, MAX_MIRROR_REPOS).map(row => ({ repo: row.repo, outcome: row.outcome, ...(row.error !== undefined ? { error: row.error.slice(0, 4000) } : {}) }))
+          : undefined
         comments.push({
           id: typeof ce.id === 'string' && ce.id.length > 0 ? ce.id : newCommentId(),
           body,
           version: numOr(ce, 'version', 1),
           createdAt: numOr(ce, 'createdAt', now),
           ...(typeof ce.threadId === 'string' ? { threadId: ce.threadId } : {}),
+          ...(systemKey !== undefined ? {
+            systemKey,
+            ...(systemParams !== undefined ? { systemParams } : {}),
+            ...(systemRows !== undefined ? { systemRows } : {}),
+          } : {}),
         })
       }
     } else return fail('comments must be an array')

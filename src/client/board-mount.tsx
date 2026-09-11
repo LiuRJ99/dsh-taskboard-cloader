@@ -19,6 +19,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import type { BoardController } from './controller.ts'
 import { TaskBoard } from './board/TaskBoard.tsx'
 import { ENTRY_SELECTOR } from './sidebar-entry.ts'
+import { installWindowInset } from './window-inset.ts'
 
 /** The injected board container. */
 export const BOARD_VIEW_SELECTOR = '[data-dsh-atb-view]'
@@ -45,6 +46,7 @@ function conversationColumn(): HTMLElement | undefined {
 export function mountBoard(controller: BoardController): () => void {
   let root: Root | undefined
   let container: HTMLDivElement | undefined
+  let disposeWindowInset: (() => void) | undefined
 
   const ensure = (): void => {
     if (container !== undefined) return
@@ -54,6 +56,7 @@ export function mountBoard(controller: BoardController): () => void {
     container.dataset.dshAtbView = ''
     container.className = 'dsh-atb-view'
     column.appendChild(container)
+    disposeWindowInset = installWindowInset(container)
     root = createRoot(container)
     root.render(<TaskBoard controller={controller} />)
   }
@@ -101,6 +104,7 @@ export function mountBoard(controller: BoardController): () => void {
     document.removeEventListener(ACTIVATE_EVENT, onOtherActivate)
     waitObserver.disconnect()
     unsubscribe()
+    disposeWindowInset?.()
     document.documentElement.removeAttribute(ACTIVE_ATTR)
     root?.unmount()
     container?.remove()

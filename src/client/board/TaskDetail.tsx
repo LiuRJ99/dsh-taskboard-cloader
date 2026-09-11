@@ -11,7 +11,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import type { SessionScope } from 'dsh-better-sidebar/client/service'
 import type { WorkspaceView } from '../../shared/api.ts'
 import type { BoardController } from '../controller.ts'
-import type { ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
+import type { CommentRecord, ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
 import { cleanReportedPath, isAbsolutePath, resolveTaskFilePath, type TaskFileTarget } from '../file-paths.ts'
 import { canTransition, checklistProgress, taskAssociatedSessionIds } from '../../shared/protocol.ts'
 import { useAlert } from './AlertModal.tsx'
@@ -19,7 +19,7 @@ import { InitialAvatar } from './Avatar.tsx'
 import { Markdown } from '../markdown.tsx'
 import { fmtTime, isStaleClaim } from './format.ts'
 import { MOVE_KEYS, OUTCOME_KEYS, STATUS_KEYS, URGENCY_KEYS } from './labels.ts'
-import { useT } from '../i18n/runtime.ts'
+import { useT, type Translate } from '../i18n/runtime.ts'
 
 /** Statuses a user may move this task to, per the state machine. */
 function moveTargets(task: TaskRecord): TaskRecord['status'][] {
@@ -31,6 +31,26 @@ function moveTargets(task: TaskRecord): TaskRecord['status'][] {
 function shortId(id: string | undefined): string {
   if (id === undefined) return ''
   return id.replace(/^session-(taskboard-)?/, '').slice(0, 8)
+}
+
+/**
+ * Render a comment body, localizing host-generated system messages. System
+ * comments carry a `systemKey` (+ flat params, or structured per-repo rows
+ * for the multi-repo merge summary); user/agent comments render raw.
+ */
+export function commentBody(t: Translate, c: CommentRecord): string {
+  if (c.systemKey === undefined) return c.body
+  if (c.systemRows !== undefined) {
+    const summary = c.systemRows
+      .map(r => {
+        const label = r.repo === '' ? t('iso.repo.root') : r.repo
+        const mark = r.outcome === 'merged' ? '✓' : r.outcome === 'noop' ? '⟲' : '✗'
+        return r.outcome === 'failed' && r.error !== undefined ? `${label} ${mark} ${r.error}` : `${label} ${mark}`
+      })
+      .join(' · ')
+    return t(c.systemKey, { summary })
+  }
+  return t(c.systemKey, c.systemParams)
 }
 
 /** Execution duration between start and end. */
@@ -1051,7 +1071,7 @@ export function TaskDetail({
                         </div>
                         <PreviewText
                           className="dsh-atb-bubble-body"
-                          text={c.body}
+                          text={commentBody(t, c)}
                           raw={showRawMarkdown}
                           resolveFileMention={resolveFileMention}
                           onOpenFile={onOpenFile}

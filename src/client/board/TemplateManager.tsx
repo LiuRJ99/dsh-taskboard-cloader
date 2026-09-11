@@ -7,9 +7,13 @@
  */
 import { useState } from 'react'
 import type { BoardController } from '../controller.ts'
+import type { TaskTemplate } from '../../shared/api.ts'
+import type { Urgency } from '../../shared/protocol.ts'
 import { useAlert } from './AlertModal.tsx'
 import { matchesTemplateCategory, templateCategoryOf, templateCategoryOptions } from '../template-categories.ts'
+import { URGENCY_KEYS } from './labels.ts'
 import { useT } from '../i18n/runtime.ts'
+import { localizeBuiltinName, localizeBuiltinTask } from '../i18n/templates.ts'
 
 /**
  * The template manager modal.
@@ -28,15 +32,21 @@ export function TemplateManager({ controller }: { controller: BoardController })
   const selectedCategory = state.ledger.settings?.templateMenuCategory
   const visibleTemplates = state.templates.filter(template => matchesTemplateCategory(template, selectedCategory))
 
-  const nameOf = (id: string, fallback: string): string => edits[id] ?? fallback
+  /** The name a row currently shows: an in-flight edit, else localized built-in content. */
+  const nameOf = (tpl: TaskTemplate): string => edits[tpl.id] ?? localizeBuiltinName(tpl)
   const categoryOf = (id: string, fallback: string | undefined): string => categoryEdits[id] ?? templateCategoryOf({ category: fallback })
+  const urgencyLabel = (urgency: string | undefined): string => {
+    if (urgency === undefined) return ''
+    const key = URGENCY_KEYS[urgency as Urgency]
+    return key !== undefined ? ` · ${t(key)}` : ` · ${urgency}`
+  }
 
   /** Save one template's rename and/or category. */
   const save = (id: string, name: string, category: string): void => {
     const template = state.templates.find(t => t.id === id)
     if (template === undefined) return
     const normalizedCategory = category.trim().length > 0 ? category.trim() : '其他'
-    if (name === template.name && normalizedCategory === templateCategoryOf(template)) return
+    if (name === localizeBuiltinName(template) && normalizedCategory === templateCategoryOf(template)) return
     void controller.upsertTemplate({ id, name, category: normalizedCategory, task: template.task }).then(ok => {
       if (ok) {
         setEdits(prev => { const next = { ...prev }; delete next[id]; return next })
@@ -69,9 +79,9 @@ export function TemplateManager({ controller }: { controller: BoardController })
                   </datalist>
                   <div className="dsh-atb-tplm-list">
                     {visibleTemplates.map(tpl => {
-                      const name = nameOf(tpl.id, tpl.name)
+                      const name = nameOf(tpl)
                       const category = categoryOf(tpl.id, tpl.category)
-                      const unchanged = name === tpl.name && category === templateCategoryOf(tpl)
+                      const unchanged = name === localizeBuiltinName(tpl) && category === templateCategoryOf(tpl)
                       return (
                         <div key={tpl.id} className="dsh-atb-tplm-row">
                           <input
@@ -79,7 +89,7 @@ export function TemplateManager({ controller }: { controller: BoardController })
                             value={name}
                             maxLength={60}
                             spellCheck={false}
-                            aria-label={t('tpl.name.aria', { name: tpl.name })}
+                            aria-label={t('tpl.name.aria', { name: localizeBuiltinName(tpl) })}
                             onChange={e => setEdits(prev => ({ ...prev, [tpl.id]: e.target.value }))}
                             onKeyDown={e => {
                               if (e.key === 'Enter') save(tpl.id, name, category)
@@ -101,7 +111,7 @@ export function TemplateManager({ controller }: { controller: BoardController })
                           <span className="dsh-atb-tplm-meta">
                             {tpl.builtin === true ? t('tpl.builtin') : t('tpl.custom')}
                             {tpl.task.checklist !== undefined && tpl.task.checklist.length > 0 ? t('tpl.meta.checklist', { n: tpl.task.checklist.length }) : ''}
-                            {tpl.task.urgency !== undefined ? ` · ${tpl.task.urgency}` : ''}
+                            {urgencyLabel(tpl.task.urgency)}
                             {tpl.task.speed === 'fast' ? ` · ${t('tpl.speedFast')}` : ''}
                             {tpl.task.permission !== undefined && tpl.task.permission !== 'workspace-write'
                               ? ` · ${tpl.task.permission === 'read-only' ? t('tpl.meta.permReadOnly') : t('tpl.meta.permFull')}`
@@ -123,7 +133,7 @@ export function TemplateManager({ controller }: { controller: BoardController })
                               title={t('tpl.use.title')}
                               onClick={() => {
                                 close()
-                                controller.newFromTemplate(tpl.task)
+                                controller.newFromTemplate(localizeBuiltinTask(tpl))
                               }}
                             >
                               {t('tpl.use.button')}
