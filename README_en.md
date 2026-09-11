@@ -232,6 +232,11 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 
 ## Changelog
 
+### 0.6.8
+
+- **Fix model prefix-cache invalidation ([#24](https://github.com/cloader/dsh-taskboard/issues/24))**: the protocol and all ten `taskboard_*` tools register synchronously during plugin mount, and later workspace/agent startup or reload no longer changes the tool definitions. Calls return `taskboard_not_ready` while dependencies are unavailable.
+- Tool execution waits for the shared initial ledger load to avoid reporting a false empty board during startup; tool cleanup is separated from runtime-service lifecycles.
+
 ### 0.6.7
 
 - Built-in task templates and system comments follow the GUI language; JSON backup imports preserve localized comment metadata ([#22](https://github.com/cloader/dsh-taskboard/pull/22)).

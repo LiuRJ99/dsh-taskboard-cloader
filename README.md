@@ -232,6 +232,11 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 
 ## 升级日志
 
+### 0.6.8
+
+- **修复模型前缀缓存失效（[#24](https://github.com/cloader/dsh-taskboard/issues/24)）**：协议与 10 个 `taskboard_*` 工具在插件挂载时同步注册，后续工作区/agent 服务就绪或重载不会改变工具定义；依赖尚未就绪时返回 `taskboard_not_ready`。
+- 工具执行等待共享的台账首次加载，避免启动初期误报空看板；工具清理与运行服务生命周期分离。
+
 ### 0.6.7
 
 - 内置任务模板及系统评论跟随界面语言显示；JSON 备份导入保留系统评论的本地化信息（[#22](https://github.com/cloader/dsh-taskboard/pull/22)）。

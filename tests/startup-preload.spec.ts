@@ -56,7 +56,8 @@ describe('startup ledger preload', () => {
 
   it('the startup-style eager load makes tasks readable without any prior mutation', async () => {
     const store = new TaskStore({ file: await seededLedgerFile() })
-    void store.load() // what src/index.ts apply() does at startup
+    const firstLoad = store.load() // what src/index.ts apply() does at startup
+    expect(store.load()).toBe(firstLoad) // concurrent startup callers share one physical read
     await vi.waitFor(() => {
       // No mutate/read was ever enqueued — only the eager load can have
       // populated this.

@@ -45,6 +45,7 @@ export class TaskStore {
   private readonly subscribers = new Set<(change: LedgerChange) => void>()
   private queue: Promise<unknown> = Promise.resolve()
   private loaded = false
+  private loadPromise: Promise<void> | undefined
 
   /** @param options - file location. */
   constructor(options: TaskStoreOptions) {
@@ -52,8 +53,15 @@ export class TaskStore {
   }
 
   /** Load (once) from disk; a missing file starts empty; a corrupt file is quarantined, not thrown. */
-  async load(): Promise<void> {
-    if (this.loaded) return
+  load(): Promise<void> {
+    if (this.loaded) return Promise.resolve()
+    if (this.loadPromise !== undefined) return this.loadPromise
+    this.loadPromise = this.loadOnce()
+    return this.loadPromise
+  }
+
+  /** Perform the single physical ledger read shared by all startup callers. */
+  private async loadOnce(): Promise<void> {
     try {
       const raw = await readFile(this.file, 'utf8')
       const parsed = JSON.parse(raw) as TaskLedger

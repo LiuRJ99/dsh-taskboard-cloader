@@ -35,7 +35,7 @@ function assertLossless(value: unknown, path = '$'): void {
 }
 
 /** Build the tool set and a fake agent exec context. */
-async function setup(deps: { modelProviders?: () => string[] | undefined } = {}) {
+async function setup(deps: { modelProviders?: () => string[] | undefined; ready?: () => Promise<void> } = {}) {
   const store = new TaskStore({ file: join(dir, `led-${Math.random().toString(36).slice(2)}.json`) })
   const registered: Array<Record<string, unknown>> = []
   const disposers = registerTaskboardTools(
@@ -52,6 +52,12 @@ async function setup(deps: { modelProviders?: () => string[] | undefined } = {})
 }
 
 describe('taskboard tool outputs', () => {
+  it('registers schemas before runtime dependencies are ready and gates execution', async () => {
+    const readyError = new Error('taskboard_not_ready: workspace service is starting')
+    const { tool, exec } = await setup({ ready: async () => { throw readyError } })
+    await expect(tool('taskboard_list').execute({}, exec)).rejects.toBe(readyError)
+  })
+
   it('renders carry the model-facing facts (id + version) — not one-line summaries', async () => {
     // Regression: the registry feeds output.render() to the MODEL (result.content);
     // a terse render starves the agent (it had to guess versions from error text).

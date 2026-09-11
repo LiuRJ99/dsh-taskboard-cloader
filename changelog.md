@@ -1,5 +1,17 @@
 # 更新日志 / Changelog
 
+### 0.6.8
+
+- 修复任务看板工具在会话开始后才出现、破坏模型请求稳定前缀的问题（[#24](https://github.com/cloader/dsh-taskboard/issues/24)）：协议与 10 个 `taskboard_*` 工具现在在插件挂载时同步注册；工作区服务尚未就绪时保留工具定义并返回明确的 `taskboard_not_ready`，服务恢复后沿用同一组定义。
+- 工具执行等待共享的台账首次加载，避免启动初期将已有任务误报为空；并发加载调用复用同一个读取 Promise。
+- 拆分工具与运行服务的清理生命周期，`agents` 或工作区服务重载不再连带永久移除工具。
+
+**English:**
+
+- Fix taskboard tools appearing after a session has started and changing the model request prefix ([#24](https://github.com/cloader/dsh-taskboard/issues/24)): the protocol and all ten `taskboard_*` tools now register synchronously during plugin mount. Tool definitions remain present while the workspace service is unavailable and calls return an explicit `taskboard_not_ready`; the same definitions continue after recovery.
+- Tool execution now waits for the shared initial ledger load, preventing existing tasks from being reported as an empty board during startup; concurrent load calls reuse one read promise.
+- Separate tool cleanup from runtime-service cleanup so reloading `agents` or the workspace service cannot permanently unregister the tools.
+
 ### 0.6.7
 
 - 内置任务模板及系统评论跟随界面语言显示；JSON 备份导入保留系统评论的本地化信息（[#22](https://github.com/cloader/dsh-taskboard/pull/22)）。

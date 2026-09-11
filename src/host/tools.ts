@@ -138,6 +138,7 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
 
 /** Stable error codes surfaced at the head of tool error messages. */
 export const ERR = {
+  notReady: 'taskboard_not_ready',
   notFound: 'not_found',
   versionConflict: 'version_conflict',
   workspaceMismatch: 'workspace_mismatch',
@@ -194,6 +195,8 @@ export interface ToolDeps {
   workspaces: WorkspaceFace
   /** Current epoch ms (injectable for tests). */
   now: () => number
+  /** Shared startup barrier; tool definitions stay registered while services initialize. */
+  ready?: () => Promise<void>
   /**
    * Registered model provider routes (from the host llm runtime), for
    * advisory validation of pinned models; undefined = runtime unavailable,
@@ -288,16 +291,17 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
 
   // Env-gated tool-call tracing (ATB_TRACE=1) — evidence for protocol E2E.
   const register = (tool: { name: string; execute?: unknown }) => {
-    if (process.env.ATB_TRACE === '1' && typeof tool.execute === 'function') {
+    if (typeof tool.execute === 'function') {
       const orig = tool.execute as (args: unknown, exec: unknown) => Promise<unknown>
       tool.execute = async (args: unknown, exec: unknown) => {
-        console.error(`[atb ▶] ${tool.name}`, JSON.stringify(args).slice(0, 300))
+        await deps.ready?.()
+        if (process.env.ATB_TRACE === '1') console.error(`[atb ▶] ${tool.name}`, JSON.stringify(args).slice(0, 300))
         try {
           const result = await orig(args, exec)
-          console.error(`[atb ✓] ${tool.name}`, JSON.stringify(result).slice(0, 300))
+          if (process.env.ATB_TRACE === '1') console.error(`[atb ✓] ${tool.name}`, JSON.stringify(result).slice(0, 300))
           return result
         } catch (error) {
-          console.error(`[atb ✗] ${tool.name}`, String(error).slice(0, 400))
+          if (process.env.ATB_TRACE === '1') console.error(`[atb ✗] ${tool.name}`, String(error).slice(0, 400))
           throw error
         }
       }
