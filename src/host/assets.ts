@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { StorageQueue } from './storage-queue.ts'
 
 export const MAX_ASSET_BYTES = 5 * 1024 * 1024
 export const MAX_ASSET_STORE_BYTES = 200 * 1024 * 1024
@@ -35,13 +36,20 @@ export function detectImage(bytes: Uint8Array): ImageKind | undefined {
 /** Files live outside the ledger so state/SSE/tool payloads only carry short Markdown URLs. */
 export class AssetStore {
   private queue: Promise<unknown> = Promise.resolve()
+  private root: string
 
-  constructor(private readonly root: string, private readonly now: () => number = () => Date.now()) {}
+  constructor(root: string, private readonly now: () => number = () => Date.now(), private readonly storageQueue?: StorageQueue) { this.root = root }
+
+  /** Current absolute attachment-directory path. */
+  location(): string { return this.root }
+
+  /** Switch reads and future writes after the coordinator copied the directory. */
+  setLocation(root: string): void { this.root = root }
 
   async put(bytes: Uint8Array, declaredMime?: string): Promise<StoredAsset> {
     const run = () => this.putSerial(bytes, declaredMime)
-    const result = (this.queue = this.queue.then(run, run)) as Promise<StoredAsset>
-    return result
+    if (this.storageQueue !== undefined) return this.storageQueue.run(run)
+    return (this.queue = this.queue.then(run, run)) as Promise<StoredAsset>
   }
 
   private async putSerial(bytes: Uint8Array, declaredMime?: string): Promise<StoredAsset> {
@@ -76,6 +84,7 @@ export class AssetStore {
   }
 
   async read(name: string): Promise<{ bytes: Buffer; mime: ImageKind['mime'] } | undefined> {
+    const run = async (): Promise<{ bytes: Buffer; mime: ImageKind['mime'] } | undefined> => {
     const match = ASSET_NAME_RE.exec(name)
     if (match === null) return undefined
     const mime = match[2] === 'png' ? 'image/png'
@@ -84,10 +93,13 @@ export class AssetStore {
     try {
       return { bytes: await readFile(join(this.root, name)), mime }
     } catch { return undefined }
+    }
+    return this.storageQueue === undefined ? run() : this.storageQueue.run(run)
   }
 
   /** Remove abandoned draft uploads after a grace period; referenced files always survive. */
   async cleanup(referencedContent: string): Promise<number> {
+    const run = async (): Promise<number> => {
     let entries
     try { entries = await readdir(this.root, { withFileTypes: true }) } catch { return 0 }
     let removed = 0
@@ -102,5 +114,7 @@ export class AssetStore {
       } catch { /* best effort */ }
     }
     return removed
+    }
+    return this.storageQueue === undefined ? run() : this.storageQueue.run(run)
   }
 }

@@ -6,7 +6,7 @@
  *
  * @module dsh-taskboard/client/board/SettingsModal
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { BoardController } from '../controller.ts'
 import { DEFAULT_ISOLATION, defaultPermissionOf, defaultSyncExternalSessionsOf, type IsolationMode, type PermissionMode } from '../../shared/protocol.ts'
 import { templateCategoryOptions } from '../template-categories.ts'
@@ -34,11 +34,20 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
   const [draftSync, setDraftSync] = useState<boolean>(currentSync)
   const [draftPerm, setDraftPerm] = useState<PermissionMode>(currentPerm)
   const [draftCategory, setDraftCategory] = useState(currentCategory)
+  const [storagePath, setStoragePath] = useState(state.storage?.currentDirectory ?? '')
+  const [storageTouched, setStorageTouched] = useState(false)
+  const [storageBusy, setStorageBusy] = useState(false)
   const categories = templateCategoryOptions(state.templates)
   const categoryOptions = currentCategory !== '' && !categories.some(o => o.value === currentCategory)
     ? [...categories, { value: currentCategory, count: 0 }]
     : categories
   const dirty = draftIsolation !== currentIsolation || draftSync !== currentSync || draftPerm !== currentPerm || draftCategory !== currentCategory
+  const effectiveStoragePath = storagePath.trim().length === 0 ? state.storage?.defaultDirectory ?? '' : storagePath.trim()
+  const storageDirty = state.storage !== undefined && effectiveStoragePath !== state.storage.currentDirectory
+
+  useEffect(() => {
+    if (!storageTouched && state.storage !== undefined) setStoragePath(state.storage.currentDirectory)
+  }, [state.storage, storageTouched])
 
   const save = (): void => {
     void controller.updateSettings({
@@ -172,6 +181,61 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
             <span className="dsh-atb-isolation-note">
               {t('set.category.hint')}
             </span>
+          </section>
+
+          <section className="dsh-atb-diag-sec">
+            <h4>{t('set.storage.heading')}</h4>
+            <p className="dsh-atb-isolation-note">{t('set.storage.hint')}</p>
+            <input
+              className="dsh-atb-input dsh-atb-storage-path"
+              value={storagePath}
+              disabled={state.storage === undefined || storageBusy}
+              placeholder={state.storage?.defaultDirectory ?? t('set.storage.loading')}
+              onChange={e => { setStoragePath(e.target.value); setStorageTouched(true) }}
+            />
+            {state.storage !== undefined && (
+              <div className="dsh-atb-storage-meta">
+                <span>{t('set.storage.current', { path: state.storage.currentDirectory })}</span>
+                <span>{t('set.storage.assets', { count: state.storage.assetCount, size: (state.storage.assetBytes / 1024 / 1024).toFixed(1) })}</span>
+                {state.storage.error !== undefined && <span className="dsh-atb-storage-error">{state.storage.error}</span>}
+              </div>
+            )}
+            <div className="dsh-atb-storage-actions">
+              <button
+                type="button"
+                className="dsh-atb-btn"
+                disabled={state.storage === undefined || storageBusy}
+                onClick={() => { setStoragePath(state.storage?.defaultDirectory ?? ''); setStorageTouched(true) }}
+              >
+                {t('set.storage.default')}
+              </button>
+              <button
+                type="button"
+                className="dsh-atb-btn"
+                disabled={state.storage === undefined || storageBusy || effectiveStoragePath.length === 0}
+                onClick={() => {
+                  setStorageBusy(true)
+                  void controller.checkStorage(effectiveStoragePath).finally(() => setStorageBusy(false))
+                }}
+              >
+                {t('set.storage.check')}
+              </button>
+              <button
+                type="button"
+                className="dsh-atb-btn"
+                data-primary="true"
+                disabled={!storageDirty || storageBusy}
+                onClick={() => {
+                  if (!window.confirm(t('set.storage.confirm', { from: state.storage?.currentDirectory ?? '', to: effectiveStoragePath }))) return
+                  setStorageBusy(true)
+                  void controller.migrateStorage(effectiveStoragePath).then(ok => {
+                    if (ok) { setStorageTouched(false); setStoragePath(effectiveStoragePath) }
+                  }).finally(() => setStorageBusy(false))
+                }}
+              >
+                {storageBusy ? t('set.storage.migrating') : t('set.storage.migrate')}
+              </button>
+            </div>
           </section>
         </div>
 

@@ -1,5 +1,5 @@
 /**
- * Host-side task ledger: one JSON file under the DSH home, mutated through a
+ * Host-side task ledger: one JSON file under the active data directory, mutated through a
  * serial write queue, published as immutable snapshots with a global
  * monotonic revision. Change subscribers (P2: SSE route) observe every
  * committed mutation.
@@ -19,6 +19,7 @@ import {
   type TaskLedger,
   type TaskRecord,
 } from '../shared/protocol.ts'
+import type { StorageQueue } from './storage-queue.ts'
 
 /** One committed ledger mutation, handed to change subscribers. */
 export interface LedgerChange {
@@ -34,6 +35,8 @@ export interface LedgerChange {
 export interface TaskStoreOptions {
   /** Absolute ledger file path. */
   file: string
+  /** Optional queue shared with templates/assets and storage migration. */
+  queue?: StorageQueue
 }
 
 /**
@@ -42,7 +45,8 @@ export interface TaskStoreOptions {
  * atomically (temp file + rename), and only then notifies subscribers.
  */
 export class TaskStore {
-  private readonly file: string
+  private file: string
+  private readonly storageQueue?: StorageQueue
   private ledger: TaskLedger = emptyLedger()
   private readonly subscribers = new Set<(change: LedgerChange) => void>()
   private queue: Promise<unknown> = Promise.resolve()
@@ -52,7 +56,20 @@ export class TaskStore {
   /** @param options - file location. */
   constructor(options: TaskStoreOptions) {
     this.file = options.file
+    this.storageQueue = options.queue
   }
+
+  /** Current absolute ledger path. */
+  location(): string { return this.file }
+
+  /** Persist the live in-memory ledger to another file without switching. */
+  async writeCopy(file: string): Promise<void> {
+    await this.load()
+    await persistAtomic(file, JSON.stringify(this.ledger))
+  }
+
+  /** Switch future writes after a prepared migration commits. */
+  setLocation(file: string): void { this.file = file }
 
   /** Load (once) from disk; a missing file starts empty; a corrupt file is quarantined, not thrown. */
   load(): Promise<void> {
@@ -170,10 +187,13 @@ export class TaskStore {
    * @returns the backup file path.
    */
   async backup(): Promise<string> {
-    await this.load()
-    const target = `${this.file}.backup-${Date.now()}`
-    await persistAtomic(target, JSON.stringify(this.ledger, null, 2))
-    return target
+    const run = async (): Promise<string> => {
+      await this.load()
+      const target = `${this.file}.backup-${Date.now()}`
+      await persistAtomic(target, JSON.stringify(this.ledger, null, 2))
+      return target
+    }
+    return this.storageQueue === undefined ? run() : this.storageQueue.run(run)
   }
 
   /**
@@ -215,8 +235,8 @@ export class TaskStore {
         changed: changed.map(t => deepFreeze(structuredClone(t))),
       }
     }
-    const result = (this.queue = this.queue.then(run, run)) as ReturnType<typeof run>
-    return result
+    if (this.storageQueue !== undefined) return this.storageQueue.run(run)
+    return (this.queue = this.queue.then(run, run)) as ReturnType<typeof run>
   }
 
   /**
@@ -230,8 +250,8 @@ export class TaskStore {
       await this.load()
       return fn(deepFreeze(structuredClone(this.ledger)))
     }
-    const result = (this.queue = this.queue.then(run, run)) as Promise<T>
-    return result
+    if (this.storageQueue !== undefined) return this.storageQueue.run(run)
+    return (this.queue = this.queue.then(run, run)) as Promise<T>
   }
 }
 

@@ -8,7 +8,7 @@ import type { SessionArchiveResult } from '../shared/api.ts'
  *
  * @module dsh-taskboard/client/controller
  */
-import type { AttachmentUpload, ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, MergeRepoResult, PromptCompletionsResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
+import type { AttachmentUpload, ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, MergeRepoResult, PromptCompletionsResponse, StorageStatus, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
 import type { ChecklistItem, TaskCapability, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
@@ -83,6 +83,8 @@ export interface ControllerState {
   importOpen: boolean
   /** Board-settings modal visible (0.5.0). */
   settingsOpen: boolean
+  /** Current durable-data directory, loaded when settings opens. */
+  storage?: StorageStatus
   /** Fields a chosen template prefills into the create form (consumed on open). */
   templatePrefill?: TaskTemplateSpec
   /** Transient error surface (action failures); cleared on next success. */
@@ -641,6 +643,9 @@ export class BoardController {
     this.setState({ settingsOpen: true })
     // Settings derives its category options from the global template library.
     void this.loadTemplates()
+    void this.client.storage()
+      .then(storage => this.setState({ storage, error: undefined }))
+      .catch(error => this.setState({ error: error instanceof Error ? error.message : String(error) }))
   }
 
   /** Close the board-settings modal. */
@@ -654,6 +659,31 @@ export class BoardController {
   async updateSettings(body: Parameters<TaskboardClient['updateSettings']>[0]): Promise<boolean> {
     try {
       await this.client.updateSettings(body)
+      await this.refresh()
+      return true
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+      return false
+    }
+  }
+
+  /** Validate a candidate host directory without changing the active store. */
+  async checkStorage(directory: string): Promise<boolean> {
+    try {
+      const storage = await this.client.checkStorage(directory)
+      this.setState({ storage, error: undefined })
+      return true
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+      return false
+    }
+  }
+
+  /** Atomically migrate all three stores and refresh the displayed location. */
+  async migrateStorage(directory: string): Promise<boolean> {
+    try {
+      const storage = await this.client.migrateStorage(directory)
+      this.setState({ storage, error: storage.warnings.length === 0 ? undefined : storage.warnings.join('\n') })
       await this.refresh()
       return true
     } catch (error) {
