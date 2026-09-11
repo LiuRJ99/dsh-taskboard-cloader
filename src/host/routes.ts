@@ -50,6 +50,7 @@ import { activeHostLocale } from './locale.ts'
 import type { CatalogModelItem, CatalogPresetItem, MergeRepoResult, TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
 import { MAX_ASSET_BYTES, type AssetStore } from './assets.ts'
+import type { StorageCoordinator } from './storage.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
 import type { TaskStore } from './store.ts'
 import { ERR, ToolError } from './tools.ts'
@@ -93,8 +94,12 @@ export interface TaskboardRoutesOptions {
   scanner?: RepoScanner
   /** Task-template store (0.4.0); absent → 501 on template actions. */
   templates?: TemplateStore
-  /** Durable image attachment store (0.6.9); absent → attachment routes unavailable. */
+  /** Durable image attachment store (0.7.0); absent → attachment routes unavailable. */
   assets?: AssetStore
+  /** Configurable data-directory coordinator (0.7.0). */
+  storage?: StorageCoordinator
+  /** Initial storage/ledger readiness barrier. */
+  ready?: () => Promise<void>
   /** Prompt completions face (0.5.5; dynamically discovers skills & commands). */
   promptCompletions?: () => Promise<{
     skills?: Array<{ name: string; description?: string }>
@@ -395,6 +400,12 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
 
       // ---------------------------------------------------------------- GET
       if (req.method === 'GET') {
+        if (pathname === `${ROUTE_PREFIX}/storage`) {
+          if (options.storage === undefined) { res.writeHead(501); res.end(); return }
+          json(res, { ok: true, value: await options.storage.status() })
+          return
+        }
+        await options.ready?.()
         const assetMatch = pathname.match(ASSET_RE)
         if (assetMatch !== null) {
           const asset = await options.assets?.read(assetMatch[1]!)
@@ -560,6 +571,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
       // Content-addressed image upload. The custom header makes this a
       // non-simple cross-origin request, preserving the JSON routes' CSRF fence.
       if (pathname === `${ROUTE_PREFIX}/assets`) {
+        await options.ready?.()
         if (options.assets === undefined) {
           const f = fail('invalid_input', 'image attachments unavailable')
           json(res, f.res, 501)
@@ -604,6 +616,29 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         json(res, f.res, 400)
         return
       }
+
+      // Storage location is bootstrap metadata outside the ledger. Keep it on
+      // separate routes so JSON imports and whole-ledger replacement cannot
+      // redirect host filesystem writes.
+      if (pathname === `${ROUTE_PREFIX}/storage/check` || pathname === `${ROUTE_PREFIX}/storage/migrate`) {
+        if (options.storage === undefined) {
+          const f = fail('invalid_input', 'storage configuration unavailable')
+          json(res, f.res, 501)
+          return
+        }
+        try {
+          const directory = str(body, 'directory') ?? ''
+          const value = pathname.endsWith('/check')
+            ? await options.storage.check(directory)
+            : await options.storage.migrate(directory)
+          json(res, { ok: true, value })
+        } catch (error) {
+          const f = fail('invalid_input', error instanceof Error ? error.message : String(error))
+          json(res, f.res, f.status)
+        }
+        return
+      }
+      await options.ready?.()
 
       // ------------------------------------------------- POST /tasks (create)
       if (pathname === `${ROUTE_PREFIX}/tasks`) {

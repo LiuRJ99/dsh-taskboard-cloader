@@ -74,7 +74,7 @@ dsh plugin --profile web add "link:/path/to/dsh-taskboard"
 With a link install, rebuild via `npm run build` in the repo and refresh the page; host-side changes additionally require restarting `dsh web`.
 </details>
 
-Uninstall: `dsh plugin --profile web remove dsh-taskboard` (ledger data stays in the DSH home directory — see [Configuration & Data](#configuration--data)).
+Uninstall: `dsh plugin --profile web remove dsh-taskboard` (ledger data stays in the active data directory — see [Configuration & Data](#configuration--data)).
 
 > Official `@deepseek-ai/dsh-*` packages belong in the profile's `bundles` list only — do not `plugin add` them into dependencies (avoids shadowed dual SDK instances).
 
@@ -133,7 +133,7 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - Create/edit modal: project, model (with reasoning effort), urgency, execution mode, cron with live validation & next-run preview, isolation toggle, checklist editor
 - Detail panel: status transitions (*done* is human-only; completing with unchecked items asks for confirmation and shows the count), agent/user comment thread, execution history (newest first; session IDs open the execution session on click; deleted/archived targets get distinct notices), stop execution, worktree isolation block (branch / commits / change stats / merge & cleanup), execution report block, acceptance checklist block
 - Quick actions on In Review cards: "✓ Done" one-click accept, "✗ Send back" returns to Todo with an optional reason agents read before starting
-- **Image attachments (0.6.9)**: task descriptions and comments accept PNG/JPEG/GIF/WebP through file picker, paste, or drag and drop and insert Markdown automatically; task details show thumbnails with click-to-zoom lightbox previews. Images stay in the local DSH home directory, capped at 5 MiB each
+- **Image attachments (0.7.0)**: task descriptions and comments accept PNG/JPEG/GIF/WebP through file picker, paste, or drag and drop and insert Markdown automatically; task details show thumbnails with click-to-zoom lightbox previews. Images stay in the local data directory, capped at 5 MiB each
 - **Two-column wide task form + slash completion (0.6.0)**: the create/edit modal goes two-column (core fields and execution config on the left, description and prompt on the right); typing `/` in the description/prompt pops command and skill completion (↑↓/Enter/Tab/Esc keyboard navigation; host-discovered items merge over the built-in list); Markdown images in description/prompt render as thumbnails with a click-to-zoom lightbox
 - **Execution permission (0.6.0)**: per-task three-way execution permission (📁 workspace write / 🔒 read-only / ⚡ full access) picked in the form plus a default-permission board setting; permission badges on cards, the detail panel and the template list
 - **Bilingual UI, zh/en (0.6.0)**: every piece of board copy follows DSH's "Settings - General - Language" switch live (no reload); the preference is stored by DSH itself (locale.preference in settings.yaml) and the plugin adds no settings of its own; environments without the DSH locale service fall back to the browser language
@@ -143,7 +143,7 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - **DoD acceptance checklists (0.4.0)**: define acceptance criteria at creation (≤30 items); agents add/tick items via `taskboard_checklist` (with evidence notes); users tick them directly in the detail panel; unchecked items glow red while In Review and the card shows a "☑ n/m" badge (red until all ticked); checklist editing manages the whole group in the form (tick states and evidence preserved)
 - **Structured execution reports (0.4.0)**: agents finish with `taskboard_execution_report` (summary / changed files / checks / artifacts / remaining risks), auto-attached to the current execution; rendered side-by-side in the In Review detail panel; the opening protocol makes the order explicit (report → comment → move to In Review)
 - **JSON import (0.4.0)**: "⬆ Import" in the toolbar picks a backup file → dry-run preview (added / overwritten / invalid breakdown) → merge (upsert by id) or full replace (auto-backup of the current ledger first + double confirmation); JSON exports restore directly in the same format
-- **Task templates (0.4.0)**: "+ New Task ▼" dropdown (blank / built-in New feature · Bug fix · Release check · Routine inspection / manage templates) pre-fills the form (title / description / prompt / urgency / schedule / isolation / preset / checklist); "⌗ Save as template" in the task detail captures your own presets; templates live in a side file in the DSH home directory, rename/delete in the manager dialog
+- **Task templates (0.4.0)**: "+ New Task ▼" dropdown (blank / built-in New feature · Bug fix · Release check · Routine inspection / manage templates) pre-fills the form (title / description / prompt / urgency / schedule / isolation / preset / checklist); "⌗ Save as template" in the task detail captures your own presets; templates live beside the ledger in the active data directory, rename/delete in the manager dialog
 - **Diff viewer (0.4.0)**: clicking a commit row or an uncommitted modified-file row in the isolation block expands a diff in-board (`git show` for commits, `git diff` for files, capped at 128 KB / 2000 lines with truncation noted); falls back to the main repo when the worktree is gone (commits and baseline-range diffs only)
 
 **Agent tools (`taskboard_*`)**
@@ -165,7 +165,7 @@ Available in any session. Project boundary: only sessions belonging to the task'
 
 - **Acceptance authority belongs to humans**: agent calls moving a task to *done* are rejected by the code-level protocol gate (a prompt suggestion, not); held tasks cannot be preempted; cross-project claims are rejected.
 - **Worktree isolation is a convention, not a sandbox**: execution sessions have full tool permissions; isolation relies on the branch convention and is unsuitable for untrusted code.
-- **Local data**: the ledger, templates, and image attachments live entirely in the local DSH home directory; nothing is sent anywhere and no tokens / API keys are required.
+- **Local data**: the ledger, templates, and image attachments remain local, and Board Settings can migrate their data directory; nothing is sent anywhere and no tokens / API keys are required.
 
 ## Configuration & Data
 
@@ -174,10 +174,10 @@ Works out of the box. The complete configuration surface:
 | Environment variable | Default | Description |
 | --- | --- | --- |
 | `DSH_TASKBOARD_MAX_CONCURRENT` | `3` | Global cap on concurrently executing sessions |
-| `DSH_HOME` | `~/.dsh` | DSH home directory (follows the deployment, plugin data along with it) |
+| `DSH_HOME` | `~/.dsh` | DSH home, the default data directory and the fixed location-pointer directory |
 | `ATB_TRACE` | unset | With `ATB_TRACE=1` the host prints tool-call traces (debugging) |
 
-Data files (all under the DSH home directory; uninstalling the plugin keeps them):
+The data directory defaults to `DSH_HOME` and can be validated and migrated under "🛠 Settings → Data storage location". All three data items always move together; uninstalling the plugin keeps them.
 
 | File | Contents |
 | --- | --- |
@@ -185,9 +185,10 @@ Data files (all under the DSH home directory; uninstalling the plugin keeps them
 | `dsh-taskboard-templates.json` | Task templates |
 | `dsh-taskboard-assets/` | Image attachments (deduplicated by content hash) |
 | `dsh-taskboard.json.backup-<timestamp>` | Automatic backup taken before a full-replace import |
+| `DSH_HOME/dsh-taskboard-storage.json` | Location pointer for a custom data directory; always remains under DSH home |
 | `<project>/.dsh-worktrees/<taskId>/` | Per-task execution worktree (multi-repo workspaces: a whole-workspace mirror with one sub-worktree per repo) |
 
-Use "⬇ JSON" in the toolbar to back up the ledger, or export the task list as CSV ("⬇ Export", BOM included, opens straight in Excel). Images are not embedded in JSON; copy the `dsh-taskboard-assets/` folder as well for a complete backup.
+Use "⬇ JSON" in the toolbar to back up the ledger, or export the task list as CSV ("⬇ Export", BOM included, opens straight in Excel). Images are not embedded in JSON; for a complete backup, copy `dsh-taskboard-assets/` from the data directory shown in Settings.
 
 ## FAQ
 
@@ -234,15 +235,12 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 
 ## Changelog
 
-### 0.6.9
+### 0.7.0
 
-- **Insert images in task descriptions and comments ([#25](https://github.com/cloader/dsh-taskboard/issues/25))**: choose, paste, or drag and drop PNG/JPEG/GIF/WebP; Markdown is inserted automatically and task details render thumbnails with lightbox previews.
-- Images are deduplicated locally by content hash with format, path, per-file, and total-quota checks; the ledger and SSE store short URLs only. DSH development dependencies move to the 0.1.5-rc.2 line.
-
-### 0.6.8
-
-- **Fix model prefix-cache invalidation ([#24](https://github.com/cloader/dsh-taskboard/issues/24))**: the protocol and all ten `taskboard_*` tools register synchronously during plugin mount, and later workspace/agent startup or reload no longer changes the tool definitions. Calls return `taskboard_not_ready` while dependencies are unavailable.
-- Tool execution waits for the shared initial ledger load to avoid reporting a false empty board during startup; tool cleanup is separated from runtime-service lifecycles.
+- **Configurable data directory**: Board Settings can validate and migrate the storage directory. `dsh-taskboard.json`, `dsh-taskboard-templates.json`, and `dsh-taskboard-assets/` always move together; migration copies and verifies everything before switching, and failures leave the original data active.
+- **Insert images in task descriptions and comments ([#25](https://github.com/cloader/dsh-taskboard/issues/25))**: choose, paste, or drag and drop PNG/JPEG/GIF/WebP; Markdown is inserted automatically and task details render thumbnails with lightbox previews. Images are deduplicated locally by content hash, while the ledger and SSE store short URLs only.
+- **Fix model prefix-cache invalidation ([#24](https://github.com/cloader/dsh-taskboard/issues/24)) and improve cache hit rates**: the protocol and all ten `taskboard_*` tools register synchronously during plugin mount, and later workspace/agent startup or reload no longer changes the tool definitions. Calls return `taskboard_not_ready` while dependencies are unavailable.
+- Tool execution waits for the shared initial ledger load and tool cleanup is separated from runtime-service lifecycles. DSH development dependencies move to the 0.1.5-rc.2 line.
 
 ### 0.6.7
 

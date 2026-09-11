@@ -339,14 +339,14 @@ export const en: TaskboardDict = {
   'tpl.use.button': 'Use',
   'tpl.delete.title': 'Delete this template',
   'tpl.renamed': 'Template renamed',
-  'tpl.foot.hint': 'Templates are stored with the ledger in the DSH home directory and survive upgrades',
+  'tpl.foot.hint': 'Templates are stored with the ledger in the active data directory and survive upgrades',
 
   // ── import modal (ImportModal) ────────────────────────────────────
   'imp.aria': 'Import ledger',
   'imp.title': 'Import ledger',
   'imp.subtitle': 'Pick an exported JSON backup: preview first, then merge or replace everything',
   'imp.parseError': 'The file is not valid JSON',
-  'imp.note': 'The ⬇ JSON export restores the ledger. Back up the dsh-taskboard-assets folder under DSH_HOME as well for image attachments. The file\u2019s schemaVersion must match the current version.',
+  'imp.note': 'The ⬇ JSON export restores the ledger. Back up the dsh-taskboard-assets folder in the data directory shown in Settings as well. The file\u2019s schemaVersion must match the current version.',
   'imp.previewing': 'Previewing…',
   'imp.stat.create': 'New',
   'imp.stat.overwrite': 'Overwrite (same id)',
@@ -370,7 +370,7 @@ export const en: TaskboardDict = {
   // ── board settings modal (SettingsModal) ──────────────────────────
   'set.aria': 'Board settings',
   'set.title': 'Board settings',
-  'set.subtitle': 'Global defaults for new tasks and session sync',
+  'set.subtitle': 'New-task defaults, session sync, and local data storage',
   'set.iso.heading': 'Default execution isolation',
   'set.iso.noneHint': 'No git; works directly in the project directory (factory default)',
   'set.iso.worktreeHint': 'Each execution runs on its own worktree branch (task/title+ID), isolated from the others; multi-repo workspaces are mirrored whole (one branch per repo)',
@@ -387,6 +387,16 @@ export const en: TaskboardDict = {
   'set.foot.dirty': 'Unsaved changes',
   'set.foot.clean': 'Matches the current board settings',
   'set.action.save': 'Save settings',
+  'set.storage.heading': 'Data storage location',
+  'set.storage.hint': 'The task ledger, templates, and image attachments live together in this directory. Changing it copies and verifies everything before switching.',
+  'set.storage.loading': 'Loading the current path…',
+  'set.storage.current': 'Current path: {path}',
+  'set.storage.assets': 'Image attachments: {count}, {size} MiB',
+  'set.storage.default': 'Restore default path',
+  'set.storage.check': 'Check path',
+  'set.storage.migrate': 'Migrate data',
+  'set.storage.migrating': 'Migrating…',
+  'set.storage.confirm': 'Migrate the complete task ledger, templates, and image attachments?\n\nFrom: {from}\nTo: {to}\n\nWrites queue briefly during migration.',
 
   // ── execution permission (PR #14) ─────────────────────────────────
   'form.field.permission': 'Execution permission',

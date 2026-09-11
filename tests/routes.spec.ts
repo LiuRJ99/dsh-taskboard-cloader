@@ -18,6 +18,7 @@ import { registerTaskboardRoutes } from '../src/host/routes.ts'
 import { TaskStore, type LedgerChange } from '../src/host/store.ts'
 import { TemplateStore } from '../src/host/templates.ts'
 import { AssetStore } from '../src/host/assets.ts'
+import type { StorageCoordinator } from '../src/host/storage.ts'
 import type { GitFace } from '../src/host/git.ts'
 import type { RepoScanner } from '../src/host/repos.ts'
 import type { WorkspaceFace } from '../src/host/tools.ts'
@@ -193,6 +194,11 @@ beforeAll(async () => {
     scanner: scannerFace,
     templates: templatesFace as unknown as InstanceType<typeof TemplateStore>,
     assets: new AssetStore(join(dir, 'assets')),
+    storage: {
+      status: async () => ({ currentDirectory: dir, defaultDirectory: dir, isDefault: true, configured: false, writable: true, assetCount: 0, assetBytes: 0 }),
+      check: async (directory: string) => ({ currentDirectory: dir, defaultDirectory: dir, isDefault: true, configured: false, writable: true, assetCount: 0, assetBytes: 0, checkedDirectory: directory }),
+      migrate: async (directory: string) => ({ currentDirectory: directory, defaultDirectory: dir, isDefault: false, configured: true, writable: true, assetCount: 0, assetBytes: 0, migrated: true, warnings: [] }),
+    } as unknown as StorageCoordinator,
     modelCatalog: async () => ({
       models: [{ provider: 'prov-a', model: 'model-a', name: 'Model A' }],
       presets: [{ id: 'standard', name: '标准模式' }],
@@ -243,6 +249,15 @@ async function post(path: string, body: unknown): Promise<{ status: number; json
 }
 
 describe('taskboard routes', () => {
+  it('exposes storage status, path checks, and migration', async () => {
+    const status = await (await fetch(`${base}/dsh-taskboard/storage`)).json()
+    expect(status.value.currentDirectory).toBe(dir)
+    const checked = await post('/dsh-taskboard/storage/check', { directory: 'D:\\board-data' })
+    expect(checked.json.value.checkedDirectory).toBe('D:\\board-data')
+    const migrated = await post('/dsh-taskboard/storage/migrate', { directory: 'D:\\board-data' })
+    expect(migrated.json.value).toMatchObject({ currentDirectory: 'D:\\board-data', migrated: true })
+  })
+
   it('uploads and serves content-addressed images with strict headers', async () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
     const uploaded = await fetch(`${base}/dsh-taskboard/assets`, {

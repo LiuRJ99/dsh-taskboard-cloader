@@ -1,28 +1,18 @@
 # 更新日志 / Changelog
 
-### 0.6.9
+### 0.7.0
 
-- 任务描述与评论支持插入图片（[#25](https://github.com/cloader/dsh-taskboard/issues/25)）：可通过文件选择、粘贴或拖放上传 PNG/JPEG/GIF/WebP，保存为 Markdown 图片并在详情中显示缩略图与灯箱预览。
-- 图片使用本地内容寻址存储：按 SHA-256 去重，单文件上限 5 MiB、总容量上限 200 MiB；校验文件魔数并拒绝 SVG，限制读取路径，未被台账引用的草稿图片在 24 小时宽限期后清理。台账和 SSE 只携带短链接，不嵌入图片二进制。
-- DSH 开发依赖升级到当前 0.1.5-rc.2 系列，并将 `@deepseek-ai/cordis` 升至 4.0.2、`@deepseek-ai/schemastery` 升至 3.18.2；在一次性 Profile 上实测 DSH 0.1.5-rc.1 的启动、看板路由及图片上传/读取均通过，并加入兼容矩阵。
-
-**English:**
-
-- Add image insertion to task descriptions and comments ([#25](https://github.com/cloader/dsh-taskboard/issues/25)): upload PNG/JPEG/GIF/WebP via file picker, paste, or drag and drop; the editor inserts Markdown and task details render thumbnails with lightbox previews.
-- Store images locally by content hash: SHA-256 deduplication, a 5 MiB per-file limit and 200 MiB total quota, magic-byte validation with SVG rejected, constrained read paths, and cleanup of unreferenced draft uploads after a 24-hour grace period. The ledger and SSE carry short URLs rather than image bytes.
-- Upgrade DSH development dependencies to the current 0.1.5-rc.2 line, plus `@deepseek-ai/cordis` 4.0.2 and `@deepseek-ai/schemastery` 3.18.2. A disposable profile verifies DSH 0.1.5-rc.1 startup, taskboard routes, and image upload/read, so that release is added to the compatibility matrix.
-
-### 0.6.8
-
-- 修复任务看板工具在会话开始后才出现、破坏模型请求稳定前缀的问题（[#24](https://github.com/cloader/dsh-taskboard/issues/24)）：协议与 10 个 `taskboard_*` 工具现在在插件挂载时同步注册；工作区服务尚未就绪时保留工具定义并返回明确的 `taskboard_not_ready`，服务恢复后沿用同一组定义。
-- 工具执行等待共享的台账首次加载，避免启动初期将已有任务误报为空；并发加载调用复用同一个读取 Promise。
-- 拆分工具与运行服务的清理生命周期，`agents` 或工作区服务重载不再连带永久移除工具。
+- 看板设置新增数据存储路径：`dsh-taskboard.json`、`dsh-taskboard-templates.json` 和 `dsh-taskboard-assets/` 统一存放在所选目录；可检查目录并在运行中迁移。三类存储共享串行队列，迁移先在目标目录写入并校验完整副本，再原子切换固定保留在 `DSH_HOME` 的位置引导文件，最后清理旧数据；目标冲突或迁移失败时继续使用原位置。
+- 任务描述与评论支持插入图片（[#25](https://github.com/cloader/dsh-taskboard/issues/25)）：可通过文件选择、粘贴或拖放上传 PNG/JPEG/GIF/WebP，保存为 Markdown 图片并在详情中显示缩略图与灯箱预览。图片按 SHA-256 去重，单文件上限 5 MiB、总容量上限 200 MiB；校验文件魔数并拒绝 SVG，未被台账引用的草稿图片在 24 小时宽限期后清理。台账和 SSE 只携带短链接。
+- 修复任务看板工具在会话开始后才出现、破坏模型请求稳定前缀的问题（[#24](https://github.com/cloader/dsh-taskboard/issues/24)）：协议与 10 个 `taskboard_*` 工具在插件挂载时同步注册，使工具集从首个请求起保持稳定，**提高缓存命中率**；依赖未就绪时保留工具定义并返回 `taskboard_not_ready`。工具执行等待共享的台账首次加载，工具清理与运行服务生命周期分离。
+- DSH 开发依赖升级到当前 0.1.5-rc.2 系列，并将 `@deepseek-ai/cordis` 升至 4.0.2、`@deepseek-ai/schemastery` 升至 3.18.2；在一次性 Profile 上实测 DSH 0.1.5-rc.1 的启动及看板路由，并加入兼容矩阵。
 
 **English:**
 
-- Fix taskboard tools appearing after a session has started and changing the model request prefix ([#24](https://github.com/cloader/dsh-taskboard/issues/24)): the protocol and all ten `taskboard_*` tools now register synchronously during plugin mount. Tool definitions remain present while the workspace service is unavailable and calls return an explicit `taskboard_not_ready`; the same definitions continue after recovery.
-- Tool execution now waits for the shared initial ledger load, preventing existing tasks from being reported as an empty board during startup; concurrent load calls reuse one read promise.
-- Separate tool cleanup from runtime-service cleanup so reloading `agents` or the workspace service cannot permanently unregister the tools.
+- Add a configurable data directory to Board Settings. `dsh-taskboard.json`, `dsh-taskboard-templates.json`, and `dsh-taskboard-assets/` move together. All stores share one serial queue; migration writes and verifies a complete target copy, atomically switches a location pointer kept in `DSH_HOME`, then cleans the old files. Conflicts or failed migrations leave the original location active.
+- Add image insertion to task descriptions and comments ([#25](https://github.com/cloader/dsh-taskboard/issues/25)): upload PNG/JPEG/GIF/WebP via file picker, paste, or drag and drop; task details render thumbnails with lightbox previews. Images use SHA-256 deduplication, a 5 MiB per-file limit and 200 MiB total quota, magic-byte validation with SVG rejected, and cleanup of abandoned drafts after 24 hours. The ledger and SSE carry short URLs only.
+- Fix taskboard tools appearing after a session starts and changing the model request prefix ([#24](https://github.com/cloader/dsh-taskboard/issues/24)): the protocol and all ten `taskboard_*` tools register synchronously at plugin mount, keeping the tool set stable from the first request and **improving cache hit rates**. Definitions remain present while dependencies are unavailable and calls return `taskboard_not_ready`. Tool execution waits for the initial ledger load, and tool cleanup is separated from runtime-service lifecycles.
+- Upgrade DSH development dependencies to the current 0.1.5-rc.2 line, plus `@deepseek-ai/cordis` 4.0.2 and `@deepseek-ai/schemastery` 3.18.2. A disposable profile verifies DSH 0.1.5-rc.1 startup and taskboard routes, so that release is added to the compatibility matrix.
 
 ### 0.6.7
 

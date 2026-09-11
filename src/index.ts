@@ -1,7 +1,7 @@
 /**
  * Host loader entry for dsh-taskboard.
  *
- * Wiring: the ledger store (one JSON file under the DSH home), the ten
+ * Wiring: the configurable local data stores, the ten
  * `taskboard_*` agent tools, the agent workflow-protocol system-prompt
  * section, the /taskboard JSON+SSE routes (when a webServer is served),
  * the host execution service (fresh in-project sessions, pinned models), and
@@ -31,14 +31,15 @@ import { TemplateStore } from './host/templates.ts'
 import { ExternalSessionSyncService } from './host/session-sync.ts'
 import { ERR, ToolError, registerTaskboardTools, workspaceFace, type WorkspaceFace } from './host/tools.ts'
 import { AssetStore } from './host/assets.ts'
+import { STORAGE_CONFIG_FILE, StorageCoordinator } from './host/storage.ts'
 
-/** Ledger file name under the DSH home. */
+/** Ledger file name under the active taskboard data directory. */
 export const LEDGER_FILE = 'dsh-taskboard.json'
 
-/** Task-template side file name under the DSH home (0.4.0). */
+/** Task-template side file name under the active data directory. */
 export const TEMPLATES_FILE = 'dsh-taskboard-templates.json'
 
-/** Content-addressed image attachment directory under the DSH home. */
+/** Content-addressed image attachment directory under the active data directory. */
 export const ASSETS_DIR = 'dsh-taskboard-assets'
 
 /** Cordis plugin name. */
@@ -52,15 +53,23 @@ export const inject = ['tools', 'systemPrompt']
  * @param ctx - the plugin context (tools + systemPrompt injected).
  */
 export function apply(ctx: Context): void {
-  const store = new TaskStore({ file: dshHomePath(LEDGER_FILE) })
-  const templates = new TemplateStore(dshHomePath(TEMPLATES_FILE))
-  const assets = new AssetStore(dshHomePath(ASSETS_DIR))
+  const storage = new StorageCoordinator({
+    defaultDirectory: dshHomePath(),
+    configFile: dshHomePath(STORAGE_CONFIG_FILE),
+    ledgerName: LEDGER_FILE,
+    templatesName: TEMPLATES_FILE,
+    assetsName: ASSETS_DIR,
+  })
+  const store = new TaskStore({ file: storage.ledgerPath(), queue: storage.queue })
+  const templates = new TemplateStore(storage.templatesPath(), storage.queue)
+  const assets = new AssetStore(storage.assetsPath(), () => Date.now(), storage.queue)
+  storage.attach({ ledger: store, templates, assets })
   // Eager first load: the tools and most routes read snapshot()/get() without
   // triggering the lazy load, so a fresh boot used to serve an EMPTY board to
   // taskboard_list/get until the scheduler catchup tick or the first
   // GET /state happened to load the file (review P0). load() never throws —
   // a corrupt ledger is quarantined instead.
-  const storeReady = store.load()
+  const storeReady = storage.ready().then(() => store.load())
   void storeReady.then(() => assets.cleanup(JSON.stringify(store.snapshot())))
   const now = () => Date.now()
   // Global execution concurrency cap (DSH_TASKBOARD_MAX_CONCURRENT overrides).
@@ -246,6 +255,8 @@ export function apply(ctx: Context): void {
           scanner,
           templates,
           assets,
+          storage,
+          ready: async () => { await storeReady },
           promptCompletions: async () => {
             try {
               const skillsService = agentCtx.get('skills') as { list?(options?: unknown): Promise<Array<{ name: string; description?: string }>> } | undefined

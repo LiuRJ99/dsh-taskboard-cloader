@@ -197,6 +197,22 @@ export type TemplatesResponse = { templates: TaskTemplate[] }
 /** Board-settings response (0.5.0; absent fields follow factory defaults). */
 export type SettingsResponse = BoardSettings
 
+/** Current host-side location of all durable taskboard data. */
+export type StorageStatus = {
+  currentDirectory: string
+  defaultDirectory: string
+  isDefault: boolean
+  configured: boolean
+  writable: boolean
+  assetCount: number
+  assetBytes: number
+  checkedDirectory?: string
+  error?: string
+}
+
+/** Completed storage relocation, including non-fatal old-file cleanup failures. */
+export type StorageMigrationResult = StorageStatus & { migrated: boolean; warnings: string[] }
+
 /** Update-board-settings request body (0.5.0; whole-object replace semantics). */
 export type UpdateSettingsBody = {
   /** Default code isolation for NEW tasks ('worktree' | 'none'). */

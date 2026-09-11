@@ -529,14 +529,19 @@ describe('client half', () => {
     const { SettingsModal } = await import('../src/client/board/SettingsModal.tsx')
 
     const saved: unknown[] = []
+    const migrated: string[] = []
     const client = {
       state: async () => ({ schemaVersion: 1, revision: 1, tasks: [], settings: { defaultIsolation: 'worktree' } }),
       workspaces: async () => [],
       stream: () => () => {},
       updateSettings: async (body: unknown) => { saved.push(body); return body },
+      storage: async () => ({ currentDirectory: 'C:\\old', defaultDirectory: 'C:\\old', isDefault: true, configured: false, writable: true, assetCount: 2, assetBytes: 1024 }),
+      checkStorage: async (directory: string) => ({ currentDirectory: 'C:\\old', defaultDirectory: 'C:\\old', isDefault: true, configured: false, writable: true, assetCount: 2, assetBytes: 1024, checkedDirectory: directory }),
+      migrateStorage: async (directory: string) => { migrated.push(directory); return { currentDirectory: directory, defaultDirectory: 'C:\\old', isDefault: false, configured: true, writable: true, assetCount: 2, assetBytes: 1024, migrated: true, warnings: [] } },
     }
     const controller = new BoardController(client as never)
     controller.start()
+    controller.openSettings()
     await new Promise(r => setTimeout(r, 10))
 
     const host = document.createElement('div')
@@ -571,6 +576,20 @@ describe('client half', () => {
     saveBtn().click()
     await new Promise(r => setTimeout(r, 20))
     expect(saved).toEqual([{ defaultIsolation: 'none', syncExternalSessions: true, defaultPermission: 'workspace-write' }])
+
+    const storageInput = host.querySelector<HTMLInputElement>('.dsh-atb-storage-path')!
+    expect(storageInput.value).toBe('C:\\old')
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    valueSetter.call(storageInput, 'D:\\taskboard-data')
+    storageInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 10))
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const migrateBtn = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-btn')).find(b => b.textContent === '迁移数据')!
+    expect(migrateBtn.disabled).toBe(false)
+    migrateBtn.click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(migrated).toEqual(['D:\\taskboard-data'])
+    confirm.mockRestore()
 
     root.unmount()
     host.remove()

@@ -341,14 +341,14 @@ export const zh = {
   'tpl.use.button': '用此新建',
   'tpl.delete.title': '删除该模板',
   'tpl.renamed': '模板已改名',
-  'tpl.foot.hint': '模板随台账一同保存在 DSH 主目录，升级不丢',
+  'tpl.foot.hint': '模板随台账一同保存在当前数据目录，升级不丢',
 
   // ── import modal (ImportModal) ────────────────────────────────────
   'imp.aria': '导入台账',
   'imp.title': '导入台账',
   'imp.subtitle': '选择导出的 JSON 备份文件：先预览、再合并或整册替换',
   'imp.parseError': '文件不是合法 JSON',
-  'imp.note': '⬇ JSON 导出可恢复台账；图片附件需同时备份 DSH 主目录下的 dsh-taskboard-assets 文件夹。导入文件的 schemaVersion 必须与当前版本一致。',
+  'imp.note': '⬇ JSON 导出可恢复台账；图片附件需同时备份设置页所示数据目录下的 dsh-taskboard-assets 文件夹。导入文件的 schemaVersion 必须与当前版本一致。',
   'imp.previewing': '预览中…',
   'imp.stat.create': '新增',
   'imp.stat.overwrite': '覆盖（同 id）',
@@ -372,7 +372,7 @@ export const zh = {
   // ── board settings modal (SettingsModal) ──────────────────────────
   'set.aria': '看板设置',
   'set.title': '看板设置',
-  'set.subtitle': '新建任务与会话同步的全局默认值',
+  'set.subtitle': '新建任务、会话同步与本地数据存储',
   'set.iso.heading': '默认执行隔离',
   'set.iso.noneHint': '不使用 git，直接在项目目录工作（出厂默认）',
   'set.iso.worktreeHint': '每次执行在独立 worktree 分支上进行（task/标题+ID），互不污染；多仓库工作区自动整区镜像（每仓库独立分支）',
@@ -389,6 +389,16 @@ export const zh = {
   'set.foot.dirty': '有未保存的修改',
   'set.foot.clean': '与看板当前设置一致',
   'set.action.save': '保存设置',
+  'set.storage.heading': '数据存储位置',
+  'set.storage.hint': '任务台账、模板和图片附件统一存放在此目录。修改路径会先完整复制并校验，再切换到新位置。',
+  'set.storage.loading': '正在读取当前路径…',
+  'set.storage.current': '当前路径：{path}',
+  'set.storage.assets': '图片附件：{count} 个，{size} MiB',
+  'set.storage.default': '恢复默认路径',
+  'set.storage.check': '检查路径',
+  'set.storage.migrate': '迁移数据',
+  'set.storage.migrating': '迁移中…',
+  'set.storage.confirm': '确认迁移全部任务台账、模板和图片附件？\n\n原路径：{from}\n新路径：{to}\n\n迁移期间写操作会短暂排队。',
 
   // ── execution permission (PR #14) ─────────────────────────────────
   'form.field.permission': '执行权限',

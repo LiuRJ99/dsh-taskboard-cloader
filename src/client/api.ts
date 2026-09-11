@@ -24,6 +24,8 @@ import type {
   RejectTaskBody,
   RunTaskBody,
   SettingsResponse,
+  StorageMigrationResult,
+  StorageStatus,
   StateResponse,
   TaskRecord,
   TaskTemplate,
@@ -115,6 +117,11 @@ export interface TaskboardClient {
   settings(): Promise<SettingsResponse>
   /** Replace board settings (whole-object semantics; affects new tasks only). */
   updateSettings(body: UpdateSettingsBody): Promise<SettingsResponse>
+  /** Inspect and validate the host-side data directory. */
+  storage(): Promise<StorageStatus>
+  checkStorage(directory: string): Promise<StorageStatus>
+  /** Move ledger, templates, and attachments together. */
+  migrateStorage(directory: string): Promise<StorageMigrationResult>
   /** Prompt completions for skills and slash commands (0.5.5). */
   promptCompletions(): Promise<PromptCompletionsResponse>
   /** Model catalog and agent preset roster (0.5.5). */
@@ -157,6 +164,14 @@ export function createClient(): TaskboardClient {
     templateDelete: id => post('/dsh-taskboard/templates/delete', { id }),
     settings: () => get<SettingsResponse>('/dsh-taskboard/settings'),
     updateSettings: body => post('/dsh-taskboard/settings/update', body),
+    storage: () => get<StorageStatus>('/dsh-taskboard/storage'),
+    checkStorage: directory => post<StorageStatus>('/dsh-taskboard/storage/check', { directory }),
+    migrateStorage: directory => unwrap<StorageMigrationResult>(fetch('/dsh-taskboard/storage/migrate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ directory }),
+      signal: AbortSignal.timeout(120_000),
+    })),
     promptCompletions: () => get<PromptCompletionsResponse>('/dsh-taskboard/prompt-completions'),
     modelCatalog: () => get<ModelCatalogResponse>('/dsh-taskboard/model-catalog'),
     stream(onChange, onGap) {
