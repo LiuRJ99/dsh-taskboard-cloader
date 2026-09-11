@@ -35,12 +35,16 @@ import { ERR, ToolError, registerTaskboardTools, workspaceFace, type WorkspaceFa
 import type { PermissionMode, TaskModel, TaskSpeed } from './shared/protocol.ts'
 import { MODEL_CAPABILITY_SERVICE, PRIORITY_SERVICE_TIER, type ModelCapabilityProvider } from './shared/model-capabilities.ts'
 import { MODEL_EXECUTION_SERVICE, type ModelExecutionProvider } from './shared/model-execution.ts'
+import { AssetStore } from './host/assets.ts'
 
 /** Ledger file name under the DSH home. */
 export const LEDGER_FILE = 'dsh-taskboard.json'
 
 /** Task-template side file name under the DSH home (0.4.0). */
 export const TEMPLATES_FILE = 'dsh-taskboard-templates.json'
+
+/** Content-addressed image attachment directory under the DSH home. */
+export const ASSETS_DIR = 'dsh-taskboard-assets'
 
 /** Cordis plugin name. */
 export const name = 'dsh-taskboard'
@@ -85,12 +89,14 @@ function installTaskModelOptions(agentCtx: unknown, selection: TaskModel | undef
 export function apply(ctx: Context): void {
   const store = new TaskStore({ file: dshHomePath(LEDGER_FILE) })
   const templates = new TemplateStore(dshHomePath(TEMPLATES_FILE))
+  const assets = new AssetStore(dshHomePath(ASSETS_DIR))
   // Eager first load: the tools and most routes read snapshot()/get() without
   // triggering the lazy load, so a fresh boot used to serve an EMPTY board to
   // taskboard_list/get until the scheduler catchup tick or the first
   // GET /state happened to load the file (review P0). load() never throws —
   // a corrupt ledger is quarantined instead.
   const storeReady = store.load()
+  void storeReady.then(() => assets.cleanup(JSON.stringify(store.snapshot())))
   const now = () => Date.now()
   // Global execution concurrency cap (DSH_TASKBOARD_MAX_CONCURRENT overrides).
   const maxConcurrent = Math.max(1, Number.parseInt(process.env.DSH_TASKBOARD_MAX_CONCURRENT ?? '', 10) || DEFAULT_MAX_CONCURRENT)
@@ -317,6 +323,7 @@ export function apply(ctx: Context): void {
           git,
           scanner,
           templates,
+          assets,
           promptCompletions: async (view) => {
             try {
               const skillsService = agentCtx.get('skills') as SkillsCatalogFace | undefined
