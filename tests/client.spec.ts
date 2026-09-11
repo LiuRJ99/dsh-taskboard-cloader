@@ -1539,6 +1539,112 @@ describe('client half', () => {
     localStorage.clear()
   })
 
+  it('detail: archive move with associated session prompts for confirmation and supports archive with session vs card only', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
+
+    const taskWithSession = {
+      id: 't-arch-1', title: '已完成任务', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'done' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 5, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [{
+        id: 'e-1', trigger: 'manual' as const, startedAt: 0, endedAt: 10, outcome: 'succeeded' as const,
+        sessionId: 'session-taskboard-s1234567',
+      }],
+    }
+    const moves: Array<{ id: string; body: Record<string, unknown> }> = []
+    let archiveSupported = true
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [taskWithSession], capabilities: { archiveSessions: archiveSupported } }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      move: async (id: string, body: Record<string, unknown>) => {
+        moves.push({ id, body })
+        return { ...taskWithSession, ...(body.archiveSessions === true ? { sessionArchive: { archived: [], failed: [{ sessionId: 'session-taskboard-s1234567', error: 'disk failure' }], unsupported: [] } } : {}) }
+      },
+      archiveSessions: async () => ({ archived: ['session-taskboard-s1234567'], failed: [], unsupported: [] }),
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskDetail, { task: taskWithSession as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+
+    const archBtn = host.querySelector<HTMLButtonElement>('.dsh-atb-movebtn[data-to="archived"]')!
+    expect(archBtn).not.toBeNull()
+    archBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(moves).toHaveLength(0)
+
+    const confirmLabel = host.querySelector('.dsh-atb-confirm-label')!
+    expect(confirmLabel.textContent).toContain('s1234567')
+    const btns = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-confirm .dsh-atb-btn'))
+    const withSessionBtn = btns.find(b => b.textContent === '连同会话归档')!
+    const cardOnlyBtn = btns.find(b => b.textContent!.includes('仅归档卡片') || b.textContent!.includes('Card only'))!
+    const cancelBtn = btns.find(b => b.textContent!.includes('取消') || b.textContent!.includes('Cancel'))!
+    expect(withSessionBtn).not.toBeNull()
+    expect(withSessionBtn.dataset.primary).toBeUndefined()
+    expect(host.textContent).toContain('session-taskboard-s1234567')
+    expect(cardOnlyBtn).not.toBeNull()
+    expect(cancelBtn).not.toBeNull()
+
+    cancelBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(moves).toHaveLength(0)
+    expect(host.querySelector('.dsh-atb-confirm')).toBeNull()
+
+    const archBtn2 = host.querySelector<HTMLButtonElement>('.dsh-atb-movebtn[data-to="archived"]')!
+    archBtn2.click()
+    await new Promise(r => setTimeout(r, 10))
+    const cardOnlyBtn2 = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-confirm .dsh-atb-btn'))
+      .find(b => b.textContent!.includes('仅归档卡片') || b.textContent!.includes('Card only'))!
+    cardOnlyBtn2.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(moves).toEqual([{ id: 't-arch-1', body: { ifVersion: 5, status: 'archived', archiveSessions: false } }])
+
+    moves.length = 0
+    const archBtn3 = host.querySelector<HTMLButtonElement>('.dsh-atb-movebtn[data-to="archived"]')!
+    archBtn3.click()
+    await new Promise(r => setTimeout(r, 10))
+    const withSessionBtn3 = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-confirm .dsh-atb-btn')).find(b => b.textContent === '连同会话归档')!
+    withSessionBtn3.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(moves).toEqual([{ id: 't-arch-1', body: { ifVersion: 5, status: 'archived', archiveSessions: true } }])
+
+    root.render(React.createElement(TaskDetail, { task: { ...taskWithSession, status: 'archived' } as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+    expect(host.textContent).toContain('disk failure')
+    const retry = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent!.includes('重试归档'))!
+    retry.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(controller.getSnapshot().sessionArchive?.result.failed).toEqual([])
+    expect(host.textContent).not.toContain('disk failure')
+    expect(moves).toHaveLength(1)
+
+    archiveSupported = false
+    await controller.refresh()
+    root.render(React.createElement(TaskDetail, { task: taskWithSession as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+    host.querySelector<HTMLButtonElement>('.dsh-atb-movebtn[data-to="archived"]')!.click()
+    await new Promise(r => setTimeout(r, 10))
+    const unsupported = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent === '连同会话归档')!
+    expect(unsupported.disabled).toBe(true)
+    expect(unsupported.title).toContain('不支持')
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
   it('detail: report and comment paths use underlined open-only links', async () => {
     localStorage.clear()
     const React = await import('react')
