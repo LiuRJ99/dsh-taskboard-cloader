@@ -7,7 +7,7 @@
  *
  * @module dsh-taskboard/client/board/TaskDetail
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { BoardController } from '../controller.ts'
 import type { CommentRecord, ExecutionRecord, TaskRecord } from '../../shared/protocol.ts'
 import { canTransition, checklistProgress, taskAssociatedSessionIds } from '../../shared/protocol.ts'
@@ -15,6 +15,7 @@ import { useAlert } from './AlertModal.tsx'
 import { fmtTime, isStaleClaim } from './format.ts'
 import { MOVE_KEYS, OUTCOME_KEYS, STATUS_KEYS, URGENCY_KEYS } from './labels.ts'
 import { useT, type Translate } from '../i18n/runtime.ts'
+import { IMAGE_ACCEPT, acceptedImageFiles, imageAlt, imageMarkdown, insertImageMarkdown } from '../image-insert.ts'
 
 /** Statuses a user may move this task to, per the state machine. */
 function moveTargets(task: TaskRecord): TaskRecord['status'][] {
@@ -514,6 +515,9 @@ function IsolationBlock({ task, controller }: { task: TaskRecord; controller: Bo
 export function TaskDetail({ task, controller, now }: { task: TaskRecord; controller: BoardController; now?: number }) {
   const t = useT()
   const [comment, setComment] = useState('')
+  const [commentUploading, setCommentUploading] = useState(false)
+  const commentRef = useRef<HTMLTextAreaElement>(null)
+  const commentFileRef = useRef<HTMLInputElement>(null)
   const [confirmDone, setConfirmDone] = useState(false)
   const [confirmPurge, setConfirmPurge] = useState(false)
   const [confirmCancel, setConfirmCancel] = useState(false)
@@ -540,6 +544,42 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
     if (actionBusy) return
     setActionBusy(true)
     void action().catch(() => undefined).finally(() => setActionBusy(false))
+  }
+
+  const postComment = (): void => {
+    if (commentUploading || comment.trim().length === 0) return
+    void controller.comment(task.id, comment).then(ok => { if (ok) setComment('') })
+  }
+
+  const uploadCommentImages = async (rawFiles: Iterable<File>): Promise<void> => {
+    const files = acceptedImageFiles(rawFiles)
+    if (files.length === 0 || commentUploading) return
+    setCommentUploading(true)
+    const element = commentRef.current
+    let nextValue = element?.value ?? comment
+    let start = element?.selectionStart ?? nextValue.length
+    let end = element?.selectionEnd ?? start
+    let changed = false
+    try {
+      for (const file of files) {
+        const asset = await controller.uploadImage(file)
+        if (asset === undefined) continue
+        const next = insertImageMarkdown(nextValue, start, end, imageMarkdown(asset, imageAlt(file.name, t('image.defaultAlt'))))
+        nextValue = next.value
+        start = next.cursor
+        end = start
+        changed = true
+      }
+      if (changed) {
+        setComment(nextValue)
+        setTimeout(() => {
+          commentRef.current?.focus()
+          commentRef.current?.setSelectionRange(start, start)
+        }, 0)
+      }
+    } finally {
+      setCommentUploading(false)
+    }
   }
 
   /** Jump to an execution's session; prompt precisely when it cannot open. */
@@ -836,7 +876,7 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
                         <b>{c.threadId !== undefined ? `agent ${shortId(c.threadId)}` : t('detail.comments.user')}</b>
                         <span>{fmtTime(c.createdAt)}</span>
                       </div>
-                      <div className="dsh-atb-bubble-body">{commentBody(t, c)}</div>
+                      <div className="dsh-atb-bubble-body"><MarkdownContent text={commentBody(t, c)} /></div>
                     </div>
                   </div>
                 ))}
@@ -844,24 +884,47 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
             )}
         <div className="dsh-atb-composer">
           <textarea
+            ref={commentRef}
             className="dsh-atb-composer-input"
             value={comment}
             placeholder={t('detail.composer.placeholder')}
+            disabled={commentUploading}
             onChange={e => setComment(e.target.value)}
             onKeyDown={e => {
-              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && comment.trim().length > 0) {
+              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && comment.trim().length > 0 && !commentUploading) {
                 // T13: keep the draft when the post fails (reject 表单同样保留).
-                void controller.comment(task.id, comment).then(ok => { if (ok) setComment('') })
+                postComment()
               }
             }}
+            onPaste={e => {
+              const files = acceptedImageFiles(e.clipboardData.files)
+              if (files.length > 0) { e.preventDefault(); void uploadCommentImages(files) }
+            }}
+            onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }}
+            onDrop={e => {
+              const files = acceptedImageFiles(e.dataTransfer.files)
+              if (files.length > 0) { e.preventDefault(); void uploadCommentImages(files) }
+            }}
           />
+          <input
+            ref={commentFileRef}
+            type="file"
+            accept={IMAGE_ACCEPT}
+            multiple
+            hidden
+            onChange={e => {
+              if (e.target.files !== null) void uploadCommentImages(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <button type="button" className="dsh-atb-image-add" disabled={commentUploading} title={t('image.add')} onClick={() => commentFileRef.current?.click()}>
+            {commentUploading ? '…' : '🖼'}
+          </button>
           <button
             type="button"
             className="dsh-atb-composer-send"
-            disabled={comment.trim().length === 0}
-            onClick={() => {
-              void controller.comment(task.id, comment).then(ok => { if (ok) setComment('') })
-            }}
+            disabled={comment.trim().length === 0 || commentUploading}
+            onClick={postComment}
           >
             {t('detail.composer.send')}
           </button>

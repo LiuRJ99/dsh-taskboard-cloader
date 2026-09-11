@@ -62,6 +62,55 @@ describe('SlashPromptInput & autocomplete (0.5.5)', () => {
     host.remove()
   })
 
+  it('uploads a selected image and inserts its Markdown at the cursor', async () => {
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { SlashPromptInput } = await import('../src/client/board/SlashPromptInput.tsx')
+    type Controller = import('../src/client/controller.ts').BoardController
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    let currentVal = '开头结尾'
+    const uploadImage = vi.fn(async () => ({
+      id: 'a'.repeat(64),
+      name: `${'a'.repeat(64)}.png`,
+      size: 8,
+      url: `/dsh-taskboard/assets/${'a'.repeat(64)}.png`,
+      extension: 'png' as const,
+      mime: 'image/png' as const,
+    }))
+    const uploadStates: boolean[] = []
+    const controller = {
+      uploadImage,
+      fetchPromptCompletions: async () => undefined,
+    } as unknown as Controller
+
+    root.render(React.createElement(SlashPromptInput, {
+      value: currentVal,
+      onChange: (value: string) => { currentVal = value },
+      controller,
+      allowImages: true,
+      onUploadingChange: (uploading: boolean) => uploadStates.push(uploading),
+    }))
+    await new Promise(r => setTimeout(r, 30))
+
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea')!
+    textarea.setSelectionRange(2, 2)
+    const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+    const file = new File([new Uint8Array([0x89, 0x50])], '截图.png', { type: 'image/png' })
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise(r => setTimeout(r, 40))
+
+    expect(uploadImage).toHaveBeenCalledWith(file)
+    expect(currentVal).toBe(`开头\n![截图](/dsh-taskboard/assets/${'a'.repeat(64)}.png)\n结尾`)
+    expect(uploadStates).toEqual([true, false])
+
+    root.unmount()
+    host.remove()
+  })
+
   it('filters and selects slash completions on typing /', async () => {
     const React = await import('react')
     const { createRoot } = await import('react-dom/client')

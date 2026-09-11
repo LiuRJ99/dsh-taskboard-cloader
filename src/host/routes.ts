@@ -49,6 +49,7 @@ import { createRepoScanner, type RepoScanner } from './repos.ts'
 import { activeHostLocale } from './locale.ts'
 import type { CatalogModelItem, CatalogPresetItem, MergeRepoResult, TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
+import { MAX_ASSET_BYTES, type AssetStore } from './assets.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
 import type { TaskStore } from './store.ts'
 import { ERR, ToolError } from './tools.ts'
@@ -64,6 +65,7 @@ const MAX_BODY_BYTES = 5 * 1024 * 1024
 const TASK_DIFF_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/diff$`)
 const TASK_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)$`)
 const TASK_ACTION_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/([\\w-]+)$`)
+const ASSET_RE = new RegExp(`^${ROUTE_PREFIX}/assets/([a-f0-9]{64}\\.(?:png|jpg|gif|webp))$`)
 
 /** How long a workspace git-detection result stays cached (fail-soft). */
 const GIT_DETECT_TTL_MS = 60_000
@@ -91,6 +93,8 @@ export interface TaskboardRoutesOptions {
   scanner?: RepoScanner
   /** Task-template store (0.4.0); absent → 501 on template actions. */
   templates?: TemplateStore
+  /** Durable image attachment store (0.6.9); absent → attachment routes unavailable. */
+  assets?: AssetStore
   /** Prompt completions face (0.5.5; dynamically discovers skills & commands). */
   promptCompletions?: () => Promise<{
     skills?: Array<{ name: string; description?: string }>
@@ -190,6 +194,19 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown> |
   } catch {
     return null
   }
+}
+
+/** Read one bounded binary upload without ever buffering beyond the file cap. */
+async function readBytes(req: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let total = 0
+  for await (const chunk of req) {
+    const bytes = chunk as Buffer
+    total += bytes.length
+    if (total > limit) throw new Error('body too large')
+    chunks.push(bytes)
+  }
+  return Buffer.concat(chunks)
 }
 
 /** String field accessor (null when absent/not a string). */
@@ -378,6 +395,19 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
 
       // ---------------------------------------------------------------- GET
       if (req.method === 'GET') {
+        const assetMatch = pathname.match(ASSET_RE)
+        if (assetMatch !== null) {
+          const asset = await options.assets?.read(assetMatch[1]!)
+          if (asset === undefined) { res.writeHead(404); res.end(); return }
+          res.writeHead(200, {
+            'content-type': asset.mime,
+            'content-length': asset.bytes.length,
+            'cache-control': 'public, max-age=31536000, immutable',
+            'x-content-type-options': 'nosniff',
+          })
+          res.end(asset.bytes)
+          return
+        }
         if (pathname === `${ROUTE_PREFIX}/state`) {
           await store.load()
           json(res, { ok: true, value: { ...store.snapshot(), capabilities: { archiveSessions: typeof workspaces.archiveSession === 'function' } } })
@@ -525,6 +555,33 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
       if (req.method !== 'POST') {
         res.writeHead(405, { allow: 'GET, POST' })
         res.end()
+        return
+      }
+      // Content-addressed image upload. The custom header makes this a
+      // non-simple cross-origin request, preserving the JSON routes' CSRF fence.
+      if (pathname === `${ROUTE_PREFIX}/assets`) {
+        if (options.assets === undefined) {
+          const f = fail('invalid_input', 'image attachments unavailable')
+          json(res, f.res, 501)
+          return
+        }
+        if (req.headers['x-dsh-taskboard-upload'] !== '1') {
+          const f = fail('forbidden', 'missing upload header')
+          json(res, f.res, 403)
+          return
+        }
+        const declaredMime = String(req.headers['content-type'] ?? '').split(';', 1)[0]!.trim().toLowerCase()
+        try {
+          const bytes = await readBytes(req, MAX_ASSET_BYTES)
+          await options.assets.cleanup(JSON.stringify(store.snapshot()))
+          const asset = await options.assets.put(bytes, declaredMime)
+          json(res, { ok: true, value: asset }, 201)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const status = message.includes('1..') ? 413 : message.includes('quota') ? 507 : 400
+          const f = fail('invalid_input', message)
+          json(res, f.res, status)
+        }
         return
       }
       // CSRF fence: cross-site simple requests cannot set application/json.

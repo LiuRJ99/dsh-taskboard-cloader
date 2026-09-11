@@ -104,6 +104,16 @@ export type RejectTaskBody = { ifVersion: number; body?: string }
 /** Comment request body. */
 export type CommentBody = { body: string }
 
+/** One content-addressed image uploaded outside the ledger. */
+export type AttachmentUpload = {
+  id: string
+  name: string
+  size: number
+  url: string
+  extension: 'png' | 'jpg' | 'gif' | 'webp'
+  mime: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+}
+
 /** Delete request body (purge=true physically removes a trashed task). */
 export type DeleteTaskBody = { ifVersion?: number; purge?: boolean }
 

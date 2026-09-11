@@ -11,6 +11,7 @@ import { createPortal } from 'react-dom'
 import type { BoardController } from '../controller.ts'
 import type { PromptCompletionItem } from '../../shared/api.ts'
 import { useT, type Translate } from '../i18n/runtime.ts'
+import { IMAGE_ACCEPT, acceptedImageFiles, imageAlt, imageMarkdown, insertImageMarkdown } from '../image-insert.ts'
 
 /** Default built-in slash commands (descriptions resolve through t at render,
  * so they follow the GUI language live; host-provided items override by name). */
@@ -65,6 +66,8 @@ export interface SlashPromptInputProps {
   autoFocus?: boolean
   className?: string
   ariaLabel?: string
+  allowImages?: boolean
+  onUploadingChange?: (uploading: boolean) => void
 }
 
 /**
@@ -81,11 +84,14 @@ export function SlashPromptInput({
   autoFocus = false,
   className,
   ariaLabel,
+  allowImages = false,
+  onUploadingChange,
 }: SlashPromptInputProps) {
   const t = useT()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   // Inline fixed-position style for the portaled popup (set by positionPopup).
   const [popupStyle, setPopupStyle] = useState<CSSProperties>({})
 
@@ -106,6 +112,40 @@ export function SlashPromptInput({
   const [slashQuery, setSlashQuery] = useState('')
   const [slashStart, setSlashStart] = useState(-1)
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const [uploading, setUploading] = useState(false)
+
+  const uploadFiles = async (rawFiles: Iterable<File>): Promise<void> => {
+    const files = acceptedImageFiles(rawFiles)
+    if (!allowImages || controller === undefined || files.length === 0 || uploading) return
+    setUploading(true)
+    onUploadingChange?.(true)
+    const element = textareaRef.current
+    let nextValue = element?.value ?? value
+    let start = element?.selectionStart ?? nextValue.length
+    let end = element?.selectionEnd ?? start
+    let changed = false
+    try {
+      for (const file of files) {
+        const asset = await controller.uploadImage(file)
+        if (asset === undefined) continue
+        const next = insertImageMarkdown(nextValue, start, end, imageMarkdown(asset, imageAlt(file.name, t('image.defaultAlt'))))
+        nextValue = next.value
+        start = next.cursor
+        end = start
+        changed = true
+      }
+      if (changed) {
+        onChange(nextValue)
+        setTimeout(() => {
+          textareaRef.current?.focus()
+          textareaRef.current?.setSelectionRange(start, start)
+        }, 0)
+      }
+    } finally {
+      setUploading(false)
+      onUploadingChange?.(false)
+    }
+  }
 
   // Fetch host completions if controller provided
   useEffect(() => {
@@ -282,7 +322,7 @@ export function SlashPromptInput({
           value={value}
           rows={rows}
           maxLength={maxLength}
-          disabled={disabled}
+          disabled={disabled || uploading}
           autoFocus={autoFocus}
           placeholder={placeholder}
           aria-label={ariaLabel}
@@ -293,6 +333,25 @@ export function SlashPromptInput({
           onKeyUp={checkSlashTrigger}
           onClick={checkSlashTrigger}
           onKeyDown={handleKeyDown}
+          onPaste={e => {
+            const files = acceptedImageFiles(e.clipboardData.files)
+            if (allowImages && files.length > 0) {
+              e.preventDefault()
+              void uploadFiles(files)
+            }
+          }}
+          onDragOver={e => {
+            // Browsers keep DataTransfer.files empty while dragging over a
+            // page; the concrete files become readable only on drop.
+            if (allowImages && e.dataTransfer.types.includes('Files')) e.preventDefault()
+          }}
+          onDrop={e => {
+            const files = acceptedImageFiles(e.dataTransfer.files)
+            if (allowImages && files.length > 0) {
+              e.preventDefault()
+              void uploadFiles(files)
+            }
+          }}
         />
 
         {/* Slash Autocomplete Popup — portaled to document.body so the
@@ -328,6 +387,26 @@ export function SlashPromptInput({
           document.body,
         )}
       </div>
+
+      {allowImages && (
+        <div className="dsh-atb-image-actions">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={IMAGE_ACCEPT}
+            multiple
+            hidden
+            onChange={e => {
+              if (e.target.files !== null) void uploadFiles(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <button type="button" className="dsh-atb-image-add" disabled={disabled || uploading} onClick={() => fileInputRef.current?.click()}>
+            {uploading ? t('image.uploading') : t('image.add')}
+          </button>
+          <span className="dsh-atb-image-hint">{t('image.hint')}</span>
+        </div>
+      )}
 
       {/* Bottom helper toolbar */}
       <div className="dsh-atb-prompt-foot">

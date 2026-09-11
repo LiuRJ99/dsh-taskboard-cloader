@@ -8,7 +8,7 @@ import type { SessionArchiveResult } from '../shared/api.ts'
  *
  * @module dsh-taskboard/client/controller
  */
-import type { ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, MergeRepoResult, PromptCompletionsResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
+import type { AttachmentUpload, ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, MergeRepoResult, PromptCompletionsResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
 import type { ChecklistItem, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
@@ -521,6 +521,16 @@ export class BoardController {
     } catch (error) {
       this.setState({ error: error instanceof Error ? error.message : String(error) })
       return false
+    }
+  }
+
+  /** Upload an image without putting its bytes in the ledger or agent context. */
+  async uploadImage(file: Blob): Promise<AttachmentUpload | undefined> {
+    try {
+      return await this.client.uploadImage(file)
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+      return undefined
     }
   }
 

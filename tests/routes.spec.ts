@@ -17,6 +17,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { registerTaskboardRoutes } from '../src/host/routes.ts'
 import { TaskStore, type LedgerChange } from '../src/host/store.ts'
 import { TemplateStore } from '../src/host/templates.ts'
+import { AssetStore } from '../src/host/assets.ts'
 import type { GitFace } from '../src/host/git.ts'
 import type { RepoScanner } from '../src/host/repos.ts'
 import type { WorkspaceFace } from '../src/host/tools.ts'
@@ -191,6 +192,7 @@ beforeAll(async () => {
     git: gitFace,
     scanner: scannerFace,
     templates: templatesFace as unknown as InstanceType<typeof TemplateStore>,
+    assets: new AssetStore(join(dir, 'assets')),
     modelCatalog: async () => ({
       models: [{ provider: 'prov-a', model: 'model-a', name: 'Model A' }],
       presets: [{ id: 'standard', name: '标准模式' }],
@@ -241,6 +243,35 @@ async function post(path: string, body: unknown): Promise<{ status: number; json
 }
 
 describe('taskboard routes', () => {
+  it('uploads and serves content-addressed images with strict headers', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+    const uploaded = await fetch(`${base}/dsh-taskboard/assets`, {
+      method: 'POST',
+      headers: { 'content-type': 'image/png', 'x-dsh-taskboard-upload': '1' },
+      body: png,
+    })
+    expect(uploaded.status).toBe(201)
+    const body = await uploaded.json()
+    expect(body.value.url).toMatch(/^\/dsh-taskboard\/assets\/[a-f0-9]{64}\.png$/)
+
+    const served = await fetch(base + body.value.url)
+    expect(served.status).toBe(200)
+    expect(served.headers.get('content-type')).toBe('image/png')
+    expect(served.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(Buffer.from(await served.arrayBuffer())).toEqual(png)
+  })
+
+  it('rejects upload CSRF, spoofed image types, and traversal-shaped reads', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const noHeader = await fetch(`${base}/dsh-taskboard/assets`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: png })
+    expect(noHeader.status).toBe(403)
+    const spoofed = await fetch(`${base}/dsh-taskboard/assets`, {
+      method: 'POST', headers: { 'content-type': 'image/jpeg', 'x-dsh-taskboard-upload': '1' }, body: png,
+    })
+    expect(spoofed.status).toBe(400)
+    expect((await fetch(`${base}/dsh-taskboard/assets/..%2Fpackage.json`)).status).toBe(404)
+  })
+
   it('serves an empty state baseline', async () => {
     const res = await fetch(`${base}/dsh-taskboard/state`)
     expect(res.status).toBe(200)

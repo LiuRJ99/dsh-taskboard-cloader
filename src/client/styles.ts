@@ -398,6 +398,27 @@ button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
 .dsh-atb-bubble-meta span { font-size: 10.5px; color: var(--dsw-text-secondary, gray); }
 .dsh-atb-bubble-body { font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 
+.dsh-atb-markdown-body { white-space: pre-wrap; word-break: break-word; }
+.dsh-atb-detail-img-wrap {
+  display: inline-flex; flex-direction: column; gap: 4px; max-width: min(100%, 520px); margin: 6px 8px 6px 0;
+  vertical-align: top;
+}
+.dsh-atb-detail-img {
+  display: block; max-width: 100%; max-height: 320px; object-fit: contain; border-radius: 8px; cursor: zoom-in;
+  border: 1px solid var(--dsw-border, rgba(128,128,128,.22)); background: var(--dsw-bg-inset, rgba(128,128,128,.08));
+}
+.dsh-atb-detail-img-caption { font-size: 10.5px; color: var(--dsw-text-secondary, gray); overflow-wrap: anywhere; }
+.dsh-atb-lightbox-backdrop {
+  position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 28px;
+  background: rgba(0,0,0,.76); backdrop-filter: blur(3px);
+}
+.dsh-atb-lightbox-content { position: relative; max-width: 96vw; max-height: 92vh; }
+.dsh-atb-lightbox-img { display: block; max-width: 96vw; max-height: 92vh; object-fit: contain; border-radius: 10px; }
+.dsh-atb-lightbox-close {
+  position: absolute; top: -14px; right: -14px; width: 30px; height: 30px; border-radius: 999px; cursor: pointer;
+  border: 1px solid rgba(255,255,255,.38); background: rgba(20,20,20,.9); color: #fff;
+}
+
 .dsh-atb-composer { display: flex; gap: 7px; align-items: flex-end; margin-top: 2px; }
 .dsh-atb-composer-input {
   flex: 1; font: inherit; font-size: 12.5px; line-height: 1.5; padding: 7px 10px; border-radius: 9px;
@@ -410,6 +431,14 @@ button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
   border: 1px solid transparent; background: var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary, #1f2328)); color: var(--dsw-alias-label-primary-foreground, #fff);
 }
 .dsh-atb-composer-send:disabled { opacity: .4; cursor: default; }
+.dsh-atb-image-actions { display: flex; align-items: center; gap: 8px; padding: 5px 1px 0; }
+.dsh-atb-image-add {
+  flex: none; font: inherit; font-size: 11.5px; line-height: 1.4; padding: 4px 8px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--dsw-border, rgba(128,128,128,.3)); background: var(--dsw-bg-elevated, rgba(128,128,128,.08)); color: inherit;
+}
+.dsh-atb-image-add:hover:not(:disabled) { background: var(--dsw-bg-hover, rgba(128,128,128,.14)); }
+.dsh-atb-image-add:disabled { opacity: .45; cursor: default; }
+.dsh-atb-image-hint { font-size: 10.5px; color: var(--dsw-text-secondary, gray); }
 
 .dsh-atb-execlist { display: flex; flex-direction: column; gap: 5px; }
 .dsh-atb-exec-row {

@@ -348,7 +348,7 @@ export const zh = {
   'imp.title': '导入台账',
   'imp.subtitle': '选择导出的 JSON 备份文件：先预览、再合并或整册替换',
   'imp.parseError': '文件不是合法 JSON',
-  'imp.note': '⬇ JSON 导出的文件即为同格式备份，可直接导入恢复；导入文件的 schemaVersion 必须与当前版本一致。',
+  'imp.note': '⬇ JSON 导出可恢复台账；图片附件需同时备份 DSH 主目录下的 dsh-taskboard-assets 文件夹。导入文件的 schemaVersion 必须与当前版本一致。',
   'imp.previewing': '预览中…',
   'imp.stat.create': '新增',
   'imp.stat.overwrite': '覆盖（同 id）',
@@ -422,6 +422,10 @@ export const zh = {
   'md.imageTitle': '点击查看大图 ({alt})',
   'md.lightboxAlt': '大图预览',
   'md.closePreview': '关闭预览',
+  'image.add': '插入图片',
+  'image.uploading': '正在上传…',
+  'image.hint': '支持选择、粘贴或拖入 PNG/JPEG/GIF/WebP，单张不超过 5 MB',
+  'image.defaultAlt': '图片',
 
   // ── slash completion popup (PR #14) ───────────────────────────────
   'slash.aria': '快捷命令与技能',

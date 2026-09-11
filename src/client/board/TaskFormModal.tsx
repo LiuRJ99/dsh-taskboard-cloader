@@ -212,6 +212,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   // create/update/run round-trip is pending — a double click used to fire
   // duplicate creates (and runs) before the first one returned (review P0).
   const [busy, setBusy] = useState(false)
+  const [imageUploading, setImageUploading] = useState(false)
 
   // Focus the title and close on Esc while the dialog is open.
   useEffect(() => {
@@ -294,7 +295,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   }
 
   const submit = (): void => {
-    if (!valid || busy) return
+    if (!valid || busy || imageUploading) return
     const picked = buildPickedModel()
     if (!editing) saveLastModel(picked)
     const isolationOut = isolationPayload()
@@ -335,7 +336,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
 
   /** Save the form, then immediately trigger a manual run of the task. */
   const submitAndRun = (): void => {
-    if (!valid || runBlocked || busy) return
+    if (!valid || runBlocked || busy || imageUploading) return
     const picked = buildPickedModel()
     if (!editing) saveLastModel(picked)
     const isolationOut = isolationPayload()
@@ -602,6 +603,8 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                 controller={controller}
                 rows={7}
                 placeholder={t('form.desc.placeholder')}
+                allowImages
+                onUploadingChange={setImageUploading}
               />
             </Field>
 
@@ -624,13 +627,13 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
             <button
               type="button"
               className="dsh-atb-btn"
-              disabled={!valid || runBlocked || busy}
-              title={runBlocked ? t('form.action.runBlockedTitle') : busy ? t('form.action.runBusyTitle') : t('form.action.runTitle')}
+              disabled={!valid || runBlocked || busy || imageUploading}
+              title={runBlocked ? t('form.action.runBlockedTitle') : busy || imageUploading ? t('form.action.runBusyTitle') : t('form.action.runTitle')}
               onClick={submitAndRun}
             >
               {t('form.action.run')}
             </button>
-            <button type="button" className="dsh-atb-btn" data-primary="true" disabled={!valid || busy} onClick={submit}>
+            <button type="button" className="dsh-atb-btn" data-primary="true" disabled={!valid || busy || imageUploading} onClick={submit}>
               {editing ? t('form.action.save') : t('form.action.create')}
             </button>
           </span>

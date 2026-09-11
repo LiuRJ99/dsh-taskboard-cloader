@@ -346,7 +346,7 @@ export const en: TaskboardDict = {
   'imp.title': 'Import ledger',
   'imp.subtitle': 'Pick an exported JSON backup: preview first, then merge or replace everything',
   'imp.parseError': 'The file is not valid JSON',
-  'imp.note': 'The ⬇ JSON export is a same-format backup and can be imported to restore; the file\u2019s schemaVersion must match the current version.',
+  'imp.note': 'The ⬇ JSON export restores the ledger. Back up the dsh-taskboard-assets folder under DSH_HOME as well for image attachments. The file\u2019s schemaVersion must match the current version.',
   'imp.previewing': 'Previewing…',
   'imp.stat.create': 'New',
   'imp.stat.overwrite': 'Overwrite (same id)',
@@ -420,6 +420,10 @@ export const en: TaskboardDict = {
   'md.imageTitle': 'Click to view full size ({alt})',
   'md.lightboxAlt': 'Full-size preview',
   'md.closePreview': 'Close preview',
+  'image.add': 'Insert image',
+  'image.uploading': 'Uploading…',
+  'image.hint': 'Choose, paste, or drop PNG/JPEG/GIF/WebP images up to 5 MB each',
+  'image.defaultAlt': 'Image',
 
   // ── slash completion popup (PR #14) ───────────────────────────────
   'slash.aria': 'Quick commands and skills',

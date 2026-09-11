@@ -133,6 +133,7 @@ Available in any session. Project boundary: only sessions belonging to the task'
 - Create/edit modal: project, model (with reasoning effort), urgency, execution mode, cron with live validation & next-run preview, isolation toggle, checklist editor
 - Detail panel: status transitions (*done* is human-only; completing with unchecked items asks for confirmation and shows the count), agent/user comment thread, execution history (newest first; session IDs open the execution session on click; deleted/archived targets get distinct notices), stop execution, worktree isolation block (branch / commits / change stats / merge & cleanup), execution report block, acceptance checklist block
 - Quick actions on In Review cards: "✓ Done" one-click accept, "✗ Send back" returns to Todo with an optional reason agents read before starting
+- **Image attachments (0.6.9)**: task descriptions and comments accept PNG/JPEG/GIF/WebP through file picker, paste, or drag and drop and insert Markdown automatically; task details show thumbnails with click-to-zoom lightbox previews. Images stay in the local DSH home directory, capped at 5 MiB each
 - **Two-column wide task form + slash completion (0.6.0)**: the create/edit modal goes two-column (core fields and execution config on the left, description and prompt on the right); typing `/` in the description/prompt pops command and skill completion (↑↓/Enter/Tab/Esc keyboard navigation; host-discovered items merge over the built-in list); Markdown images in description/prompt render as thumbnails with a click-to-zoom lightbox
 - **Execution permission (0.6.0)**: per-task three-way execution permission (📁 workspace write / 🔒 read-only / ⚡ full access) picked in the form plus a default-permission board setting; permission badges on cards, the detail panel and the template list
 - **Bilingual UI, zh/en (0.6.0)**: every piece of board copy follows DSH's "Settings - General - Language" switch live (no reload); the preference is stored by DSH itself (locale.preference in settings.yaml) and the plugin adds no settings of its own; environments without the DSH locale service fall back to the browser language
@@ -164,7 +165,7 @@ Available in any session. Project boundary: only sessions belonging to the task'
 
 - **Acceptance authority belongs to humans**: agent calls moving a task to *done* are rejected by the code-level protocol gate (a prompt suggestion, not); held tasks cannot be preempted; cross-project claims are rejected.
 - **Worktree isolation is a convention, not a sandbox**: execution sessions have full tool permissions; isolation relies on the branch convention and is unsuitable for untrusted code.
-- **Local data**: the ledger and templates live entirely in the local DSH home directory; nothing is sent anywhere and no tokens / API keys are required.
+- **Local data**: the ledger, templates, and image attachments live entirely in the local DSH home directory; nothing is sent anywhere and no tokens / API keys are required.
 
 ## Configuration & Data
 
@@ -182,10 +183,11 @@ Data files (all under the DSH home directory; uninstalling the plugin keeps them
 | --- | --- |
 | `dsh-taskboard.json` | Task ledger (all tasks / executions / comments) |
 | `dsh-taskboard-templates.json` | Task templates |
+| `dsh-taskboard-assets/` | Image attachments (deduplicated by content hash) |
 | `dsh-taskboard.json.backup-<timestamp>` | Automatic backup taken before a full-replace import |
 | `<project>/.dsh-worktrees/<taskId>/` | Per-task execution worktree (multi-repo workspaces: a whole-workspace mirror with one sub-worktree per repo) |
 
-Export a full backup anytime with "⬇ JSON" in the toolbar, or the task list as CSV ("⬇ Export", BOM included, opens straight in Excel).
+Use "⬇ JSON" in the toolbar to back up the ledger, or export the task list as CSV ("⬇ Export", BOM included, opens straight in Excel). Images are not embedded in JSON; copy the `dsh-taskboard-assets/` folder as well for a complete backup.
 
 ## FAQ
 
@@ -193,7 +195,7 @@ Export a full backup anytime with "⬇ JSON" in the toolbar, or the task list as
 Refresh the page. Still nothing? Confirm the plugin is installed in the current profile and restart `dsh web` (the host half loads at process start). All three shell generations are supported: `data-pane` (dev), hashed class names (official layout, since 0.4.2), and the DSH Desktop non-compat extended frame (since 0.5.2).
 
 **Where is task data stored? How do I back it up?**
-See [Configuration & Data](#configuration--data). "⬇ JSON" in the GUI exports everything anytime; "⬆ Import" restores it.
+See [Configuration & Data](#configuration--data). "⬇ JSON" exports and restores the ledger; image attachments also require a backup of the `dsh-taskboard-assets/` folder.
 
 **Do scheduled tasks still fire when the browser is closed?**
 Yes. Scheduling lives in the host process and is browser-independent; missed windows are skipped, not replayed.
@@ -231,6 +233,11 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
+
+### 0.6.9
+
+- **Insert images in task descriptions and comments ([#25](https://github.com/cloader/dsh-taskboard/issues/25))**: choose, paste, or drag and drop PNG/JPEG/GIF/WebP; Markdown is inserted automatically and task details render thumbnails with lightbox previews.
+- Images are deduplicated locally by content hash with format, path, per-file, and total-quota checks; the ledger and SSE store short URLs only. DSH development dependencies move to the 0.1.5-rc.2 line.
 
 ### 0.6.8
 

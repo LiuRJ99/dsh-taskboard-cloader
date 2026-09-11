@@ -7,6 +7,7 @@
  */
 import type {
   ApiResult,
+  AttachmentUpload,
   ChangeEvent,
   CreateTaskBody,
   DeleteTaskBody,
@@ -60,6 +61,17 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return unwrap<T>(res)
 }
 
+/** Upload raw image bytes; a custom header keeps the route outside simple CSRF requests. */
+async function uploadImage(file: Blob): Promise<AttachmentUpload> {
+  const res = await fetch('/dsh-taskboard/assets', {
+    method: 'POST',
+    headers: { 'content-type': file.type, 'x-dsh-taskboard-upload': '1' },
+    body: file,
+    signal: AbortSignal.timeout(30_000),
+  })
+  return unwrap<AttachmentUpload>(res)
+}
+
 /** Route client face (the controller consumes this narrow surface). */
 export interface TaskboardClient {
   state(): Promise<StateResponse>
@@ -72,6 +84,8 @@ export interface TaskboardClient {
   /** Quick-reject (card ✗): back to todo + optional comment, one mutation. */
   reject(id: string, body: RejectTaskBody): Promise<TaskSummary>
   comment(id: string, bodyText: string): Promise<CommentRecord>
+  /** Persist an image and return the short Markdown-safe URL. */
+  uploadImage(file: Blob): Promise<AttachmentUpload>
   remove(id: string, body: DeleteTaskBody): Promise<{ trashed?: boolean; purged?: boolean }>
   /** Trigger a manual run (fresh in-project session); `reuse: true` = 续跑. */
   run(id: string, body?: RunTaskBody): Promise<{ executionId: string; sessionId: string }>
@@ -121,6 +135,7 @@ export function createClient(): TaskboardClient {
     archiveSessions: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/archive-sessions`, {}),
     reject: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/reject`, body),
     comment: (id, bodyText) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/comment`, { body: bodyText }),
+    uploadImage,
     remove: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/delete`, body),
     run: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/run`, body ?? {}),
     cancel: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/cancel`, {}),
