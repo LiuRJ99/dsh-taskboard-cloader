@@ -237,10 +237,15 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 
 ### 0.7.0
 
+**新特性：**
+
 - **可设置数据存储路径**：看板设置中可检查并迁移数据目录，`dsh-taskboard.json`、`dsh-taskboard-templates.json` 和 `dsh-taskboard-assets/` 始终一起迁移；先完整复制和校验，再切换位置，失败不覆盖原数据。
 - **任务描述与评论支持插入图片（[#25](https://github.com/cloader/dsh-taskboard/issues/25)）**：支持选择、粘贴和拖放 PNG/JPEG/GIF/WebP，自动插入 Markdown，并在详情中显示缩略图与灯箱预览。图片按内容哈希在本地去重保存，台账和 SSE 只记录短链接。
-- **修复模型前缀缓存失效（[#24](https://github.com/cloader/dsh-taskboard/issues/24)）并提高缓存命中率**：协议与 10 个 `taskboard_*` 工具在插件挂载时同步注册，后续工作区/agent 服务就绪或重载不会改变工具定义；依赖尚未就绪时返回 `taskboard_not_ready`。
-- 工具执行等待共享的台账首次加载；工具清理与运行服务生命周期分离。DSH 开发依赖升级到 0.1.5-rc.2 系列。
+- DSH 开发依赖升级到 0.1.5-rc.2 系列（`@deepseek-ai/cordis` 4.0.2、`@deepseek-ai/schemastery` 3.18.2），实测兼容 DSH 0.1.5-rc.1。
+
+**修复：**
+
+- **模型前缀缓存失效（[#24](https://github.com/cloader/dsh-taskboard/issues/24)）**：协议与 10 个 `taskboard_*` 工具在插件挂载时同步注册并提高缓存命中率，后续工作区/agent 服务就绪或重载不会改变工具定义；依赖尚未就绪时返回 `taskboard_not_ready`。工具执行等待共享的台账首次加载；工具清理与运行服务生命周期分离。
 
 ### 0.6.7
 

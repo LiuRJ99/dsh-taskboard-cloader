@@ -237,10 +237,15 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 
 ### 0.7.0
 
+**New features:**
+
 - **Configurable data directory**: Board Settings can validate and migrate the storage directory. `dsh-taskboard.json`, `dsh-taskboard-templates.json`, and `dsh-taskboard-assets/` always move together; migration copies and verifies everything before switching, and failures leave the original data active.
 - **Insert images in task descriptions and comments ([#25](https://github.com/cloader/dsh-taskboard/issues/25))**: choose, paste, or drag and drop PNG/JPEG/GIF/WebP; Markdown is inserted automatically and task details render thumbnails with lightbox previews. Images are deduplicated locally by content hash, while the ledger and SSE store short URLs only.
-- **Fix model prefix-cache invalidation ([#24](https://github.com/cloader/dsh-taskboard/issues/24)) and improve cache hit rates**: the protocol and all ten `taskboard_*` tools register synchronously during plugin mount, and later workspace/agent startup or reload no longer changes the tool definitions. Calls return `taskboard_not_ready` while dependencies are unavailable.
-- Tool execution waits for the shared initial ledger load and tool cleanup is separated from runtime-service lifecycles. DSH development dependencies move to the 0.1.5-rc.2 line.
+- DSH development dependencies move to the 0.1.5-rc.2 line (`@deepseek-ai/cordis` 4.0.2, `@deepseek-ai/schemastery` 3.18.2), verified against DSH 0.1.5-rc.1.
+
+**Fixes:**
+
+- **Model prefix-cache invalidation ([#24](https://github.com/cloader/dsh-taskboard/issues/24))** — fixed, improving cache hit rates: the protocol and all ten `taskboard_*` tools register synchronously during plugin mount, and later workspace/agent startup or reload no longer changes the tool definitions. Calls return `taskboard_not_ready` while dependencies are unavailable. Tool execution waits for the shared initial ledger load and tool cleanup is separated from runtime-service lifecycles.
 
 ### 0.6.7
 
