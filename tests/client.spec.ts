@@ -422,6 +422,20 @@ describe('client half', () => {
     leftover.remove()
   })
 
+  it("toolbar yields the viewport top-right corner to better-sidebar's toggle cluster (#19)", async () => {
+    const { injectStyles } = await import('../src/client/styles.ts')
+    document.getElementById('dsh-taskboard-styles')?.remove()
+    injectStyles()
+    const css = document.getElementById('dsh-taskboard-styles')!.textContent ?? ''
+    // The yield rule mirrors better-sidebar's own contract for DSH's session
+    // header (padding-right 78px from the viewport edge; ours sits inside the
+    // board's 16px padding → 78 − 16 = 62px). It must stay gated on BOTH the
+    // board being active (html attr) and better-sidebar's right panel being
+    // collapsed (body attr), so it never matches on setups without the plugin.
+    expect(css).toContain('html[data-dsh-atb-active] body[data-dsh-sidebar-collapsed] .dsh-atb-toolbar')
+    expect(css).toContain('.dsh-atb-toolbar { padding-right: 62px; }')
+  })
+
   it('sidebar entry places itself once a sidebar pane exists', async () => {
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)

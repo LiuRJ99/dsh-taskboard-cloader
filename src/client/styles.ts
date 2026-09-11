@@ -135,6 +135,15 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 .dsh-atb-sidebar-tab .dsh-atb-imp,
 .dsh-atb-sidebar-tab .dsh-atb-set { width: min(520px, calc(100% - 24px)); }
 .dsh-atb-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 0.6.5 / #19: dsh-better-sidebar 钉在视口右上角的常驻按钮簇（2×28px + 4px
+ * gap，right:10px → 占视口右边 10~70px）。它对 DSH 原生会话头的避让契约是
+ * body[data-dsh-sidebar-collapsed] 下给 header padding-right:78px（其
+ * layout.css）；看板隐藏该会话头并占据同一条顶带，工具条右端便沉到簇下面。
+ * 镜像避让：面板收起（body 属性存在）且看板激活时，工具条右侧预留
+ * 70px 足迹 + 8px 间隙 − 16px（.dsh-atb-board 自身 padding）= 62px；
+ * padding 作用于容器所有换行行，配合 flex-wrap，任何宽度都不进簇区。
+ * 未装 better-sidebar 或面板展开时属性不存在，规则零生效。 */
+html[data-dsh-atb-active] body[data-dsh-sidebar-collapsed] .dsh-atb-toolbar { padding-right: 62px; }
 .dsh-atb-title { font-size: 15px; font-weight: 600; margin: 0; }
 .dsh-atb-count { font-size: 12px; color: var(--dsw-text-secondary, gray); }
 .dsh-atb-ver {
@@ -848,7 +857,7 @@ button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
 .dsh-atb-capability span { font-size: 12px; font-weight: 600; }
 .dsh-atb-capability small { font-size: 10px; color: var(--dsw-alias-label-tertiary, gray); }
 .dsh-atb-capabilities > .dsh-atb-field-note { flex-basis: 100%; }
-.dsh-atb-modal-body input, .dsh-atb-modal-body textarea, .dsh-atb-modal-body select {
+.dsh-atb-modal-body input:not([type="checkbox"]), .dsh-atb-modal-body textarea, .dsh-atb-modal-body select {
   font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px;
   width: 100%; box-sizing: border-box;
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35));
@@ -856,7 +865,7 @@ button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
   transition: border-color .12s ease, box-shadow .12s ease;
 }
 .dsh-atb-modal-body textarea { min-height: 64px; resize: vertical; }
-.dsh-atb-modal-body input:focus, .dsh-atb-modal-body textarea:focus, .dsh-atb-modal-body select:focus {
+.dsh-atb-modal-body input:not([type="checkbox"]):focus, .dsh-atb-modal-body textarea:focus, .dsh-atb-modal-body select:focus {
   outline: none; border-color: var(--dsw-alias-brand-primary, #1f2328);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #1f2328) 18%, transparent);
 }
