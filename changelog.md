@@ -1,5 +1,21 @@
 # 更新日志 / Changelog
 
+### 0.7.0
+
+- **新增：任务内容图片附件**：任务表单、详情与 Host 资产存储支持图片插入和持久化。
+- **新增：可配置数据目录**：账本、模板与资产可整体迁移；迁移采用串行队列、完整暂存复制、校验后原子切换，失败时保留原目录。
+- **修复：工具注册时序**：在会话启动前完成 taskboard 工具注册，避免早期会话缺少工具。
+- **修复：迁移结果提示**：成功信息使用独立提示，清理警告不再复用全局错误栏。
+- **兼容：Better Sidebar 0.19**：peer 范围扩展至 `^0.18.0 || ^0.19.0`，并声明兼容 DSH `0.1.5-rc.1`。
+
+**English:**
+
+- **Add image attachments to task content**, including client insertion and persistent Host asset storage.
+- **Add a configurable data directory** with serialized, staged, verified and atomically switched migration for ledgers, templates and assets.
+- **Register taskboard tools before sessions start** so early sessions cannot miss the tool surface.
+- **Show migration success separately from errors**, retaining cleanup warnings as warnings.
+- **Declare Better Sidebar 0.19 and DSH 0.1.5-rc.1 compatibility.**
+
 ### 0.6.9
 
 - **修复：会话头部「看板」按钮第二次点击打开的是下侧栏，而不是收起右侧栏**：`openTaskFromHeader` 的「右栏是否已显示看板」判定沿用了 dsh-better-sidebar 0.18.x 的 DOM 特征——`[data-dsh-panel]`（0.18 里是自绘的右侧栏）加 `panelHidden` 折叠类，收起按钮则用 `[data-dsh-panel-host] button[aria-label*="折叠"]` 兜底。0.19.0 把右列交给 DSH 原生右侧栏后：`data-dsh-panel` 只剩插件自有的**下侧栏**（底部工作台，另有 `data-dsh-bottom-panel`），它自己的关闭按钮恰好叫「折叠底部面板」；而 0.19 构建出的折叠类名是 `..._bottomPanelHidden`（`Panel` 大写 P），`includes('panelHidden')` 恒为 false，于是「右栏已展开」判定恒真。两者叠加的后果就是第二次点击点中下侧栏开关：开 → 关，而右栏始终不收。修复：优先读 DSH 原生右侧栏控制器 `ctx.sidebarRight`——`isExpanded()` 为真且 `active()` 的 Tab 是看板时调 `toggleExpanded()` 收起右栏，其余情况一律揭示看板 Tab；旧版 companion（< 0.19，自绘右栏）保留 DOM 回退，但只认**不带 `data-dsh-bottom-panel`** 的 `[data-dsh-panel]` 与 `[data-dsh-toggle-cluster]` 的最后一个按钮，结构上不可能再碰到下侧栏；新增 `tests/right-sidebar.spec.ts` 与头部点击回归用例（含 0.19 下侧栏误触、旧版折叠控件选择、开→收→开三态）
