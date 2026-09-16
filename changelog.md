@@ -1,5 +1,25 @@
 # 更新日志 / Changelog
 
+### 0.7.2
+
+**新特性：**
+
+- 定时执行会话复用（[#26](https://github.com/cloader/dsh-taskboard/issues/26)）：cron 定时首次执行才创建会话，后续触发沿用该任务上一次定时执行的会话与上下文，重启 DSH 后从持久化历史恢复；手动执行仍新建会话。项目、模型（含 reasoning effort）、preset、权限或隔离配置变化时自动新建兼容会话；旧会话忙碌、锁定、损坏或恢复失败时回退新建会话，本次执行照常进行。每次执行仍独立记录结果与报告，并发送当前任务内容与交接协议。
+
+**修复：**
+
+- 失败结算按执行 ID 精确定位，避免复用会话下误伤同一会话的其他执行；系统交接评论判定增加时间过滤，复用会话不再把本执行之前的历史评论误认为本次交接；取消请求可以胜过尚未提交的空闲结算，不再出现"已成功却报取消"的相反竞态。
+
+**English:**
+
+**New features:**
+
+- Scheduled session reuse ([#26](https://github.com/cloader/dsh-taskboard/issues/26)): the first cron run creates a conversation; subsequent triggers resume that task's previous scheduled session and context, restoring persisted history after a DSH restart. Manual runs still open fresh sessions. Changed project, model (including reasoning effort), preset, permission or isolation configuration starts a compatible new conversation; busy, locked, corrupt or unrestorable sessions fall back to a new one so the scheduled run still proceeds. Each run keeps a separate result/report and receives the current task content and hand-off protocol.
+
+**Fixes:**
+
+- Failure settlement now locates the exact execution by ID, so reused sessions can no longer misattribute failures across runs sharing a session; hand-off comment detection filters by time, so historical comments no longer count as the current hand-off; a cancel request wins over an uncommitted idle settlement, inverting the previous cancel-vs-success race.
+
 ### 0.7.1
 
 **修复：**

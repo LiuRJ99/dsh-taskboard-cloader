@@ -317,7 +317,7 @@ describe('ExecutionService', () => {
 
   it('notes a lighter system comment when the session commented but did not move', async () => {
     const commented = task({
-      comments: [{ id: 'c-1', body: 'done, tests pass', version: 1, createdAt: 1, threadId: 'session-worker' }],
+      comments: [{ id: 'c-1', body: 'done, tests pass', version: 1, createdAt: 1_000, threadId: 'session-worker' }],
     })
     const store = await storeWith(commented)
     const agents = fakeAgents()
@@ -432,12 +432,11 @@ describe('ExecutionService', () => {
     expect(store.get('t-run')!.executions[0]!.outcome).toBe('cancelled')
   })
 
-  it('cancel after the execution settled reports failure instead of fake success', async () => {
+  it('cancel wins when requested before the queued idle watcher starts settlement', async () => {
     const store = await storeWith(task())
     const disposed: string[] = []
-    // Gate the agent dispose so a cancel in flight parks there while the
-    // run's success settlement commits first (the stale-read race that used
-    // to report 取消成功 for an already-succeeded run).
+    // Disposing a reused agent can itself resolve whenIdle. A pending idle
+    // callback must not turn a requested cancellation into success.
     let releaseDispose: (() => void) | undefined
     const disposeGate = new Promise<void>(resolve => { releaseDispose = resolve })
     let idle: (() => void) | undefined
@@ -458,21 +457,15 @@ describe('ExecutionService', () => {
     const result = await svc.run('t-run', 'manual')
     if (!result.ok) throw new Error('run failed')
 
-    // Settle the run (quiescence) and start the cancel BEFORE that settlement
-    // commits: cancel's synchronous read still sees 'running', then parks on
-    // the gated dispose while the success settlement wins the store queue.
+    // Resolve idle, then cancel synchronously before its microtask runs.
     idle!()
     const cancelling = svc.cancel('t-run')
-    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
     releaseDispose!()
     const cancelled = await cancelling
-    expect(cancelled.ok).toBe(false)
-    if (!cancelled.ok) expect(cancelled.error).toContain('already settled')
-    // The committed settlement survived intact — no fabricated cancel state.
+    expect(cancelled.ok).toBe(true)
     const t = store.get('t-run')!
-    expect(t.executions[0]!.outcome).toBe('succeeded')
-    expect(t.status).toBe('in_review')
-    // The cancel really reached the dispose step (it was just too late).
+    expect(t.executions[0]!.outcome).toBe('cancelled')
+    expect(t.status).toBe('todo')
     expect(disposed).toEqual([result.sessionId])
   })
 

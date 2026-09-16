@@ -21,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-agent'
 import { PROTOCOL_SECTION_NAME, PROTOCOL_SECTION_ORDER, TASKBOARD_PROTOCOL } from './host/protocol-text.ts'
 import { DEFAULT_MAX_CONCURRENT, ExecutionService, type EventsFace } from './host/execution.ts'
+import { scheduledSessionResumer, type ScheduledSessionDeps } from './host/scheduled-session.ts'
 import { createGitFace } from './host/git.ts'
 import { createRepoScanner } from './host/repos.ts'
 import { registerTaskboardRoutes } from './host/routes.ts'
@@ -183,6 +184,14 @@ export function apply(ctx: Context): void {
         store,
         agents: {
           create: (options): Promise<never> => agentCtx.agents.create(options as never) as Promise<never>,
+          resumeScheduled: scheduledSessionResumer({
+            agents: {
+              get: id => agentCtx.agents.get(id as never) as unknown as ReturnType<ScheduledSessionDeps['agents']['get']>,
+              resume: options => agentCtx.agents.resume(options as never) as Promise<never>,
+            },
+            persistence: () => agentCtx.get('sessionPersistence') as ReturnType<ScheduledSessionDeps['persistence']>,
+            isArchived: id => wsCtx.workspaceRegistry.archivedSessionIds.includes(id as never),
+          }),
         },
         workspaces: {
           get: id => workspaceFace(wsCtx.workspaceRegistry).get(id),
