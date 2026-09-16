@@ -582,6 +582,8 @@ export type ExecutionRecord = {
   id: string
   /** The session this execution ran in; set once the session is really started. */
   sessionId?: string
+  /** Effective configuration of a scheduled session; used only for compatible reuse. */
+  sessionReuseKey?: string
   /** Trigger: manual button or the host scheduler. */
   trigger: 'manual' | 'scheduled'
   startedAt?: number
