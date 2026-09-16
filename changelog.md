@@ -1,5 +1,13 @@
 # 更新日志 / Changelog
 
+### 0.7.1
+
+- **修复：agent 新建待办后看板需要手动刷新**：首次 SSE 握手现在会核对 Host revision；如果 agent 在页面初始快照与事件流连接之间创建了待办，客户端会自动追取最新快照。
+
+**English:**
+
+- **Fix agent-created tasks remaining invisible until a page refresh** by reconciling the Host revision on the first SSE handshake and chasing a newer snapshot when task creation lands between the initial fetch and stream connection.
+
 ### 0.7.0
 
 - **新增：任务内容图片附件**：任务表单、详情与 Host 资产存储支持图片插入和持久化。

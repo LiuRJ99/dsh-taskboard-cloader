@@ -176,7 +176,10 @@ export class BoardController {
         // single render a frame produces (review P2: frames rendered twice).
         void this.refresh()
       },
-      () => { void this.refresh() },
+      (revision) => {
+        this.seenRevision = revision
+        if (this.state.ledger.revision !== revision) void this.refresh()
+      },
     )
   }
 

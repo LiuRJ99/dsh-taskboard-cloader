@@ -129,8 +129,8 @@ export interface TaskboardClient {
   promptCompletions(workspaceId?: string): Promise<PromptCompletionsResponse>
   /** Model catalog and agent preset roster (0.5.5). */
   modelCatalog(): Promise<ModelCatalogResponse>
-  /** Subscribe to change frames; the disposer stops the stream. */
-  stream(onChange: (event: ChangeEvent) => void, onGap: () => void): () => void
+  /** Subscribe to change frames; reconciliation also receives the host revision from the SSE handshake. */
+  stream(onChange: (event: ChangeEvent) => void, onReconcile: (revision: number) => void): () => void
 }
 
 /** Build the client over fetch + EventSource. */
@@ -181,20 +181,22 @@ export function createClient(): TaskboardClient {
         : `/dsh-taskboard/prompt-completions?${new URLSearchParams({ workspaceId }).toString()}`,
     ),
     modelCatalog: () => get<ModelCatalogResponse>('/dsh-taskboard/model-catalog'),
-    stream(onChange, onGap) {
+    stream(onChange, onReconcile) {
       const es = new EventSource('/dsh-taskboard/events')
       let revision: number | undefined
       const hello = (event: MessageEvent): void => {
         let payload: { revision: number }
         try { payload = JSON.parse(event.data) as { revision: number } } catch { return } // malformed frame → ignore
-        if (revision !== undefined && payload.revision !== revision) onGap()
+        // Reconcile the first handshake too: a task may have been created
+        // after the initial state fetch but before this stream connected.
+        if (revision === undefined || payload.revision !== revision) onReconcile(payload.revision)
         revision = payload.revision
       }
       const change = (event: MessageEvent): void => {
         let payload: ChangeEvent
         try { payload = JSON.parse(event.data) as ChangeEvent } catch { return } // malformed frame → ignore
         // A gap means we missed frames while disconnected: reconcile fully.
-        if (revision !== undefined && payload.revision !== revision + 1) onGap()
+        if (revision !== undefined && payload.revision !== revision + 1) onReconcile(payload.revision)
         revision = payload.revision
         onChange(payload)
       }

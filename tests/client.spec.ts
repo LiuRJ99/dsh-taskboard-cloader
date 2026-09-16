@@ -2625,26 +2625,30 @@ describe('client half', () => {
     const stop = createClient().stream(onChange, onGap)
     const es = EventSourceMock.instances.at(-1)!
 
-    // First hello establishes the baseline revision — never a gap.
+    // First hello establishes the baseline and asks the controller to
+    // reconcile against it, closing the state-fetch/SSE-connect race.
     es.dispatch('hello', { revision: 5 })
-    expect(onGap).not.toHaveBeenCalled()
+    expect(onGap).toHaveBeenCalledTimes(1)
+    expect(onGap).toHaveBeenLastCalledWith(5)
     // In-order change (5 → 6): the normal path — onChange only, no onGap.
     es.dispatch('change', { revision: 6, kind: 'task-updated', tasks: [] })
     expect(onChange).toHaveBeenCalledTimes(1)
-    expect(onGap).not.toHaveBeenCalled()
+    expect(onGap).toHaveBeenCalledTimes(1)
     // Duplicate frame (6 again): revision did not advance by 1 → gap.
     es.dispatch('change', { revision: 6, kind: 'task-updated', tasks: [] })
-    expect(onGap).toHaveBeenCalledTimes(1)
+    expect(onGap).toHaveBeenCalledTimes(2)
+    expect(onGap).toHaveBeenLastCalledWith(6)
     // Regressed frame (6 → 4): gap again.
     es.dispatch('change', { revision: 4, kind: 'task-updated', tasks: [] })
-    expect(onGap).toHaveBeenCalledTimes(2)
+    expect(onGap).toHaveBeenCalledTimes(3)
     expect(onChange).toHaveBeenCalledTimes(3)
     // Reconnect hello at the SAME revision: nothing missed → stays quiet.
     es.dispatch('hello', { revision: 4 })
-    expect(onGap).toHaveBeenCalledTimes(2)
+    expect(onGap).toHaveBeenCalledTimes(3)
     // Reconnect hello after missed frames (4 → 9): gap → full refetch.
     es.dispatch('hello', { revision: 9 })
-    expect(onGap).toHaveBeenCalledTimes(3)
+    expect(onGap).toHaveBeenCalledTimes(4)
+    expect(onGap).toHaveBeenLastCalledWith(9)
     // Disposing the subscription closes the stream.
     stop()
     expect(es.closed).toBe(true)
@@ -2697,6 +2701,64 @@ describe('client half', () => {
 
     controller.dispose()
     expect(es.closed).toBe(true)
+  })
+
+  it('SSE 首次握手会追赶初始快照与连接之间的 agent 新增待办', async () => {
+    localStorage.clear()
+    let stateFetches = 0
+    let resolveInitial!: (response: Response) => void
+    const initial = new Promise<Response>(resolve => { resolveInitial = resolve })
+    const createdTask = {
+      id: 'task-agent-race',
+      title: 'Agent 新增待办',
+      description: '',
+      prompt: '',
+      workspaceId: 'ws-a',
+      urgency: 'normal',
+      status: 'todo',
+      blocked: false,
+      execution: { mode: 'claim' },
+      requiredCapabilities: ['taskboard'],
+      isolation: 'none',
+      version: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: { kind: 'agent', sessionId: 'session-agent' },
+      updatedBy: { kind: 'agent', sessionId: 'session-agent' },
+      comments: [],
+      executions: [],
+    }
+    const dynFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/dsh-taskboard/state') {
+        stateFetches += 1
+        if (stateFetches === 1) return initial
+        return new Response(JSON.stringify({ ok: true, value: { schemaVersion: 1, revision: 4, tasks: [createdTask] } }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (path === '/dsh-taskboard/workspaces') {
+        return new Response(JSON.stringify({ ok: true, value: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      throw new Error(`unexpected fetch ${path}`)
+    })
+    vi.stubGlobal('fetch', dynFetch)
+    vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
+    const { createClient } = await import('../src/client/api.ts')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const controller = new BoardController(createClient())
+    controller.start()
+    const es = EventSourceMock.instances.at(-1)!
+    await waitFor(() => stateFetches === 1)
+
+    // The host is already at rev 4 when SSE connects, while the outstanding
+    // initial fetch still carries rev 3. The handshake must make refresh()
+    // chase rev 4 instead of leaving the board stale until a page reload.
+    es.dispatch('hello', { revision: 4 })
+    resolveInitial(new Response(JSON.stringify({ ok: true, value: { schemaVersion: 1, revision: 3, tasks: [] } }), { status: 200, headers: { 'content-type': 'application/json' } }))
+
+    await waitFor(() => controller.getSnapshot().ledger.revision === 4)
+    expect(stateFetches).toBe(2)
+    expect(controller.getSnapshot().ledger.tasks.map(task => task.id)).toEqual(['task-agent-race'])
+    controller.dispose()
   })
 
   it('编辑模式不预选部署默认 preset：任务自身的 preset 选择不被改写', async () => {
