@@ -235,6 +235,16 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 
 ## Changelog
 
+### 0.7.2
+
+**New features:**
+
+- **Scheduled session reuse ([#26](https://github.com/cloader/dsh-taskboard/issues/26))**: the first cron run creates a conversation; subsequent triggers resume that task's previous scheduled session and context, restoring persisted history after a DSH restart instead of spawning new sessions daily. Manual runs still open fresh sessions. Changed project, model, preset, permission or isolation configuration starts a compatible new conversation; busy, locked, corrupt or unrestorable sessions fall back to a new one so the scheduled run still proceeds. Each run keeps separate records and reports.
+
+**Fixes:**
+
+- **Settlement and hand-off fixes for reused sessions**: failure settlement targets the exact execution by ID; hand-off comment detection filters by time so historical comments no longer count as the current hand-off; a cancel request wins over an uncommitted idle settlement.
+
 ### 0.7.1
 
 **Fixes:**
