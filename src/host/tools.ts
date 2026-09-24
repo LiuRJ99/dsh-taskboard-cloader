@@ -34,6 +34,7 @@ import {
   canTransition,
   checklistFromTexts,
   defaultIsolationOf,
+  defaultPermissionOf,
   effectivePrompt,
   isClaim,
   isClaimedBy,
@@ -425,7 +426,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       },
       permission: {
         type: 'string',
-        description: 'Harness file-permission preset: workspace-write (default) | read-only | danger-full-access.',
+        description: 'Harness file-permission preset: workspace-write | read-only | danger-full-access. Omitted uses the board default.',
       },
       // Legacy fork alias; canonicalized onto `permission`.
       permissionMode: {
@@ -484,9 +485,9 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         const execution = normalizeExecution(args.execution ?? {}, deps.now())
         const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
         const speed = args.speed === undefined ? undefined : asTaskSpeed(args.speed)
-        const permission = args.permission === undefined
-          ? (args.permissionMode === undefined ? undefined : asPermission(args.permissionMode))
-          : asPermission(args.permission)
+        const permission = args.permission !== undefined ? asPermission(args.permission)
+          : args.permissionMode !== undefined ? asPermission(args.permissionMode)
+          : defaultPermissionOf(store.snapshot().settings)
         // 0.5.0: an omitted isolation is MATERIALIZED from the board setting
         // (看板设置) at creation, so later setting changes never rewrite
         // existing tasks.
@@ -510,7 +511,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           model,
           requiredCapabilities: [TASKBOARD_CAPABILITY],
           ...(speed !== undefined ? { speed } : {}),
-          ...(permission !== undefined ? { permission } : {}),
+          permission,
           isolation,
           ...(presetId !== undefined ? { presetId } : {}),
           ...(checklist !== undefined ? { checklist } : {}),
@@ -535,7 +536,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
   disposers.push(register(defineTool({
     name: 'taskboard_update',
     description:
-      'Update a task\'s title/description/prompt/urgency/blocked. Requires ifVersion (read first). '
+      'Update a task\'s title/description/prompt/urgency/blocked/permission. Requires ifVersion (read first). '
       + 'The model and execution config are read-only through this tool (they belong to the task owner/user).',
     parameters: {
       id: { type: 'string', required: true, description: 'Task id.' },
@@ -545,6 +546,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       prompt: { type: 'string', description: 'New execution prompt.' },
       urgency: { type: 'string', description: 'urgent | normal | relaxed.' },
       blocked: { type: 'boolean', description: 'Blocked marker (work cannot continue right now).' },
+      permission: { type: 'string', description: 'Execution permission: read-only | workspace-write | danger-full-access.' },
     },
     output: {
       schema: JSON_OUT,
@@ -562,6 +564,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       prompt?: string
       urgency?: string
       blocked?: boolean
+      permission?: string
     }, exec: unknown) {
       try {
         const { actor } = caller(exec as ToolRunContext)
@@ -579,6 +582,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           if (args.prompt !== undefined) next.prompt = normalizePrompt(args.prompt)
           if (args.urgency !== undefined) next.urgency = asUrgency(args.urgency)
           if (args.blocked !== undefined) next.blocked = args.blocked
+          if (args.permission !== undefined) next.permission = asPermission(args.permission)
           next.version = task.version + 1
           next.updatedAt = deps.now()
           next.updatedBy = actor

@@ -127,6 +127,17 @@ const workspaces = {
 }
 
 describe('ExecutionService', () => {
+  it('refuses a scheduled start after the task entered a terminal state', async () => {
+    const stopped = task({ status: 'done', execution: { mode: 'scheduled', cron: '* * * * *', nextRunAt: 999 } })
+    const store = await storeWith(stopped)
+    const svc = new ExecutionService({ store, agents: fakeAgents(), workspaces, events: fakeEvents(), now: () => 1_000 })
+
+    const result = await svc.run(stopped.id, 'scheduled')
+    expect(result).toEqual({ ok: false, error: 'scheduled task is not actionable (done)' })
+    expect(store.get(stopped.id)!.status).toBe('done')
+    expect(store.get(stopped.id)!.executions).toHaveLength(0)
+  })
+
   it('authorizes configured capabilities before the opening model turn', async () => {
     const store = await storeWith(task({ requiredCapabilities: ['taskboard', 'computer-use'] }))
     const agents = fakeAgents()
