@@ -1,5 +1,15 @@
 # 更新日志 / Changelog
 
+### 0.8.7
+
+- **看板默认模型、推理强度与 Agent preset（[PR #43](https://github.com/cloader/dsh-taskboard/pull/43)）**：设置页新增三个选择器。GUI 和 `taskboard_create` 为新任务应用看板默认值；任务或模板的显式选择优先，GUI 可明确选择跟随部署默认。默认值在创建时物化，修改设置不会改写已有任务；未配置默认模型时保留 GUI 记住上次模型的行为。配置支持重启持久化和 JSON 导入导出，切换默认模型时重置推理强度。感谢 [@Fnckerpoi](https://github.com/Fnckerpoi) 的贡献。
+- **修复任务表单的推理强度显示**：模型目录不可用或不包含已保存的强度时，补充保留选项，使显示值与提交值一致；新增两例回归测试。
+
+**English:**
+
+- **Board defaults for model, reasoning effort, and Agent preset ([PR #43](https://github.com/cloader/dsh-taskboard/pull/43))**: Settings adds three selectors. The GUI and `taskboard_create` apply board defaults to new tasks; explicit task or template choices take priority, and the GUI can explicitly follow deployment defaults. Defaults are materialized at creation, leaving existing tasks unchanged when settings change. The GUI retains its remembered last model when no board model default is configured. Settings persist across restarts and JSON import/export; switching the default model resets reasoning effort. Thanks to [@Fnckerpoi](https://github.com/Fnckerpoi) for the contribution.
+- **Fixed reasoning effort display in the task form**: preserve a saved effort as an option when the model catalog is unavailable or does not include it, keeping the displayed and submitted values consistent. Adds two regression tests.
+
 ### 0.8.6
 
 - **完善定期会话关于复用会话的逻辑**：新建或编辑“定期执行（cron）”任务时可选择“每次新建会话”或“首次新建会话，后续复用”，也可继续明确选择项目中的既有会话。无论任务完成后是复位当前卡还是新建下一轮卡，这个选择都保持不变；“首次新建、后续复用”会把首轮会话安全传给下一张周期卡。一次性定时任务维持原有的一次执行语义。既有定期任务保持此前的自动续用行为，避免升级后静默改变行为。

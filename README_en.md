@@ -239,6 +239,11 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 
 ## Changelog
 
+### 0.8.7
+
+- **Board defaults for model and Agent preset ([PR #43](https://github.com/cloader/dsh-taskboard/pull/43))**: choose the default model, reasoning effort, and Agent preset for new tasks in Settings. Explicit task or template choices take priority; defaults are written to tasks at creation, so later settings changes leave existing tasks unchanged. Settings survive restarts and JSON import/export. Thanks to [@Fnckerpoi](https://github.com/Fnckerpoi) for the contribution.
+- **Reasoning effort display fix**: when the model catalog is unavailable or lacks a saved effort, the task form still displays that value instead of showing “follow default” while submitting a different effort.
+
 ### 0.8.6
 
 - **Improved periodic session reuse logic**: cron tasks can create a new session every run, or create one on the first run and continue it on later periods. This choice no longer depends on whether periodic completion rearms the current card or creates a successor. One-shot tasks retain their original single-run semantics; existing periodic tasks retain their prior automatic-reuse behavior.
