@@ -61,9 +61,9 @@
     "agent"
   ],
   "scripts": {
-    "build": "node scripts/clean-lib.mjs && npm run build:host && npm run build:client",
+    "build": "tsdown -c tsdown.config.ts",
     "build:host": "tsdown -c tsdown.host.config.ts",
-    "build:client": "tsdown -c tsdown.client.config.ts && node scripts/wrap-client.mjs",
+    "build:client": "tsdown -c tsdown.client.config.ts",
     "watch": "tsdown -c tsdown.host.config.ts --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

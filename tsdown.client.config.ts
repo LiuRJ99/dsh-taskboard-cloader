@@ -1,9 +1,12 @@
 import { defineConfig } from 'tsdown'
+import { readFileSync } from 'node:fs'
+
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 
 /**
- * Client-half build, step 1/2: CJS bundle with every host-provided module
- * (react, @deepseek-ai/*) left as `require(...)` calls. scripts/wrap-client.mjs
- * then wraps this into the web shell's lazy-CJS registration format:
+ * Client-half build: emit the web shell's lazy-CJS registration directly.
+ * Host-provided modules (react, @deepseek-ai/*) resolve through the factory's
+ * injected require, and module side effects wait until materialization:
  *
  *   window.__ModuleLoader__.load({ id, factory: (require) => { ...body...; return module.exports } })
  */
@@ -16,5 +19,10 @@ export default defineConfig({
   external: [/^@deepseek-ai\//, /^react(-dom)?(\/.*)?$/, /^schemastery$/],
   target: 'chrome120',
   minify: true,
-  outExtensions: () => ({ js: '.cjs' }),
+  outputOptions: {
+    entryFileNames: 'client.js',
+    banner: `window.__ModuleLoader__.load({ id: ${JSON.stringify(pkg.name)}, factory: (require) => {`,
+    intro: 'var module = { exports: {} }; var exports = module.exports; Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });',
+    footer: 'return module.exports; } });',
+  },
 })

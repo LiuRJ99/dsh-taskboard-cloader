@@ -234,8 +234,9 @@ cd dsh-taskboard
 npm install && npm run build    # dual build: host ESM + client CJS
 npm test                        # full vitest suite (including real-git mirror integration tests)
 node tests/manual-git-e2e.mjs   # real-git end-to-end manual test (full worktree chain + resume + diff viewer)
-node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
+
+`npm run build` cleans stale files from `lib/` before generating the host ESM modules and the client registration module, `lib/client.js`. `npm run build:host` and `npm run build:client` rebuild only their respective half and preserve the other half's output; run the full build before publishing.
 
 ## Changelog
 

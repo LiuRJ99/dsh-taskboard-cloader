@@ -236,8 +236,9 @@ cd dsh-taskboard
 npm install && npm run build    # host ESM + client CJS 双构建
 npm test                        # vitest 全量（含真实 git 镜像集成测试）
 node tests/manual-git-e2e.mjs   # 真 git 端到端手测（worktree 全链路 + 续跑 + diff 查看器）
-node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 ```
+
+`npm run build` 在构建前清理 `lib/` 的旧产物，再生成 host ESM 和客户端注册模块 `lib/client.js`。`npm run build:host`、`npm run build:client` 只重建对应部分并保留另一部分产物；发布前请运行完整构建。
 
 ## 升级日志
 
