@@ -209,13 +209,14 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
 
   // Model & reasoning effort selection:
-  // In create mode (when not pinned by template), prefill from remembered last choice.
-  const initialModel = task?.model ?? prefill?.model ?? (!editing ? loadLastModel() : undefined)
+  // Explicit templates override board defaults, which override the remembered last choice.
+  // Editing never inherits new-task defaults.
+  const initialModel = editing ? task.model : prefill?.model ?? state.ledger.settings?.defaultModel ?? loadLastModel()
   const [model, setModel] = useState(initialModel !== undefined ? JSON.stringify({ provider: initialModel.provider, model: initialModel.model }) : '')
   const [reasoningEffort, setReasoningEffort] = useState(initialModel?.reasoningEffort ?? '')
-  // Preset roster (0.3.3): create mode PRE-SELECTS the deployment default
-  // (标准模式 in this deployment); '' = 跟随部署默认 (submit omits the field).
-  const initialPreset = task?.presetId ?? prefill?.presetId ?? ''
+  // Create mode starts from the template/board preset, then the deployment default.
+  // '' explicitly follows deployment defaults (submit null to bypass board defaults).
+  const initialPreset = editing ? task.presetId ?? '' : prefill?.presetId ?? state.ledger.settings?.defaultPresetId ?? ''
   const [presetId, setPresetId] = useState(initialPreset)
   const [presets, setPresets] = useState<Array<{ id: string; name?: string }>>([])
   const [presetDefault, setPresetDefault] = useState<string | undefined>(undefined)
@@ -329,7 +330,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     return isolation
   }
 
-  /** Preset payload: '' = follow the deployment default (submit omits). */
+  /** Preset payload: '' explicitly follows the deployment default (submit null). */
   const presetPayload = (): string | undefined => (presetId.trim().length > 0 ? presetId.trim() : undefined)
 
   /** Checklist rows with non-empty text (blank rows are dropped on submit). */
@@ -380,9 +381,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         description: description.length > 0 ? description : undefined,
         prompt: prompt.length > 0 ? prompt : undefined,
         execution: executionPayload(),
-        model: picked,
+        model: picked ?? null,
         ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
-        ...(presetOut !== undefined ? { presetId: presetOut } : {}),
+        presetId: presetOut ?? null,
         permission,
         ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
       })
@@ -422,9 +423,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           description: description.length > 0 ? description : undefined,
           prompt: prompt.length > 0 ? prompt : undefined,
           execution: executionPayload(),
-          model: picked,
+          model: picked ?? null,
           ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
-          ...(presetOut !== undefined ? { presetId: presetOut } : {}),
+          presetId: presetOut ?? null,
           permission,
           ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
         })
@@ -493,6 +494,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                   }}
                 >
                   <option value="">{t('form.field.modelDefault')}</option>
+                  {parsedModel !== undefined && currentCatalogModel === undefined && <option value={model}>{parsedModel.model} ({parsedModel.provider})</option>}
                   {catalog.map(m => (
                     <option key={`${m.provider}/${m.model}`} value={JSON.stringify({ provider: m.provider, model: m.model })}>
                       {t('form.model.option', { name: m.name ?? m.model, provider: m.provider })}
@@ -509,6 +511,11 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                     title={t('form.field.effortTitle')}
                   >
                     <option value="">{t('form.effort.follow')}{modelReasoning?.defaultEffort !== undefined ? t('shared.current', { name: modelReasoning.efforts.find(ef => ef.id === modelReasoning.defaultEffort)?.name ?? modelReasoning.defaultEffort }) : ''}</option>
+                    {reasoningEffort !== '' && !(modelReasoning !== undefined && modelReasoning.efforts.length > 0
+                      ? modelReasoning.efforts.some(eff => eff.id === reasoningEffort)
+                      : ['low', 'medium', 'high', 'none'].includes(reasoningEffort)) && (
+                      <option value={reasoningEffort}>{reasoningEffort}</option>
+                    )}
                     {modelReasoning !== undefined && modelReasoning.efforts.length > 0 ? (
                       modelReasoning.efforts.map(eff => (
                         <option key={eff.id} value={eff.id}>
@@ -527,10 +534,11 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
                 </Field>
               )}
 
-              {presets.length > 0 && (
+              {(presets.length > 0 || presetId !== '') && (
                 <Field label={t('form.field.preset')}>
                   <select value={presetId} onChange={e => setPresetId(e.target.value)} title={t('form.field.presetTitle')}>
                     <option value="">{t('form.preset.follow')}{presetDefault !== undefined ? t('shared.current', { name: presets.find(p => p.id === presetDefault)?.name ?? presetDefault }) : ''}</option>
+                    {presetId !== '' && !presets.some(p => p.id === presetId) && <option value={presetId}>{presetId}</option>}
                     {presets.map(p => (
                       <option key={p.id} value={p.id}>
                         {p.name ?? p.id}{p.id === presetDefault ? t('form.preset.defaultTag') : ''}

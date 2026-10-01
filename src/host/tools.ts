@@ -409,7 +409,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       model: {
         type: 'object',
         additionalProperties: false,
-        description: 'Pin executions to one configured model: { provider, model, reasoningEffort? }. Omit to use the default model.',
+        description: 'Pin executions to one configured model: { provider, model, reasoningEffort? }. Omitted → board default model and effort, then deployment default.',
         properties: {
           provider: { type: 'string', description: 'Provider route id.' },
           model: { type: 'string', description: 'Provider-owned model id.' },
@@ -426,7 +426,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       },
       presetId: {
         type: 'string',
-        description: 'Agent preset the execution session is composed from (its tool set / persona); default = the deployment default preset. Optional.',
+        description: 'Agent preset for execution sessions (tool set / persona). Omitted → board default, then deployment default; empty string follows deployment default.',
       },
       checklist: {
         type: 'array',
@@ -450,7 +450,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       description?: string
       prompt?: string
       execution?: { mode?: string; cron?: string; runAt?: string | number }
-      model?: { provider?: string; model?: string }
+      model?: { provider?: string; model?: string; reasoningEffort?: string }
       isolation?: string
       permission?: string
       presetId?: string
@@ -468,7 +468,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           throw new ToolError(ERR.invalidTransition, 'a new task must start as backlog or todo (in_progress requires claiming the task)')
         }
         const execution = normalizeExecution(args.execution ?? {}, deps.now())
-        const model = args.model !== undefined ? checkModel(deps, args.model) : undefined
+        const modelRaw = args.model ?? store.snapshot().settings?.defaultModel
+        const model = modelRaw !== undefined ? checkModel(deps, modelRaw) : undefined
         // 0.5.0: an omitted isolation is MATERIALIZED from the board setting
         // (看板设置) at creation, so later setting changes never rewrite
         // existing tasks.
@@ -476,7 +477,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         // Match the GUI create route: freeze the current board default onto
         // the task so later settings changes do not silently alter a schedule.
         const permission = args.permission === undefined ? defaultPermissionOf(store.snapshot().settings) : asPermission(args.permission)
-        const presetId = args.presetId?.trim() || undefined
+        const presetId = args.presetId === undefined ? store.snapshot().settings?.defaultPresetId : args.presetId.trim() || undefined
         // T9: match the GUI create route — trim and drop blank lines instead
         // of failing the whole call over one empty string.
         const checklistTexts = args.checklist?.map(c => c.trim()).filter(c => c.length > 0)

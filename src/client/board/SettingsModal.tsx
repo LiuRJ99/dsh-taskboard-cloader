@@ -8,6 +8,7 @@
  */
 import { useEffect, useState } from 'react'
 import type { BoardController } from '../controller.ts'
+import type { CatalogModelItem, CatalogPresetItem } from '../../shared/api.ts'
 import { DEFAULT_DISPATCH_INTERVAL_MS, DEFAULT_ISOLATION, DEFAULT_MAX_CONCURRENT, DEFAULT_QUEUE_MAX_AGE_MINUTES, DEFAULT_SCHEDULE_MISSED_AFTER_MINUTES, defaultPermissionOf, defaultSyncExternalSessionsOf, dispatchIntervalMsOf, maxConcurrentOf, queueMaxAgeMinutesOf, scheduleMissedAfterMinutesOf, type IsolationMode, type PermissionMode } from '../../shared/protocol.ts'
 import { useT, type Translate } from '../i18n/runtime.ts'
 
@@ -32,6 +33,19 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
   const currentMissedAfterMinutes = scheduleMissedAfterMinutesOf(state.ledger.settings)
   const currentQueueMaxAgeMinutes = queueMaxAgeMinutesOf(state.ledger.settings)
   const currentDispatchIntervalMs = dispatchIntervalMsOf(state.ledger.settings)
+  const currentModel = state.ledger.settings?.defaultModel
+  const currentModelKey = currentModel === undefined ? '' : JSON.stringify({ provider: currentModel.provider, model: currentModel.model })
+  const currentEffort = currentModel?.reasoningEffort ?? ''
+  const currentPreset = state.ledger.settings?.defaultPresetId ?? ''
+  const [catalog, setCatalog] = useState<CatalogModelItem[]>([])
+  const [presets, setPresets] = useState<CatalogPresetItem[]>([])
+  const [presetDefault, setPresetDefault] = useState<string | undefined>()
+  const [draftModel, setDraftModel] = useState(currentModelKey)
+  const [draftEffort, setDraftEffort] = useState(currentEffort)
+  const [draftPreset, setDraftPreset] = useState(currentPreset)
+  const parsedModel = draftModel === '' ? undefined : JSON.parse(draftModel) as { provider: string; model: string }
+  const selectedModel = catalog.find(m => m.provider === parsedModel?.provider && m.model === parsedModel?.model)
+  const reasoning = selectedModel?.reasoning
   const [draftIso, setDraftIso] = useState<IsolationMode>(currentIso)
   const [draftSync, setDraftSync] = useState<boolean>(currentSync)
   const [draftPerm, setDraftPerm] = useState<PermissionMode>(currentPerm)
@@ -50,7 +64,8 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
     && Number.isSafeInteger(missedAfterMinutes) && missedAfterMinutes >= 1 && missedAfterMinutes <= 1440
     && Number.isSafeInteger(queueMaxAgeMinutes) && queueMaxAgeMinutes >= 0 && queueMaxAgeMinutes <= 10080
     && Number.isSafeInteger(dispatchIntervalMs) && dispatchIntervalMs >= 0 && dispatchIntervalMs <= 60000
-  const dirty = draftIso !== currentIso || draftSync !== currentSync || draftPerm !== currentPerm
+  const dirty = draftModel !== currentModelKey || draftEffort !== currentEffort || draftPreset !== currentPreset
+    || draftIso !== currentIso || draftSync !== currentSync || draftPerm !== currentPerm
     || draftMaxConcurrent !== String(currentMaxConcurrent) || draftMissedAfterMinutes !== String(currentMissedAfterMinutes)
     || draftQueueMaxAgeMinutes !== String(currentQueueMaxAgeMinutes) || draftDispatchIntervalMs !== String(currentDispatchIntervalMs)
   const effectiveStoragePath = storagePath.trim().length === 0 ? state.storage?.defaultDirectory ?? '' : storagePath.trim()
@@ -60,11 +75,22 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
     if (!storageTouched && state.storage !== undefined) setStoragePath(state.storage.currentDirectory)
   }, [state.storage, storageTouched])
 
+  useEffect(() => {
+    let active = true
+    void controller.fetchModelCatalog().then(models => { if (active) setCatalog(models) }).catch(() => {})
+    void controller.fetchPresetCatalog().then(roster => {
+      if (active) { setPresets(roster.presets); setPresetDefault(roster.defaultId) }
+    }).catch(() => {})
+    return () => { active = false }
+  }, [controller])
+
   const save = (): void => {
     void controller.updateSettings({
       defaultIsolation: draftIso,
       syncExternalSessions: draftSync,
       defaultPermission: draftPerm,
+      ...(parsedModel !== undefined ? { defaultModel: { ...parsedModel, ...(draftEffort !== '' ? { reasoningEffort: draftEffort } : {}) } } : {}),
+      ...(draftPreset !== '' ? { defaultPresetId: draftPreset } : {}),
       maxConcurrent,
       scheduleMissedAfterMinutes: missedAfterMinutes,
       queueMaxAgeMinutes,
@@ -174,6 +200,53 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
             <span className="dsh-atb-isolation-note">
               {t('set.perm.current', { current: currentPerm === 'read-only' ? t('set.perm.readOnlyName') : currentPerm === 'danger-full-access' ? t('set.perm.fullName') : t('set.perm.writeName') })}
             </span>
+          </section>
+
+          <section className="dsh-atb-diag-sec">
+            <h4>{t('set.agent.heading')}</h4>
+            <p className="dsh-atb-isolation-note">{t('set.agent.hint')}</p>
+            <div className="dsh-atb-form-subgrid">
+              <label className="dsh-atb-field">
+                <span className="dsh-atb-field-label">{t('set.agent.model')}</span>
+                <select className="dsh-atb-input" value={draftModel} onChange={e => { setDraftModel(e.target.value); setDraftEffort('') }}>
+                  <option value="">{t('form.field.modelDefault')}</option>
+                  {parsedModel !== undefined && selectedModel === undefined && (
+                    <option value={draftModel}>{parsedModel.model} ({parsedModel.provider})</option>
+                  )}
+                  {catalog.map(m => (
+                    <option key={`${m.provider}/${m.model}`} value={JSON.stringify({ provider: m.provider, model: m.model })}>
+                      {t('form.model.option', { name: m.name ?? m.model, provider: m.provider })}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="dsh-atb-field">
+                <span className="dsh-atb-field-label">{t('set.agent.effort')}</span>
+                <select className="dsh-atb-input" value={draftEffort} disabled={parsedModel === undefined} onChange={e => setDraftEffort(e.target.value)}>
+                  <option value="">{t('form.effort.follow')}{reasoning?.defaultEffort !== undefined ? t('shared.current', { name: reasoning.efforts.find(e => e.id === reasoning.defaultEffort)?.name ?? reasoning.defaultEffort }) : ''}</option>
+                  {draftEffort !== '' && reasoning !== undefined && !reasoning.efforts.some(e => e.id === draftEffort) && (
+                    <option value={draftEffort}>{draftEffort}</option>
+                  )}
+                  {reasoning !== undefined ? reasoning.efforts.map(e => (
+                    <option key={e.id} value={e.id}>{e.name}{e.description ? ` (${e.description})` : ''}</option>
+                  )) : <>
+                    {!['', 'low', 'medium', 'high', 'none'].includes(draftEffort) && <option value={draftEffort}>{draftEffort}</option>}
+                    <option value="low">{t('form.effort.low')}</option>
+                    <option value="medium">{t('form.effort.medium')}</option>
+                    <option value="high">{t('form.effort.high')}</option>
+                    <option value="none">{t('form.effort.none')}</option>
+                  </>}
+                </select>
+              </label>
+              <label className="dsh-atb-field">
+                <span className="dsh-atb-field-label">{t('set.agent.preset')}</span>
+                <select className="dsh-atb-input" value={draftPreset} onChange={e => setDraftPreset(e.target.value)}>
+                  <option value="">{t('form.preset.follow')}{presetDefault !== undefined ? t('shared.current', { name: presets.find(p => p.id === presetDefault)?.name ?? presetDefault }) : ''}</option>
+                  {draftPreset !== '' && !presets.some(p => p.id === draftPreset) && <option value={draftPreset}>{draftPreset}</option>}
+                  {presets.map(p => <option key={p.id} value={p.id}>{p.name ?? p.id}{p.id === presetDefault ? t('form.preset.defaultTag') : ''}</option>)}
+                </select>
+              </label>
+            </div>
           </section>
 
           <section className="dsh-atb-diag-sec">

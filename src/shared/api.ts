@@ -68,11 +68,12 @@ export type CreateTaskBody = {
   description?: string
   prompt?: string
   execution?: { mode?: string; cron?: string; runAt?: string | number; periodicCompletion?: 'rearm' | 'spawn'; reuseSessionId?: string; sessionReuseMode?: 'fresh' | 'reuse' }
-  model?: TaskModel
+  /** Omitted = board default; null = follow the deployment default explicitly. */
+  model?: TaskModel | null
   /** Code isolation for executions ('worktree' | 'none'); omitted = default. */
   isolation?: string
-  /** Agent preset for execution sessions; omitted = deployment default. */
-  presetId?: string
+  /** Omitted = board default; null = follow the deployment default explicitly. */
+  presetId?: string | null
   /** Execution permission preset ('workspace-write' | 'read-only' | 'danger-full-access'); omitted = default. */
   permission?: string
   /** Acceptance checklist item texts (host mints ids, all unchecked). */
@@ -235,6 +236,10 @@ export type UpdateSettingsBody = {
   syncExternalSessions?: boolean
   /** Default permission preset for NEW tasks ('workspace-write' | 'read-only' | 'danger-full-access'). */
   defaultPermission?: string
+  /** Default model and optional reasoning effort for NEW tasks; omitted = deployment default. */
+  defaultModel?: TaskModel
+  /** Default agent preset for NEW tasks; omitted = deployment default. */
+  defaultPresetId?: string
   /** Global simultaneous execution cap (1–100). */
   maxConcurrent?: number
   /** Offline missed-window threshold in whole minutes (1–1440). */

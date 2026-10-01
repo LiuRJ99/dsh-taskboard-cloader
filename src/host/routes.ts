@@ -699,13 +699,15 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           if (execution.reuseSessionId !== undefined && !workspaces.sessionIds?.(workspaceId)?.includes(execution.reuseSessionId)) {
             throw new Error('Error: invalid_input: selected session is not available in this workspace')
           }
-          const model = body.model === undefined ? undefined : checkModel(body.model, options.modelProviders)
+          const settings = store.snapshot().settings
+          const modelRaw = body.model === undefined ? settings?.defaultModel : body.model
+          const model = modelRaw == null ? undefined : checkModel(modelRaw, options.modelProviders)
           const isolationRaw = str(body, 'isolation')
           // 0.5.0: an omitted isolation is MATERIALIZED from the board
           // setting (看板设置) at creation, so later setting changes never
           // rewrite existing tasks.
           const isolation = isolationRaw === null ? defaultIsolationOf(store.snapshot().settings) : asIsolation(isolationRaw)
-          const presetId = normalizePresetId(str(body, 'presetId'))
+          const presetId = body.presetId === undefined ? settings?.defaultPresetId : normalizePresetId(str(body, 'presetId'))
           const permissionRaw = str(body, 'permission')
           const permission = permissionRaw === null ? defaultPermissionOf(store.snapshot().settings) : asPermission(permissionRaw)
           let checklist: TaskRecord['checklist'] = undefined

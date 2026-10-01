@@ -224,6 +224,34 @@ describe('taskboard tool outputs', () => {
 
 // ---------------------------------------------------------------- 0.5.0
 describe('taskboard_create default isolation (0.5.0 board settings)', () => {
+  it('inherits board model/effort/preset, explicit choices win, and reset does not rewrite old tasks', async () => {
+    const { disposers, tool, exec, store } = await setup({ modelProviders: () => ['deepseek'] })
+    const defaultModel = { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' }
+    await store.mutate('settings-updated', ledger => {
+      ledger.settings = { defaultModel, defaultPresetId: 'standard' }
+      return []
+    })
+    const create = async (extra: object = {}) => {
+      const result = await tool('taskboard_create').execute({ title: 'Defaults', workspaceId: 'ws-a', urgency: 'normal', ...extra }, exec) as { task: { id: string } }
+      assertLossless(result)
+      return store.get(result.task.id)!
+    }
+    const inherited = await create()
+    expect(inherited.model).toEqual(defaultModel)
+    expect(inherited.presetId).toBe('standard')
+    const explicit = await create({ model: { provider: 'deepseek', model: 'chat' }, presetId: 'custom' })
+    expect(explicit.model).toEqual({ provider: 'deepseek', model: 'chat' })
+    expect(explicit.presetId).toBe('custom')
+    expect((await create({ presetId: '' })).presetId).toBeUndefined()
+    await store.mutate('settings-updated', ledger => { ledger.settings = {}; return [] })
+    expect(store.get(inherited.id)?.model).toEqual(defaultModel)
+    expect(store.get(inherited.id)?.presetId).toBe('standard')
+    const reset = await create()
+    expect(reset.model).toBeUndefined()
+    expect(reset.presetId).toBeUndefined()
+    for (const dispose of disposers) dispose()
+  })
+
   it('omitted isolation materializes the board default (factory none); explicit wins; invalid rejected', async () => {
     const { disposers, tool, exec, store } = await setup()
 

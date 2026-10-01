@@ -186,6 +186,10 @@ export type BoardSettings = {
   syncExternalSessions?: boolean
   /** Default permission preset applied when a NEW task is created without an explicit choice (0.5.5, default: 'workspace-write'). */
   defaultPermission?: PermissionMode
+  /** Model and optional reasoning effort materialized onto NEW tasks; absent = deployment default. */
+  defaultModel?: TaskModel
+  /** Agent preset materialized onto NEW tasks; absent = deployment default. */
+  defaultPresetId?: string
   /** Global cap for simultaneously running taskboard executions. */
   maxConcurrent?: number
   /** Only never-queued windows older than this are classified as offline misses. */
@@ -217,6 +221,14 @@ export function asBoardSettings(raw: unknown): BoardSettings {
   }
   if (e.defaultPermission !== undefined) {
     out.defaultPermission = asPermission(e.defaultPermission)
+  }
+  if (e.defaultModel !== undefined) {
+    out.defaultModel = normalizeModel(e.defaultModel)
+  }
+  if (e.defaultPresetId !== undefined) {
+    if (typeof e.defaultPresetId !== 'string') throw new Error('defaultPresetId must be a string')
+    const id = e.defaultPresetId.trim()
+    if (id.length > 0) out.defaultPresetId = id
   }
   if (e.maxConcurrent !== undefined) {
     if (typeof e.maxConcurrent !== 'number' || !Number.isSafeInteger(e.maxConcurrent)

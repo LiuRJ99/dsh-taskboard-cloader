@@ -1163,6 +1163,36 @@ describe('taskboard routes 0.5.0 (board settings → default isolation)', () => 
     expect(state.value.settings).toEqual({ defaultIsolation: 'worktree', maxConcurrent: 8, scheduleMissedAfterMinutes: 15 })
   })
 
+  it('materializes model/effort/preset defaults, honors overrides and null, and leaves existing tasks unchanged', async () => {
+    const defaultModel = { provider: 'prov-a', model: 'model-a', reasoningEffort: 'high' }
+    const saved = await post('/dsh-taskboard/settings/update', { defaultModel, defaultPresetId: ' standard ' })
+    expect(saved.status).toBe(200)
+    expect(saved.json.value).toEqual({ defaultModel, defaultPresetId: 'standard' })
+    const create = async (extra: object = {}) => {
+      const res = await post('/dsh-taskboard/tasks', { title: 'Defaults task', workspaceId: 'ws-a', urgency: 'normal', ...extra })
+      expect(res.status).toBe(201)
+      return store.get(res.json.value.id)!
+    }
+    const inherited = await create()
+    expect(inherited.model).toEqual(defaultModel)
+    expect(inherited.presetId).toBe('standard')
+    const overridden = await create({ model: { provider: 'prov-a', model: 'other' }, presetId: 'custom' })
+    expect(overridden.model).toEqual({ provider: 'prov-a', model: 'other' })
+    expect(overridden.presetId).toBe('custom')
+    const deployment = await create({ model: null, presetId: null })
+    expect(deployment.model).toBeUndefined()
+    expect(deployment.presetId).toBeUndefined()
+    const invalid = await post('/dsh-taskboard/settings/update', { defaultModel: { provider: '', model: 'bad' } })
+    expect(invalid.status).toBe(400)
+    expect(store.snapshot().settings?.defaultModel).toEqual(defaultModel)
+    await post('/dsh-taskboard/settings/update', {})
+    expect(store.get(inherited.id)?.model).toEqual(defaultModel)
+    expect(store.get(inherited.id)?.presetId).toBe('standard')
+    const reset = await create()
+    expect(reset.model).toBeUndefined()
+    expect(reset.presetId).toBeUndefined()
+  })
+
   it('create materializes the board default on omitted isolation; explicit wins; earlier tasks unaffected', async () => {
     // Self-contained precondition: pin the board default to worktree here.
     const pinned = await post('/dsh-taskboard/settings/update', { defaultIsolation: 'worktree' })

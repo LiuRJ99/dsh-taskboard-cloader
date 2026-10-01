@@ -270,6 +270,21 @@ describe('model normalization (reasoning effort support)', () => {
 // ---------------------------------------------------------------------------
 
 describe('board settings & default isolation (0.5.0)', () => {
+  it('normalizes model, reasoning effort and preset defaults; rejects malformed values', () => {
+    expect(asBoardSettings({
+      defaultModel: { provider: ' p ', model: ' m ', reasoningEffort: ' high ', junk: true },
+      defaultPresetId: ' standard ',
+    })).toEqual({ defaultModel: { provider: 'p', model: 'm', reasoningEffort: 'high' }, defaultPresetId: 'standard' })
+    expect(asBoardSettings({ defaultPresetId: '  ' })).toEqual({})
+    expect(() => asBoardSettings({ defaultPresetId: 42 })).toThrow('defaultPresetId')
+    expect(() => asBoardSettings({ defaultModel: null })).toThrow('model must be')
+    expect(() => asBoardSettings({ defaultModel: { provider: 'p', model: '' } })).toThrow('non-empty')
+    const imported = validateLedgerImport({ schemaVersion: 1, tasks: [], settings: {
+      defaultModel: { provider: 'p', model: 'm', reasoningEffort: 'high' }, defaultPresetId: 'standard',
+    } }, new Set(), 7_000)
+    expect(imported.settings).toEqual({ defaultModel: { provider: 'p', model: 'm', reasoningEffort: 'high' }, defaultPresetId: 'standard' })
+  })
+
   it('factory default is 原目录执行 (none); explicit task values always win', () => {
     expect(DEFAULT_ISOLATION).toBe('none')
     expect(effectiveIsolation({ isolation: undefined })).toBe('none')
@@ -429,32 +444,20 @@ describe('TaskStore', () => {
     expect(second.snapshot().revision).toBe(2)
   })
 
-  it('persists and restores board settings across store reloads (0.5.5)', async () => {
+  it('persists and restores board settings across store reloads', async () => {
     const file = join(dir, 'settings-reload.json')
     const store = new TaskStore({ file })
-    await store.mutate('settings-updated', ledger => {
-      ledger.settings = {
-        defaultIsolation: 'worktree',
-        syncExternalSessions: true,
-        defaultPermission: 'read-only',
-      }
-      return []
+    const settings = asBoardSettings({
+      defaultIsolation: 'worktree', syncExternalSessions: true, defaultPermission: 'read-only',
+      defaultModel: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' },
+      defaultPresetId: 'standard',
     })
-
-    expect(store.snapshot().settings).toEqual({
-      defaultIsolation: 'worktree',
-      syncExternalSessions: true,
-      defaultPermission: 'read-only',
-    })
-
-    // Reload in a completely fresh store instance simulating server restart
+    await store.mutate('settings-updated', ledger => { ledger.settings = settings; return [] })
+    expect(store.snapshot().settings).toEqual(settings)
+    // A fresh store instance simulates a server restart.
     const restarted = new TaskStore({ file })
     await restarted.load()
-    expect(restarted.snapshot().settings).toEqual({
-      defaultIsolation: 'worktree',
-      syncExternalSessions: true,
-      defaultPermission: 'read-only',
-    })
+    expect(restarted.snapshot().settings).toEqual(settings)
   })
 
   it('quarantines a corrupt ledger instead of throwing', async () => {
