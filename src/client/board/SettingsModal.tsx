@@ -167,42 +167,6 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
           </section>
 
           <section className="dsh-atb-diag-sec">
-            <h4>{t('set.perm.heading')}</h4>
-            <div className="dsh-atb-perm-picker">
-              <button
-                type="button"
-                className="dsh-atb-perm-opt"
-                data-on={draftPerm === 'workspace-write'}
-                onClick={() => setDraftPerm('workspace-write')}
-              >
-                <span className="dsh-atb-perm-name">{t('set.perm.writeName')}</span>
-                <span className="dsh-atb-perm-hint">{t('set.perm.writeHint')}</span>
-              </button>
-              <button
-                type="button"
-                className="dsh-atb-perm-opt"
-                data-on={draftPerm === 'read-only'}
-                onClick={() => setDraftPerm('read-only')}
-              >
-                <span className="dsh-atb-perm-name">{t('set.perm.readOnlyName')}</span>
-                <span className="dsh-atb-perm-hint">{t('set.perm.readOnlyHint')}</span>
-              </button>
-              <button
-                type="button"
-                className="dsh-atb-perm-opt"
-                data-on={draftPerm === 'danger-full-access'}
-                onClick={() => setDraftPerm('danger-full-access')}
-              >
-                <span className="dsh-atb-perm-name">{t('set.perm.fullName')}</span>
-                <span className="dsh-atb-perm-hint">{t('set.perm.fullHint')}</span>
-              </button>
-            </div>
-            <span className="dsh-atb-isolation-note">
-              {t('set.perm.current', { current: currentPerm === 'read-only' ? t('set.perm.readOnlyName') : currentPerm === 'danger-full-access' ? t('set.perm.fullName') : t('set.perm.writeName') })}
-            </span>
-          </section>
-
-          <section className="dsh-atb-diag-sec">
             <h4>{t('set.agent.heading')}</h4>
             <p className="dsh-atb-isolation-note">{t('set.agent.hint')}</p>
             <div className="dsh-atb-form-subgrid">
@@ -247,6 +211,42 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
                 </select>
               </label>
             </div>
+          </section>
+
+          <section className="dsh-atb-diag-sec">
+            <h4>{t('set.perm.heading')}</h4>
+            <div className="dsh-atb-perm-picker">
+              <button
+                type="button"
+                className="dsh-atb-perm-opt"
+                data-on={draftPerm === 'workspace-write'}
+                onClick={() => setDraftPerm('workspace-write')}
+              >
+                <span className="dsh-atb-perm-name">{t('set.perm.writeName')}</span>
+                <span className="dsh-atb-perm-hint">{t('set.perm.writeHint')}</span>
+              </button>
+              <button
+                type="button"
+                className="dsh-atb-perm-opt"
+                data-on={draftPerm === 'read-only'}
+                onClick={() => setDraftPerm('read-only')}
+              >
+                <span className="dsh-atb-perm-name">{t('set.perm.readOnlyName')}</span>
+                <span className="dsh-atb-perm-hint">{t('set.perm.readOnlyHint')}</span>
+              </button>
+              <button
+                type="button"
+                className="dsh-atb-perm-opt"
+                data-on={draftPerm === 'danger-full-access'}
+                onClick={() => setDraftPerm('danger-full-access')}
+              >
+                <span className="dsh-atb-perm-name">{t('set.perm.fullName')}</span>
+                <span className="dsh-atb-perm-hint">{t('set.perm.fullHint')}</span>
+              </button>
+            </div>
+            <span className="dsh-atb-isolation-note">
+              {t('set.perm.current', { current: currentPerm === 'read-only' ? t('set.perm.readOnlyName') : currentPerm === 'danger-full-access' ? t('set.perm.fullName') : t('set.perm.writeName') })}
+            </span>
           </section>
 
           <section className="dsh-atb-diag-sec">
