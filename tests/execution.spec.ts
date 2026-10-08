@@ -193,8 +193,8 @@ describe('ExecutionService', () => {
     const inject = agents.injects[0] as { content: Array<{ type: string; text: string }>; source: { kind: string; plugin?: string } }
     const user = agents.followups[0] as { content: Array<{ type: string; text: string }>; source: { kind: string } }
     expect(inject.content[0]!.type).toBe('text')
-    expect(inject.source.kind).toBe('plugin')
-    expect(inject.source.plugin).toBe('dsh-taskboard')
+    expect(inject.source.kind).toBe('plugin:dsh-taskboard')
+    expect(inject.source).not.toHaveProperty('plugin')
     expect(inject.content[0]!.text).toContain('【任务看板】Run me')
     expect(inject.content[0]!.text).toContain('ID: t-run')
     expect(inject.content[0]!.text).toContain('taskboard_get')

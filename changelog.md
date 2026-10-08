@@ -1,5 +1,11 @@
 # 更新日志 / Changelog
 
+## [0.7.4] - 2026-10-08
+
+### Fixed
+
+- 为 DSH 0.2 的定时执行消息使用 producer-owned source kind `plugin:dsh-taskboard`，修复定时任务因 v4 消息校验失败而无法执行。CI 使用 Node 24 和固定 pnpm 锁文件。
+
 ### 0.7.2
 
 **新特性：**

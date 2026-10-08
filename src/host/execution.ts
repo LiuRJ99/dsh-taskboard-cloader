@@ -680,7 +680,7 @@ export class ExecutionService {
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
       role: 'user' as const,
       content: [{ type: 'text' as const, text: this.pluginFraming(task, prepared, isolationNote, speed) }],
-      source: { kind: 'plugin' as const, plugin: 'dsh-taskboard' },
+      source: { kind: 'plugin:dsh-taskboard' as const },
     })
     handle.agent.followup({
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
