@@ -1,5 +1,10 @@
 # 更新日志 / Changelog
 
+## [0.7.6] - 2026-10-09
+
+- 同步运行时 `PLUGIN_VERSION` 与发布包版本，修复 `0.7.5` 版本一致性 CI 失败；保留已验证的 Sidebar `0.24.1` 可选 peer。
+- Align the runtime version with the package manifest; retain the verified Sidebar optional peer range.
+
 ## [0.7.5] - 2026-10-09
 
 - 可选 Better Sidebar peer 明确覆盖已验收的 `0.24.1`，保留 `^0.21.1` 支持。看板挂载与 Gallery 并存验证通过。
