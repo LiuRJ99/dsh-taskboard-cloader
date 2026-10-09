@@ -1,5 +1,10 @@
 # 更新日志 / Changelog
 
+## [0.7.5] - 2026-10-09
+
+- 可选 Better Sidebar peer 明确覆盖已验收的 `0.24.1`，保留 `^0.21.1` 支持。看板挂载与 Gallery 并存验证通过。
+- Include the verified Better Sidebar `0.24.1` in the optional peer range while retaining `^0.21.1` support.
+
 ## [0.7.4] - 2026-10-08
 
 ### Fixed

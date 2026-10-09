@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       dsh-better-sidebar:
-        specifier: ^0.21.1
+        specifier: ^0.21.1 || 0.24.1
         version: 0.21.1(1458a47c12165bf0a7ccd6d182c9f43d)
       marked:
         specifier: ^18.0.11
