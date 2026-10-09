@@ -102,6 +102,7 @@ function makeScheduler(): SchedulerService {
     store,
     execution: executionFace,
     now: () => Date.now(),
+    dispatchIntervalMs: 0,
     // Injectable timer face (exercised on purpose): delegates to the faked
     // globals, so vi.advanceTimersByTimeAsync drives the 60s interval.
     timers: {
@@ -141,6 +142,7 @@ describe('SchedulerService lifecycle', () => {
     // 3s + ε: only the catchup setTimeout is in range (interval fires at 60s).
     await vi.advanceTimersByTimeAsync(3_100)
     expect(await waitFor(() => runs.length >= 1)).toBe(true)
+    await scheduler.tick() // settle the durable dispatch mutation before advancing fake time
     await settle(50)
     expect(runs).toHaveLength(1)
     expect(runs[0]).toEqual({ id: 't-due', trigger: 'scheduled' })
@@ -160,6 +162,7 @@ describe('SchedulerService lifecycle', () => {
 
     await vi.advanceTimersByTimeAsync(3_100) // catchup: run #1, nextRunAt → T0+60s
     expect(await waitFor(() => runs.length >= 1)).toBe(true)
+    await scheduler.tick() // settle the durable dispatch mutation before advancing fake time
 
     // Crosses the interval's first firing at exactly T0 + 60s, where
     // nextRunAt (T0+60s) <= now makes the task due again: run #2.
@@ -180,6 +183,7 @@ describe('SchedulerService lifecycle', () => {
     scheduler.start()
     await vi.advanceTimersByTimeAsync(3_100)
     expect(await waitFor(() => runs.length >= 1)).toBe(true)
+    await scheduler.tick() // settle the durable dispatch mutation before advancing fake time
     await vi.advanceTimersByTimeAsync(60_000)
     expect(await waitFor(() => runs.length >= 2)).toBe(true)
 

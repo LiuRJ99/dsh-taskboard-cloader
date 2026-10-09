@@ -347,3 +347,7 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 > 📜 更早版本的完整更新日志见 [changelog.md](changelog.md)。
 
 License: Apache-2.0
+
+### v0.7.7 — durable scheduled dispatch
+
+选择性吸收上游调度可靠性修复：容量已满时先持久化到期窗口，按到期顺序派发，重启后恢复；执行记录与队列窗口原子交接。调度 tick 串行化，默认每秒最多开启一个调度会话，停止插件时取消未执行的等待。保留周期卡片/审核状态、模型选择、权限与工作区隔离；不自动派生后继卡片，不增加批量清空。

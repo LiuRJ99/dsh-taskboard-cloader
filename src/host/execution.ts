@@ -181,6 +181,8 @@ export interface RunOptions {
    * main HEAD. Falls back to a fresh preparation when none is alive.
    */
   reuseWorktree?: boolean
+  /** Scheduler-only durable queue reservation. */
+  scheduledWindow?: number
 }
 
 /** One live execution tracked for settlement and cancellation. */
@@ -427,6 +429,11 @@ export class ExecutionService {
         gate = `scheduled task is not actionable (${target.status})`
         return undefined
       }
+      if (trigger === 'scheduled' && options?.scheduledWindow !== undefined
+        && target.execution.dispatchingRunAt !== options.scheduledWindow) {
+        gate = 'scheduled dispatch is no longer queued'
+        return undefined
+      }
       if (target.status === 'in_progress' || target.executions.some(e => e.outcome === 'running')
         || [...this.runs.values()].some(e => target.executions.some(x => x.sessionId === e.sessionId))) {
         gate = 'task is already in progress'
@@ -447,6 +454,11 @@ export class ExecutionService {
         outcome: 'running',
         ...(isolation === 'none' ? { isolation: 'none' as const } : { isolation: 'worktree' as const, branch }),
       })
+      if (trigger === 'scheduled' && options?.scheduledWindow !== undefined) {
+        delete target.execution.dispatchingRunAt
+        delete target.execution.queuedAt
+        target.execution.lastTriggeredAt = options.scheduledWindow
+      }
       target.status = 'in_progress'
       target.updatedAt = this.deps.now()
       target.updatedBy = { kind: 'system' }

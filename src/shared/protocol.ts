@@ -344,6 +344,12 @@ export interface ExecutionConfig {
   mode: ExecutionMode
   /** Five-field cron expression (minute hour day month weekday); required for `scheduled`. */
   cron?: string
+  /** Durable due window waiting for global execution capacity. */
+  queuedRunAt?: number
+  /** Time the window was queued; preserved across rejection and restart. */
+  queuedAt?: number
+  /** Reserved window consumed atomically by the execution gate. */
+  dispatchingRunAt?: number
   /** Next due time (epoch ms); maintained by the host scheduler. */
   nextRunAt?: number
   /** Last time the scheduler triggered this task (epoch ms). */

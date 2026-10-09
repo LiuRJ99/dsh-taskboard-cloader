@@ -163,6 +163,33 @@ describe('ExecutionService', () => {
     expect(agents.timeline.indexOf('authorize')).toBeLessThan(agents.timeline.indexOf('followup'))
   })
 
+  it('rejects stale scheduled reservations before creating any session', async () => {
+    const store = await storeWith(task({ execution: { mode: 'scheduled', cron: '* * * * *', dispatchingRunAt: 900, queuedAt: 800 } }))
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    expect(await svc.run('t-run', 'scheduled', { scheduledWindow: 901 })).toEqual({ ok: false, error: 'scheduled dispatch is no longer queued' })
+    expect(agents.created).toHaveLength(0)
+    expect(store.get('t-run')!.executions).toHaveLength(0)
+    expect(store.get('t-run')!.execution.dispatchingRunAt).toBe(900)
+  })
+
+  it('consumes a matching scheduled reservation atomically with the running record', async () => {
+    const store = await storeWith(task({ execution: { mode: 'scheduled', cron: '* * * * *', dispatchingRunAt: 900, queuedAt: 800 }, model: { provider: 'deepseek', model: 'reasoner' } }))
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    const observed: boolean[] = []
+    const unsub = store.subscribe(() => {
+      const t = store.get('t-run')!
+      if (t.executions.length > 0) observed.push(t.execution.dispatchingRunAt === undefined && t.execution.lastTriggeredAt === 900)
+    })
+    expect((await svc.run('t-run', 'scheduled', { scheduledWindow: 900 })).ok).toBe(true)
+    expect(observed.length).toBeGreaterThan(0)
+    expect(observed.every(Boolean)).toBe(true)
+    expect(agents.created[0]!.agentOptions).toEqual({ provider: 'deepseek', model: 'reasoner' })
+    expect(store.get('t-run')!.execution.queuedAt).toBeUndefined()
+    agents.idle(); await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded'); unsub()
+  })
+
   it('runs a task in a fresh in-project session with the pinned model', async () => {
     const store = await storeWith(task({ model: { provider: 'deepseek', model: 'reasoner' } }))
     const agents = fakeAgents()
@@ -1121,11 +1148,12 @@ describe('SchedulerService', () => {
       },
       now: () => now,
     })
-    // At capacity: the window is NOT advanced (nextRunAt stays in the past so
-    // the next tick retries) and nothing runs.
+    // At capacity: the window is durably queued and the next cron match advances;
+    // the same due window remains eligible even after a restart.
     await scheduler.tick()
     expect(runs).toEqual([])
-    expect(store.get('t-due')!.execution.nextRunAt).toBe(now - 1)
+    expect(store.get('t-due')!.execution.queuedRunAt).toBe(now - 1)
+    expect(store.get('t-due')!.execution.nextRunAt).toBeGreaterThan(now)
     // Capacity frees up → the same window fires.
     inflight = 0
     await scheduler.tick()

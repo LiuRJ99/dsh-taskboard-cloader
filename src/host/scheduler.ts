@@ -1,10 +1,8 @@
 /**
  * Host-side cron scheduler: one tick per minute over the ledger's scheduled
- * tasks. A due task (nextRunAt reached, not running, not trashed) first has
- * its next run advanced to the next cron match — then it executes through
- * the same path as the manual button. Missed windows (host was down, tab
- * closed — irrelevant here, this is the host process) simply advance: a
- * nextRunAt more than one window in the past is skipped, not caught up.
+ * tasks. Due tasks are first durably queued, then dispatched FIFO as global
+ * capacity becomes available. A queued window remains eligible across a host
+ * restart; only a window that was never queued can be classified as missed.
  *
  * @module dsh-taskboard/host/scheduler
  */
@@ -12,11 +10,10 @@ import { newCommentId, nextCronTime, normalizeBody, parseCron, type TaskLedger }
 import { DEFAULT_MAX_CONCURRENT, type ExecutionService } from './execution.ts'
 import type { TaskStore } from './store.ts'
 
+const DEFAULT_DISPATCH_INTERVAL_MS = 1_000
+
 /** Tick cadence. */
 const TICK_MS = 60_000
-
-/** A due window older than this is skipped (missed while the host was down). */
-const SKIP_AFTER_MS = 5 * 60_000
 
 /** Everything the scheduler needs. */
 export interface SchedulerDeps {
@@ -24,7 +21,13 @@ export interface SchedulerDeps {
   execution: Pick<ExecutionService, 'run' | 'inFlight'>
   now: () => number
   /** Max concurrently running executions (default 3; must match the execution service). */
-  maxConcurrent?: number
+  maxConcurrent?: number | (() => number)
+  /** Offline missed-window threshold in milliseconds. Queued work never uses it. */
+  skipAfterMs?: number | (() => number)
+  /** Optional shelf life for a durable queue entry in milliseconds; zero keeps it indefinitely. */
+  queueMaxAgeMs?: number | (() => number)
+  /** Minimum time between scheduler-created sessions; zero explicitly disables throttling. */
+  dispatchIntervalMs?: number | (() => number)
   /** Timer face (injectable for tests). The timeout pair is optional so
    *  older injections keep working; gaps fall back to the globals. */
   timers?: {
@@ -51,12 +54,37 @@ export class SchedulerService {
   private handle: unknown
   private catchup: unknown
   private timers: Required<SchedulerTimers> = DEFAULT_TIMERS
+  /** Reservations actively being handed to this scheduler instance's gate. */
+  private readonly dispatching = new Set<string>()
+  /** The one active pass: interval and catchup must never dispatch in parallel. */
+  private ticking: Promise<void> | undefined
+  /** Earliest time a new scheduled session may be opened. */
+  private nextDispatchAt = 0
+  private disposed = false
+  private dispatchWait: { handle: unknown; resolve: () => void } | undefined
 
   /** @param deps - store + execution + clock. */
   constructor(private readonly deps: SchedulerDeps) {}
 
+  private maxConcurrent(): number {
+    return typeof this.deps.maxConcurrent === 'function' ? this.deps.maxConcurrent() : this.deps.maxConcurrent ?? DEFAULT_MAX_CONCURRENT
+  }
+
+  private skipAfterMs(): number {
+    return typeof this.deps.skipAfterMs === 'function' ? this.deps.skipAfterMs() : this.deps.skipAfterMs ?? 5 * 60_000
+  }
+
+  private queueMaxAgeMs(): number {
+    return typeof this.deps.queueMaxAgeMs === 'function' ? this.deps.queueMaxAgeMs() : this.deps.queueMaxAgeMs ?? 0
+  }
+
+  private dispatchIntervalMs(): number {
+    return typeof this.deps.dispatchIntervalMs === 'function' ? this.deps.dispatchIntervalMs() : this.deps.dispatchIntervalMs ?? DEFAULT_DISPATCH_INTERVAL_MS
+  }
+
   /** Start ticking. */
   start(): void {
+    this.disposed = false
     // Fill optional timer slots from the globals so a legacy injection that
     // only carries the interval pair still works end to end.
     this.timers = this.deps.timers === undefined ? DEFAULT_TIMERS : { ...DEFAULT_TIMERS, ...this.deps.timers }
@@ -74,6 +102,12 @@ export class SchedulerService {
 
   /** Stop ticking. */
   dispose(): void {
+    this.disposed = true
+    if (this.dispatchWait !== undefined) {
+      this.timers.clearTimeout(this.dispatchWait.handle)
+      this.dispatchWait.resolve()
+      this.dispatchWait = undefined
+    }
     if (this.catchup !== undefined) {
       this.timers.clearTimeout(this.catchup)
       this.catchup = undefined
@@ -85,6 +119,17 @@ export class SchedulerService {
 
   /** One scheduler pass (exported for tests). */
   async tick(): Promise<void> {
+    if (this.ticking !== undefined) return this.ticking
+    let pass: Promise<void>
+    pass = this.tickOnce().finally(() => {
+      if (this.ticking === pass) this.ticking = undefined
+    })
+    this.ticking = pass
+    return pass
+  }
+
+  private async tickOnce(): Promise<void> {
+    if (this.disposed) return
     // Load once before reading: snapshot() does not trigger a load, and the
     // scheduler may be the first consumer after a host restart (otherwise it
     // would tick over an empty ledger until something else loads it).
@@ -92,28 +137,175 @@ export class SchedulerService {
     const now = this.deps.now()
     const ledger: TaskLedger = this.deps.store.snapshot()
     for (const task of ledger.tasks) {
-      if (task.execution.mode !== 'scheduled' || task.execution.cron === undefined) continue
-      if (task.execution.nextRunAt === undefined) continue
-      // Recurring runs normally settle in review and must keep firing there.
-      // Terminal/parked states retain cron so an explicit reopen can resume.
-      if ((task.status !== 'todo' && task.status !== 'in_review') || task.trashedAt !== undefined) continue
-      if (task.execution.nextRunAt > now) continue
-      // At the concurrency cap (S4: checked FRESH per task — runs register
-      // only after agent creation, so a once-per-tick snapshot under-counted
-      // the startup window): leave nextRunAt in the past and retry next tick
-      // — advancing here would silently burn this window.
-      if (this.deps.execution.inFlight() >= (this.deps.maxConcurrent ?? DEFAULT_MAX_CONCURRENT)) continue
-      const missed = now - task.execution.nextRunAt > SKIP_AFTER_MS
+      if (task.execution.mode !== 'scheduled' || task.trashedAt !== undefined) continue
+      // Preserve the fork's recurring review-card behavior; parked/terminal
+      // tasks never resume implicitly and no successor cards are created.
+      if (task.status !== 'todo' && task.status !== 'in_review') continue
+      // Already queued while this host was online: do not apply the offline
+      // missed-window policy to it. Dispatch happens in the FIFO pass below.
+      if (task.execution.queuedRunAt !== undefined) continue
+      if (task.execution.dispatchingRunAt !== undefined) {
+        // A prior host died after reserving but before opening the execution.
+        // Live reservations are protected by the in-memory guard; stale ones
+        // are returned to the durable queue on the first tick after restart.
+        const key = `${task.id}:${task.execution.dispatchingRunAt}`
+        if (!this.dispatching.has(key)) await this.restoreQueued(task.id, task.execution.dispatchingRunAt)
+        continue
+      }
 
-      // Advance the schedule AND record the trigger in ONE mutation (S13:
-      // one revision bump, one broadcast, and the two writes can no longer
-      // straddle a status change), then run unless the window was missed.
-      await this.advanceAndMark(task.id, now, missed ? undefined : task.execution.nextRunAt)
-      if (missed) continue
-      await this.deps.execution.run(task.id, 'scheduled').catch(error => {
-        console.error('[dsh-taskboard] scheduled run failed:', error)
-      })
+      if (task.execution.cron !== undefined) {
+        // Periodic (定期执行): refire at every cron match.
+        if (task.execution.nextRunAt === undefined) continue
+        if (task.execution.nextRunAt > now) continue
+        const missed = now - task.execution.nextRunAt > this.skipAfterMs()
+
+        const match = parseCron(task.execution.cron)
+        if (match === null || nextCronTime(match, now) === null) {
+          await this.advanceAndMark(task.id, now, undefined)
+          continue
+        }
+        if (missed) await this.advanceAndMark(task.id, now, undefined, task.execution.nextRunAt)
+        else await this.queueCron(task.id, now, task.execution.nextRunAt)
+      }
     }
+
+    // Re-read after the queue mutations. Stable due-time order prevents cards
+    // later in the ledger from starving behind a fixed snapshot order.
+    const queued = this.deps.store.snapshot().tasks
+      .filter(task => task.execution.mode === 'scheduled' && (task.status === 'todo' || task.status === 'in_review')
+        && task.trashedAt === undefined && task.execution.queuedRunAt !== undefined)
+      .sort((a, b) => (a.execution.queuedRunAt! - b.execution.queuedRunAt!)
+        || ((a.execution.queuedAt ?? 0) - (b.execution.queuedAt ?? 0)) || a.id.localeCompare(b.id))
+    for (const task of queued) {
+      const queuedWindow = task.execution.queuedRunAt!
+      if (this.isExpired(task.execution.queuedAt, now)) {
+        await this.expireQueued(task.id, queuedWindow)
+        continue
+      }
+      if (this.deps.execution.inFlight() >= this.maxConcurrent()) break
+      await this.waitForDispatchSlot()
+      if (this.disposed || this.deps.execution.inFlight() >= this.maxConcurrent()) break
+      // Time may have advanced while waiting for a rate slot.
+      if (this.isExpired(task.execution.queuedAt, this.deps.now())) {
+        await this.expireQueued(task.id, queuedWindow)
+        continue
+      }
+      if (!await this.reserveDispatch(task.id, queuedWindow)) continue
+      this.nextDispatchAt = this.deps.now() + this.dispatchIntervalMs()
+      const key = `${task.id}:${queuedWindow}`
+      this.dispatching.add(key)
+      try {
+        const result = await this.deps.execution.run(task.id, 'scheduled', { scheduledWindow: queuedWindow }).catch(error => {
+          console.error('[dsh-taskboard] scheduled run failed:', error)
+          return undefined
+        })
+        // The production execution gate consumes this marker atomically with
+        // opening its running record. Retain this idempotent cleanup for narrow
+        // execution adapters (and test faces) that only report a successful
+        // dispatch and do not own the ledger mutation.
+        if (result?.ok) await this.markDispatched(task.id, queuedWindow)
+        else await this.restoreQueued(task.id, queuedWindow)
+        // A capacity race leaves the durable entry intact for the next pump.
+        if (result !== undefined && !result.ok && !result.error.includes('concurrency')) {
+          console.error('[dsh-taskboard] scheduled dispatch rejected:', result.error)
+        }
+      } finally {
+        this.dispatching.delete(key)
+      }
+    }
+  }
+
+  private isExpired(queuedAt: number | undefined, now: number): boolean {
+    const maxAge = this.queueMaxAgeMs()
+    return maxAge > 0 && queuedAt !== undefined && now - queuedAt >= maxAge
+  }
+
+  /** Yield until the scheduler-wide dispatch rate gate opens; never block Node's event loop. */
+  private async waitForDispatchSlot(): Promise<void> {
+    const wait = this.nextDispatchAt - this.deps.now()
+    if (wait <= 0 || this.disposed) return
+    await new Promise<void>(resolve => {
+      const handle = this.timers.setTimeout(() => {
+        if (this.dispatchWait?.handle === handle) this.dispatchWait = undefined
+        resolve()
+      }, wait)
+      this.dispatchWait = { handle, resolve }
+    })
+  }
+
+  /** Queue one periodic window and advance its next cron time atomically. */
+  private async queueCron(taskId: string, now: number, due: number): Promise<void> {
+    await this.deps.store.mutate('task-updated', ledger => {
+      const task = ledger.tasks.find(t => t.id === taskId)
+      if (task === undefined || task.execution.cron === undefined || task.execution.queuedRunAt !== undefined) return undefined
+      if ((task.status !== 'todo' && task.status !== 'in_review') || task.trashedAt !== undefined || task.execution.nextRunAt !== due) return undefined
+      const match = parseCron(task.execution.cron)
+      const next = match === null ? undefined : nextCronTime(match, now) ?? undefined
+      if (next === undefined) return undefined
+      task.execution.nextRunAt = next
+      task.execution.queuedRunAt = due
+      task.execution.queuedAt = now
+      return [task]
+    })
+  }
+
+  /** Consume a durable queue entry without creating an execution: either an
+   *  overdue shelf-life drop or a manual queue clear from the board. */
+  private async expireQueued(taskId: string, queuedWindow: number): Promise<void> {
+    const now = this.deps.now()
+    await this.deps.store.mutate('task-updated', ledger => {
+      const task = ledger.tasks.find(t => t.id === taskId)
+      if (task === undefined || task.execution.queuedRunAt !== queuedWindow) return undefined
+      if (!this.isExpired(task.execution.queuedAt, now)) return undefined
+      delete task.execution.queuedRunAt
+      delete task.execution.queuedAt
+      task.comments.push({
+        id: newCommentId(),
+        body: normalizeBody('[系统] 排队中的定时执行已超过保留时长，本次不再补跑；可手动执行或修改定时。'),
+        systemKey: 'sys.queuedExpired',
+        version: 1,
+        createdAt: now,
+      })
+      return [task]
+    })
+  }
+
+  /** Finalize a queue entry when a lightweight execution adapter accepted it. */
+  private async markDispatched(taskId: string, queuedWindow: number): Promise<void> {
+    await this.deps.store.mutate('task-updated', ledger => {
+      const task = ledger.tasks.find(t => t.id === taskId)
+      if (task === undefined || task.execution.dispatchingRunAt !== queuedWindow) return undefined
+      delete task.execution.dispatchingRunAt
+      delete task.execution.queuedAt
+      task.execution.lastTriggeredAt = queuedWindow
+      return [task]
+    })
+  }
+
+  /** Reserve one FIFO entry before calling an execution face. */
+  private async reserveDispatch(taskId: string, queuedWindow: number): Promise<boolean> {
+    let reserved = false
+    await this.deps.store.mutate('task-updated', ledger => {
+      const task = ledger.tasks.find(t => t.id === taskId)
+      if (task === undefined || task.execution.queuedRunAt !== queuedWindow) return undefined
+      if ((task.status !== 'todo' && task.status !== 'in_review') || task.trashedAt !== undefined) return undefined
+      delete task.execution.queuedRunAt
+      task.execution.dispatchingRunAt = queuedWindow
+      reserved = true
+      return [task]
+    })
+    return reserved
+  }
+
+  /** Return an execution-gate rejection to the durable FIFO queue. */
+  private async restoreQueued(taskId: string, queuedWindow: number): Promise<void> {
+    await this.deps.store.mutate('task-updated', ledger => {
+      const task = ledger.tasks.find(t => t.id === taskId)
+      if (task === undefined || task.execution.dispatchingRunAt !== queuedWindow) return undefined
+      delete task.execution.dispatchingRunAt
+      task.execution.queuedRunAt = queuedWindow
+      return [task]
+    })
   }
 
   /**
@@ -124,7 +316,7 @@ export class SchedulerService {
    * leave nextRunAt in the past and spin a full ~2M-iteration scan every
    * tick; it is cleared with a system comment instead of dying silently.
    */
-  private async advanceAndMark(taskId: string, now: number, triggeredAt: number | undefined): Promise<void> {
+  private async advanceAndMark(taskId: string, now: number, triggeredAt: number | undefined, missedDue?: number): Promise<void> {
     await this.deps.store.mutate('task-updated', (ledger) => {
       const task = ledger.tasks.find(t => t.id === taskId)
       if (task === undefined || task.execution.cron === undefined) return undefined
@@ -147,6 +339,15 @@ export class SchedulerService {
       }
       task.execution.nextRunAt = next
       if (triggeredAt !== undefined) task.execution.lastTriggeredAt = triggeredAt
+      if (missedDue !== undefined) {
+        task.comments.push({
+          id: newCommentId(),
+          body: normalizeBody('[系统] 定期执行错过触发时间（主机当时未运行），本次不再补跑；可手动执行或修改定时。'),
+          systemKey: 'sys.cronMissed',
+          version: 1,
+          createdAt: now,
+        })
+      }
       return [task]
     })
   }
