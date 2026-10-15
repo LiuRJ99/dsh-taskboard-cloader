@@ -25,7 +25,7 @@ import {
   legacyRightPanelCollapseButton,
 } from './right-sidebar.ts'
 import { createTaskboardSessionHeaderAction } from './session-header-action.tsx'
-import { createSessionJumper, type SessionsServiceFace, type WorkspacesServiceFace } from './session-jump.ts'
+import { createSessionJumper, type SessionsServiceFace, type UiWorkspaceFace, type WorkspacesServiceFace } from './session-jump.ts'
 import { isTaskModelSupported } from './model-catalog.ts'
 import { MODEL_CAPABILITY_SERVICE, type ModelCapability, type ModelCapabilityProvider } from '../shared/model-capabilities.ts'
 import { TASKBOARD_CAPABILITY } from '../shared/protocol.ts'
@@ -408,11 +408,15 @@ export function apply(ctx: ClientContextFace): void {
 
     // Session navigation for execution rows: resolved LAZILY on every jump —
     // apply may run before the runtime provides the services, and a captured
-    // undefined would permanently disable the jump. On a platform without
-    // them the jump degrades to an 'unavailable' notice instead of failing.
+    // undefined would permanently disable the jump. The navigation owner is
+    // uiWorkspace (DSH 0.1.6+; sessions.open was removed there), passed as a
+    // third accessor so the jumper can fall back on runtimes that still ship
+    // the legacy selector. On a platform with neither, the jump degrades to an
+    // 'unavailable' notice instead of failing.
     controller.installSessionJumper(createSessionJumper({
       getSessions: () => ctx.get?.('sessions') as SessionsServiceFace | undefined,
       getWorkspaces: () => ctx.get?.('workspaces') as WorkspacesServiceFace | undefined,
+      getUiWorkspace: () => ctx.get?.('uiWorkspace') as UiWorkspaceFace | undefined,
     }))
 
     controller.start()

@@ -37,41 +37,76 @@ import type {
 } from '../shared/api.ts'
 import type { CommentRecord, TaskSummary } from '../shared/protocol.ts'
 
-/** Unwrap the envelope or throw a readable error. */
-async function unwrap<T>(pending: Response | Promise<Response>): Promise<T> {
-  const res = await pending
-  const body = (await res.json().catch(() => null)) as ApiResult<T> | null
-  if (body === null) throw new Error(`taskboard: HTTP ${res.status}`)
-  if (!body.ok) throw new Error(`taskboard: ${body.error.code}: ${body.error.message}`)
-  return body.value
+/** Unwrap the envelope while keeping transport and payload failures distinct. */
+async function unwrap<T>(pending: Response | Promise<Response>, path: string, signal?: AbortSignal): Promise<T> {
+  const hasTimeoutName = (value: unknown): boolean =>
+    typeof value === 'object' && value !== null && 'name' in value && value.name === 'TimeoutError'
+  const timedOut = (error: unknown): boolean =>
+    hasTimeoutName(error) || (signal?.aborted === true && hasTimeoutName(signal.reason))
+  let res: Response
+  try {
+    res = await pending
+  } catch (error) {
+    throw new Error(`taskboard: ${path}: ${timedOut(error) ? 'request timed out' : 'network request failed'}`, { cause: error })
+  }
+  let raw: string
+  try {
+    raw = await res.text()
+  } catch (error) {
+    throw new Error(`taskboard: ${path}: ${timedOut(error) ? 'response body timed out' : 'response body read failed'} (HTTP ${res.status})`, { cause: error })
+  }
+  if (raw.trim().length === 0) throw new Error(`taskboard: ${path}: empty response body (HTTP ${res.status})`)
+  let body: unknown
+  try {
+    body = JSON.parse(raw) as unknown
+  } catch (error) {
+    const contentType = res.headers.get('content-type') ?? ''
+    const kind = contentType.toLowerCase().includes('json') ? 'invalid JSON response' : 'non-JSON response'
+    throw new Error(`taskboard: ${path}: ${kind} (HTTP ${res.status})`, { cause: error })
+  }
+  if (typeof body !== 'object' || body === null || !('ok' in body) || typeof body.ok !== 'boolean') {
+    throw new Error(`taskboard: ${path}: invalid API response (HTTP ${res.status})`)
+  }
+  if (!body.ok) {
+    const failure = body as Partial<ApiResult<T>>
+    if (!('error' in failure) || typeof failure.error?.code !== 'string' || typeof failure.error.message !== 'string') {
+      throw new Error(`taskboard: ${path}: invalid API error response (HTTP ${res.status})`)
+    }
+    throw new Error(`taskboard: ${failure.error.code}: ${failure.error.message}`)
+  }
+  if (!('value' in body)) throw new Error(`taskboard: ${path}: invalid API response (HTTP ${res.status})`)
+  if (!res.ok) throw new Error(`taskboard: ${path}: HTTP ${res.status} with success body`)
+  return body.value as T
 }
 
 /** Request timeout (S15: a hung fetch must never pin refreshInFlight forever). */
 const TIMEOUT_MS = 10_000
 
 async function get<T>(path: string): Promise<T> {
-  return unwrap<T>(fetch(path, { signal: AbortSignal.timeout(TIMEOUT_MS) }))
+  const signal = AbortSignal.timeout(TIMEOUT_MS)
+  return unwrap<T>(fetch(path, { signal }), path, signal)
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const signal = AbortSignal.timeout(TIMEOUT_MS)
+  return unwrap<T>(fetch(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  })
-  return unwrap<T>(res)
+    signal,
+  }), path, signal)
 }
 
 /** Upload raw image bytes; a custom header keeps the route outside simple CSRF requests. */
 async function uploadImage(file: Blob): Promise<AttachmentUpload> {
-  const res = await fetch('/dsh-taskboard/assets', {
+  const path = '/dsh-taskboard/assets'
+  const signal = AbortSignal.timeout(30_000)
+  return unwrap<AttachmentUpload>(fetch(path, {
     method: 'POST',
     headers: { 'content-type': file.type, 'x-dsh-taskboard-upload': '1' },
     body: file,
-    signal: AbortSignal.timeout(30_000),
-  })
-  return unwrap<AttachmentUpload>(res)
+    signal,
+  }), path, signal)
 }
 
 /** Route client face (the controller consumes this narrow surface). */
@@ -169,12 +204,16 @@ export function createClient(): TaskboardClient {
     updateSettings: body => post('/dsh-taskboard/settings/update', body),
     storage: () => get<StorageStatus>('/dsh-taskboard/storage'),
     checkStorage: directory => post<StorageStatus>('/dsh-taskboard/storage/check', { directory }),
-    migrateStorage: directory => unwrap<StorageMigrationResult>(fetch('/dsh-taskboard/storage/migrate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ directory }),
-      signal: AbortSignal.timeout(120_000),
-    })),
+    migrateStorage: directory => {
+      const path = '/dsh-taskboard/storage/migrate'
+      const signal = AbortSignal.timeout(120_000)
+      return unwrap<StorageMigrationResult>(fetch(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ directory }),
+        signal,
+      }), path, signal)
+    },
     promptCompletions: workspaceId => get<PromptCompletionsResponse>(
       workspaceId === undefined || workspaceId === ''
         ? '/dsh-taskboard/prompt-completions'

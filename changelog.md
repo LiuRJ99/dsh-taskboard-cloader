@@ -1,5 +1,11 @@
 # 更新日志 / Changelog
 
+## [0.7.8] - 2026-10-15
+
+- Selectively adapt upstream `e485fc8`, `fd3959e`, `0b51895`, and `5ca3c54`: navigate through the Host workspace UI, serialize shared-ledger read/modify/write across instances and processes, retain live executions across plugin reloads, and preserve successful data during partial refresh failures.
+- Keep fork model/speed routing, permission and capability controls, multi-repository isolation, and durable FIFO scheduling. Extend the optional Sidebar peer to exact `0.26.0`.
+- Regression coverage includes concurrent independent ledger writers and non-retried mutation failures. Typecheck, build and all 456 tests passed.
+
 ## [0.7.6] - 2026-10-09
 
 - 同步运行时 `PLUGIN_VERSION` 与发布包版本，修复 `0.7.5` 版本一致性 CI 失败；保留已验证的 Sidebar `0.24.1` 可选 peer。

@@ -202,6 +202,7 @@ export interface SessionSyncDeps {
 
 /** Default scan interval: 4s. */
 export const DEFAULT_SCAN_INTERVAL_MS = 4000
+const ACTIVITY_PERSIST_MS = 60_000
 
 /**
  * Service that synchronizes external workspace sessions into the taskboard.
@@ -209,6 +210,7 @@ export const DEFAULT_SCAN_INTERVAL_MS = 4000
 export class ExternalSessionSyncService {
   private readonly unsubscribe: () => void
   private readonly ignoredSessions = new Set<string>()
+  private readonly lastActivityAt = new Map<string, number>()
   private scanTimer?: NodeJS.Timeout | number
 
   constructor(private readonly deps: SessionSyncDeps) {
@@ -291,6 +293,7 @@ export class ExternalSessionSyncService {
                 sessionId,
                 trigger: 'manual',
                 startedAt: now,
+                lastActivityAt: now,
                 outcome: 'running',
                 isolation: 'none',
               })
@@ -342,6 +345,11 @@ export class ExternalSessionSyncService {
     if (!defaultSyncExternalSessionsOf(snapshot.settings)) return
 
     const now = this.deps.now()
+
+    if (event.type === 'turn/start' || event.type === 'user/message' || event.type === 'turn/step'
+      || event.type === 'turn/progress' || event.type === 'agent/step' || event.type === 'agent/thought') {
+      await this.touchActivity(sessionId, now)
+    }
 
     if (event.type === 'turn/start') {
       await this.handleTurnStart(sessionId, sessionMeta?.header?.cwd, now)
@@ -396,6 +404,7 @@ export class ExternalSessionSyncService {
           sessionId,
           trigger: 'manual',
           startedAt: now,
+          lastActivityAt: now,
           outcome: 'running',
           isolation: 'none',
         })
@@ -408,6 +417,25 @@ export class ExternalSessionSyncService {
       }
       return undefined
     })
+  }
+
+  /** Persist real session activity at most once per minute; claim age is not activity. */
+  private async touchActivity(sessionId: string, now: number): Promise<void> {
+    const previous = this.lastActivityAt.get(sessionId)
+    if (previous !== undefined && now - previous < ACTIVITY_PERSIST_MS) return
+    let touched = false
+    await this.deps.store.mutate('execution-recorded', ledger => {
+      const task = ledger.tasks.find(current => current.claimedBy === sessionId
+        || current.executions.some(execution => execution.sessionId === sessionId && execution.outcome === 'running'))
+      const execution = task === undefined ? undefined : [...task.executions].reverse()
+        .find(current => current.sessionId === sessionId && current.outcome === 'running')
+      if (execution === undefined) return undefined
+      if (execution.lastActivityAt !== undefined && now - execution.lastActivityAt < ACTIVITY_PERSIST_MS) return undefined
+      execution.lastActivityAt = now
+      touched = true
+      return [task!]
+    })
+    if (touched) this.lastActivityAt.set(sessionId, now)
   }
 
   private async handleTurnStart(sessionId: string, cwd: string | undefined, now: number): Promise<void> {
@@ -438,6 +466,7 @@ export class ExternalSessionSyncService {
               sessionId,
               trigger: 'manual',
               startedAt: now,
+              lastActivityAt: now,
               outcome: 'running',
               isolation: 'none',
             })
@@ -459,6 +488,7 @@ export class ExternalSessionSyncService {
           sessionId,
           trigger: 'manual',
           startedAt: now,
+          lastActivityAt: now,
           outcome: 'running',
           isolation: 'none',
         })
@@ -492,6 +522,7 @@ export class ExternalSessionSyncService {
             sessionId,
             trigger: 'manual',
             startedAt: now,
+            lastActivityAt: now,
             outcome: 'running',
             isolation: 'none',
           },
@@ -544,6 +575,7 @@ export class ExternalSessionSyncService {
           sessionId,
           trigger: 'manual',
           startedAt: now,
+          lastActivityAt: now,
           outcome: 'running',
           isolation: 'none',
         })

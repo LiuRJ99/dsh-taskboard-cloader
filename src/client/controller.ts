@@ -194,16 +194,42 @@ export class BoardController {
         // newest seen revision — bounded rounds, then give up until the next
         // frame.
         for (let round = 0; round < 3; round++) {
-          const [ledger, workspaces] = await Promise.all([
-            this.client.state(),
-            this.client.workspaces(),
+          const [ledgerResult, workspacesResult] = await Promise.allSettled([
+            Promise.resolve().then(() => this.client.state()),
+            Promise.resolve().then(() => this.client.workspaces()),
           ])
-          let selected: TaskRecord | undefined
-          if (this.state.selectedId !== undefined) {
-            selected = ledger.tasks.find(t => t.id === this.state.selectedId)
+          const patch: Partial<ControllerState> = {}
+          const errors: string[] = []
+          let resetWorkspaceFilter = false
+          if (ledgerResult.status === 'fulfilled') {
+            const ledger = ledgerResult.value
+            let selected: TaskRecord | undefined
+            if (this.state.selectedId !== undefined) {
+              selected = ledger.tasks.find(t => t.id === this.state.selectedId)
+            }
+            Object.assign(patch, {
+              archiveSessionsSupported: ledger.capabilities?.archiveSessions === true,
+              ledger,
+              selectedId: selected === undefined ? undefined : this.state.selectedId,
+            })
+          } else {
+            errors.push(`state: ${ledgerResult.reason instanceof Error ? ledgerResult.reason.message : String(ledgerResult.reason)}`)
           }
-          this.setState({ archiveSessionsSupported: ledger.capabilities?.archiveSessions === true, ledger, workspaces, error: undefined, selectedId: selected === undefined ? undefined : this.state.selectedId })
-          if (this.seenRevision === undefined || ledger.revision >= this.seenRevision) break
+          if (workspacesResult.status === 'fulfilled') {
+            const workspaces = workspacesResult.value
+            patch.workspaces = workspaces
+            const currentId = this.state.filters.workspaceId
+            if (currentId !== undefined && !workspaces.some(ws => ws.id === currentId)) {
+              patch.filters = { ...this.state.filters, workspaceId: undefined }
+              resetWorkspaceFilter = true
+            }
+          } else {
+            errors.push(`workspaces: ${workspacesResult.reason instanceof Error ? workspacesResult.reason.message : String(workspacesResult.reason)}`)
+          }
+          patch.error = errors.length > 0 ? errors.join('; ') : undefined
+          this.setState(patch)
+          if (resetWorkspaceFilter) this.persistView()
+          if (ledgerResult.status !== 'fulfilled' || this.seenRevision === undefined || ledgerResult.value.revision >= this.seenRevision) break
         }
       } catch (error) {
         this.setState({ error: error instanceof Error ? error.message : String(error) })
