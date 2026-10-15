@@ -1,5 +1,9 @@
 # 更新日志 / Changelog
 
+## [0.7.9] - 2026-10-15
+
+- Synchronize the optional Sidebar peer specifier in the pnpm lockfile so clean frozen installs accept the new peer range. Supersedes v0.7.8, whose runtime tests passed but whose remote clean-install check caught the stale lock specifier.
+
 ## [0.7.8] - 2026-10-15
 
 - Selectively adapt upstream `e485fc8`, `fd3959e`, `0b51895`, and `5ca3c54`: navigate through the Host workspace UI, serialize shared-ledger read/modify/write across instances and processes, retain live executions across plugin reloads, and preserve successful data during partial refresh failures.
