@@ -1,3 +1,9 @@
+## 0.7.10 — 2026-10-18
+
+Align the build SDK with 0.2.1-rc.1, explicitly import session event contracts, and qualify optional Better Sidebar 0.28.0. Retain host-owned task state, durable FIFO scheduling and selected-session semantics.
+
+Compatibility is restricted to `0.2.0-rc.2 || 0.2.1-rc.1`; no alpha or later Host is implied.
+
 # 更新日志 / Changelog
 
 ## [0.7.9] - 2026-10-15

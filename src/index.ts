@@ -1,3 +1,4 @@
+import type {} from '@deepseek-ai/dsh-session'
 /**
  * Host loader entry for dsh-taskboard.
  *
