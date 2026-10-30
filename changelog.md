@@ -1,3 +1,9 @@
+## 0.7.12 — 2026-10-30
+
+Peer compatibility is now minimum-only: the optional Better Sidebar peer is `>=0.21.1` instead of an enumerated `^0.21.1 || 0.24.1 || 0.26.0 || 0.28.0` list, so newer Better Sidebar releases (including 0.28.2) stay accepted without republishing. No feature or permission behavior changed.
+
+Validation: build, typecheck and source tests passed.
+
 ## 0.7.10 — 2026-10-18
 
 Align the build SDK with 0.2.1-rc.1, explicitly import session event contracts, and qualify optional Better Sidebar 0.28.0. Retain host-owned task state, durable FIFO scheduling and selected-session semantics.

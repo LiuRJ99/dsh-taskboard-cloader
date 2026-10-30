@@ -13,7 +13,7 @@ A **task board plugin for DeepSeek Harness**: humans create cards, agents claim 
 - **Execution**: manual or cron-scheduled (host-side scheduling keeps firing with the browser closed); manual runs open a new session, scheduled runs reuse the same task's conversation, optionally pinned to a model and preset
 - **Git worktree isolation**: each run works on its own worktree + dedicated task branch, one-click merge at acceptance; parallel multi-repo workspaces are mirrored whole (0.6.3); non-git projects fall back automatically
 - **Efficient acceptance**: DoD acceptance checklists (agent checks items off with evidence), structured execution reports (summary / changed files / checks / artifacts / risks), in-board diff viewer
-- **Better Sidebar integration**: when `dsh-better-sidebar` (≥ 0.16.1) is present, the board registers as a native tab with panel/free-window placement, current-session `@` references, and session-workspace-guarded file opening; without it, the legacy DOM board remains available
+- **Better Sidebar integration**: when `dsh-better-sidebar` (≥ 0.21.1; the peer declares a minimum only, no upper bound) is present, the board registers as a native tab with panel/free-window placement, current-session `@` references, and session-workspace-guarded file opening; without it, the legacy DOM board remains available
 - **Live board**: SSE real-time refresh, five-column flow, persisted filters & sorting, JSON import/export, task templates
 
 **Zero configuration**: install and it works — no tokens, no API keys, no extra services or databases.

@@ -1,7 +1,7 @@
 {
   "name": "dsh-taskboard",
   "description": "Agent-first task board for the DSH web GUI: host-authoritative task ledger with taskboard_* agent tools, project (= workspace) claim boundaries, per-task model execution in fresh sessions, optional per-task git-worktree isolation (dedicated task branches, commit evidence, one-click merge), host-side cron scheduling, and a live SSE kanban view. Mounts via the official dsh plugin system — no DSH source changes.",
-  "version": "0.7.11",
+  "version": "0.7.12",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -64,7 +64,7 @@
     "agent"
   ],
   "peerDependencies": {
-    "dsh-better-sidebar": "^0.21.1 || 0.24.1 || 0.26.0 || 0.28.0",
+    "dsh-better-sidebar": ">=0.21.1",
     "@deepseek-ai/dsh-session": ">=0.2.0-rc.2"
   },
   "peerDependenciesMeta": {
