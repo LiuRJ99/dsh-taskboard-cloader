@@ -1,3 +1,17 @@
+## 0.7.13 — 2026-11-06
+
+Selectively adopted two upstream host fixes: `1d3f18a` validates `taskboard_list` filters instead of silently returning an empty result, and `3fcd5be` refuses to move or delete a task held by another session. Claim boundaries, the durable FIFO queue, Lazy Gate capability metadata and the fork's client surfaces are unchanged.
+
+Deferred upstream commits (recorded for a future explicit cherry-pick — their host files are diverged in this fork): `197a6a1`, `731f536` (ledger lock recovery), `d9117f7` (bound scheduled-session fallback), `301f22a`, `184d072`, `6954a7f` (workspaceId path and error detail), `25f317a` (storage failure recovery), `80c82e2` (mirror deletion guard), `b705238` (export/execution recovery), `cff1df3` (background failure containment), `6ffc2f4` (periodic worktree isolation), `0d1bafc` (spent one-shot normalization), `d21186c` (scheduled recovery).
+
+Validation: build, typecheck and 474 source tests passed.
+
+## [0.7.13] - 2026-11-06
+
+- 选择性吸收上游 `1d3f18a`（taskboard_list 过滤参数校验，不再静默返回空结果）与 `3fcd5be`（禁止移动/删除其他会话持有的任务）。
+- 其余 13 个上游 host 修复涉及的 tools/store/execution/protocol 文件在本 fork 已分叉，登记为显式 cherry-pick 待办，本轮未移植。
+- 校验：构建、typecheck 与 474 项源码测试通过。
+
 ## 0.7.12 — 2026-10-30
 
 Peer compatibility is now minimum-only: the optional Better Sidebar peer is `>=0.21.1` instead of an enumerated `^0.21.1 || 0.24.1 || 0.26.0 || 0.28.0` list, so newer Better Sidebar releases (including 0.28.2) stay accepted without republishing. No feature or permission behavior changed.

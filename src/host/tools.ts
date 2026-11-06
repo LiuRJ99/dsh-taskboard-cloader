@@ -8,7 +8,7 @@ import { archiveTaskSessions } from './archive-sessions.ts'
  * - `move → done` is rejected for agent callers (user confirmation only)
  * - `move todo → in_progress` requires the calling session's workspace to
  *   match the task's project (claim boundary)
- * - taking over a task held by another session is rejected
+ * - moving or deleting a task held by another session is rejected
  * - `delete` for agent callers only sets the soft-delete marker
  * - checklist items may be added/checked by agents, but checking never
  *   completes the task (done stays user-only)
@@ -100,7 +100,7 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
     `隔离: ${t.isolation === 'none' ? '关闭（原目录执行）' : 'Git Worktree'}${t.branch !== undefined ? `（分支 ${t.branch}）` : ''}${t.branches !== undefined ? `（多仓库镜像 ${Object.keys(t.branches).length + (t.branch !== undefined ? 1 : 0)} 个仓库）` : ''}`,
   ]
   const holder = isClaimedBy(t)
-  if (holder !== undefined) lines.push(`认领: agent ${String(holder).slice(0, 24)}（持有期间其他会话不可移动）`)
+  if (holder !== undefined) lines.push(`认领: agent ${String(holder).slice(0, 24)}（持有期间其他会话不可移动或删除）`)
   if (t.execution.nextRunAt !== undefined) lines.push(`下次触发: ${new Date(t.execution.nextRunAt).toISOString()}`)
   if (t.model !== undefined) lines.push(`固定模型: ${t.model.provider}/${t.model.model}${t.model.reasoningEffort !== undefined ? ` (思考强度: ${t.model.reasoningEffort})` : ''}`)
   if (t.speed !== undefined) lines.push(`速度: ${t.speed === 'fast' ? '快速' : '标准'}`)
@@ -254,6 +254,13 @@ function versionGuard(task: TaskRecord, ifVersion: number | undefined): void {
   }
 }
 
+/** Prevent another session from moving or deleting an actively held task. */
+function exclusiveHoldGuard(task: TaskRecord, sessionId: string): void {
+  if (task.status === 'in_progress' && task.claimedBy !== undefined && task.claimedBy !== sessionId) {
+    throw new ToolError(ERR.forbidden, `task is held by session ${task.claimedBy}; never take over another session's claim`)
+  }
+}
+
 /**
  * Find a live (non-trashed) task INSIDE a mutator (R1: every guard must run
  * on the fresh draft the serial queue hands us, never on a pre-read clone —
@@ -349,6 +356,9 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     async execute(args) {
       try {
         const a = args as { workspaceId?: string; status?: string; urgency?: string; includeTrashed?: boolean }
+        if (a.workspaceId !== undefined && workspaces.get(a.workspaceId) === undefined) throw new ToolError(ERR.notFound, `unknown workspaceId ${a.workspaceId}`)
+        if (a.status !== undefined) asStatus(a.status)
+        if (a.urgency !== undefined) asUrgency(a.urgency)
         const tasks = store.snapshot().tasks.filter(t =>
           (a.workspaceId === undefined || t.workspaceId === a.workspaceId)
           && (a.status === undefined || t.status === a.status)
@@ -646,9 +656,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           // Exclusive hold: while a task is in_progress under a session
           // (explicit claimedBy — an agent claim or a live execution), no other
           // session may move it (that would be a takeover).
-          if (task.status === 'in_progress' && task.claimedBy !== undefined && task.claimedBy !== actor.sessionId) {
-            throw new ToolError(ERR.forbidden, `task is held by session ${task.claimedBy}; never take over another session's claim`)
-          }
+          exclusiveHoldGuard(task, actor.sessionId)
           // Claim boundary: the calling session must belong to the task's project.
           if (isClaim(task.status, to) && callerWsId !== task.workspaceId) {
             throw new ToolError(ERR.workspaceMismatch, 'only a session inside this task\'s project may claim it')
@@ -790,7 +798,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     name: 'taskboard_delete',
     description:
       'Soft-delete a task (marks it trashed; the user confirms the purge in the GUI). '
-      + 'Requires ifVersion. Prefer canceled/archived over delete unless the task was a mistake.',
+      + 'Requires ifVersion. Never delete a task held by another session; running executions must stop first. '
+      + 'Prefer canceled/archived over delete unless the task was a mistake.',
     parameters: {
       id: { type: 'string', required: true, description: 'Task id.' },
       ifVersion: { type: 'number', required: true, description: 'Task version you read.' },
@@ -804,7 +813,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     },
     async execute(args: { id: string; ifVersion: number }, exec: unknown) {
       try {
-        caller(exec as ToolRunContext)
+        const { actor } = caller(exec as ToolRunContext)
         // R1: guards inside the mutation. S5: a running execution keeps
         // writing to the task (report, settlement) — refuse the soft-delete
         // until it is cancelled or settled. T8: clear claim residue.
@@ -812,6 +821,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         await store.mutate('task-deleted', ledger => {
           const { index, task } = liveTaskAt(ledger, args.id)
           versionGuard(task, args.ifVersion)
+          exclusiveHoldGuard(task, actor.sessionId)
           if (task.executions.some(e => e.outcome === 'running')) {
             throw new ToolError(ERR.invalidInput, '任务有正在运行的执行（先在 GUI 取消或等它结束再删除）')
           }
